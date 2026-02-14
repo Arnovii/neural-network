@@ -168,13 +168,13 @@ class RedNeuronal:
         # Pesos capa oculta: matriz de tam_oculta × tam_entrada
         self.W1 = [[random.gauss(0, math.sqrt(2.0/(tam_entrada + tam_oculta))) 
                    for _ in range(tam_entrada)] 
-                  for _ in range(tam_oculta)]
+                   for _ in range(tam_oculta)]
         self.b1 = [0.0] * tam_oculta
         
         # Pesos capa salida: matriz de tam_salida × tam_oculta
         self.W2 = [[random.gauss(0, math.sqrt(2.0/(tam_oculta + tam_salida))) 
                    for _ in range(tam_oculta)] 
-                  for _ in range(tam_salida)]
+                   for _ in range(tam_salida)]
         self.b2 = [0.0] * tam_salida
     
     def propagacion_adelante(self, x):
@@ -231,50 +231,25 @@ class RedNeuronal:
         
         for epoch in range(epochs):
             print(f"\nÉpoca {epoch + 1}/{epochs}")
-            
-            # Acumuladores para gradientes (inicializados en 0)
-            acc_grad_W1 = [[0.0] * self.tam_entrada for _ in range(self.tam_oculta)]
-            acc_grad_b1 = [0.0] * self.tam_oculta
-            acc_grad_W2 = [[0.0] * self.tam_oculta for _ in range(self.tam_salida)]
-            acc_grad_b2 = [0.0] * self.tam_salida
-            
-            # Acumulamos gradientes de todos los ejemplos
+
             for i in range(n):
-                # Forward pass
+                # Forward
                 a2, cache = self.propagacion_adelante(X[i])
-                # Backward pass
+
+                # Backward
                 gW1, gb1, gW2, gb2 = self.backpropagation(X[i], Y[i], cache)
-                
-                # Sumamos a acumuladores
-                for j in range(self.tam_oculta):
-                    for k in range(self.tam_entrada):
-                        acc_grad_W1[j][k] += gW1[j][k]
-                    acc_grad_b1[j] += gb1[j]
-                
-                for j in range(self.tam_salida):
-                    for k in range(self.tam_oculta):
-                        acc_grad_W2[j][k] += gW2[j][k]
-                    acc_grad_b2[j] += gb2[j]
-                
-                # Progreso cada 1000 imágenes
+
+                # Actualiza parámetros
+                self.actualizar_pesos(
+                    gW1, gb1, gW2, gb2,
+                    tasa_aprendizaje
+                )
+
                 if (i + 1) % 1000 == 0:
                     print(f"  Procesadas {i + 1}/{n} imágenes...")
-            
-            # ACTUALIZACIÓN DE PESOS: W = W - α * (1/n) * suma_gradientes
-            factor = tasa_aprendizaje / n
-            
-            for j in range(self.tam_oculta):
-                for k in range(self.tam_entrada):
-                    self.W1[j][k] -= factor * acc_grad_W1[j][k]
-                self.b1[j] -= factor * acc_grad_b1[j]
-            
-            for j in range(self.tam_salida):
-                for k in range(self.tam_oculta):
-                    self.W2[j][k] -= factor * acc_grad_W2[j][k]
-                self.b2[j] -= factor * acc_grad_b2[j]
-            
+
             # Evaluamos precisión en entrenamiento
-            correctos = sum(1 for i in range(n) 
+            correctos = sum(1 for i in range(n)
                           if self.predecir(X[i]) == Y[i])
             precision = 100.0 * correctos / n
             print(f"  Precisión entrenamiento: {precision:.2f}%")
@@ -283,6 +258,23 @@ class RedNeuronal:
         """Predice la clase (dígito) para una entrada x"""
         a2, _ = self.propagacion_adelante(x)
         return max(range(len(a2)), key=lambda i: a2[i])
+    
+    def actualizar_pesos(self, gW1, gb1, gW2, gb2, tasa_aprendizaje):
+        """
+        Actualiza pesos y bias usando los gradientes de UN solo ejemplo (SGD)
+        """
+
+        # Capa oculta
+        for j in range(self.tam_oculta):
+            for k in range(self.tam_entrada):
+                self.W1[j][k] -= tasa_aprendizaje * gW1[j][k]
+            self.b1[j] -= tasa_aprendizaje * gb1[j]
+
+        # Capa salida
+        for j in range(self.tam_salida):
+            for k in range(self.tam_oculta):
+                self.W2[j][k] -= tasa_aprendizaje * gW2[j][k]
+            self.b2[j] -= tasa_aprendizaje * gb2[j]
 
 # ============================================================================
 # PARTE 5: EJECUCIÓN PRINCIPAL
@@ -345,7 +337,7 @@ def main():
         X=X_subset,
         Y=Y_subset,
         epochs=10,
-        tasa_aprendizaje=3.0
+        tasa_aprendizaje=0.1
     )
     
     # 5. Evaluar en test
