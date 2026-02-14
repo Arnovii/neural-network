@@ -193,7 +193,7 @@ class RedNeuronal:
         
         return a2, (a1, z1, x)
     
-    def backpropagation(self, x, y, cache):
+    def backpropagation(self, a2, y, cache):
         """
         Retropropagación: calcula gradientes del error
         """
@@ -204,7 +204,6 @@ class RedNeuronal:
         y_onehot[y] = 1.0
         
         # ERROR EN CAPA DE SALIDA: δ2 = a2 - y
-        a2, _ = self.propagacion_adelante(x)
         delta2 = vector_menos_vector(a2, y_onehot)
         
         # GRADIENTES CAPA DE SALIDA
@@ -237,7 +236,7 @@ class RedNeuronal:
                 a2, cache = self.propagacion_adelante(X[i])
 
                 # Backward
-                gW1, gb1, gW2, gb2 = self.backpropagation(X[i], Y[i], cache)
+                gW1, gb1, gW2, gb2 = self.backpropagation(a2, Y[i], cache)
 
                 # Actualiza parámetros
                 self.actualizar_pesos(
