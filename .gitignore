@@ -1,3 +1,9 @@
 # Archivos comprimidos
 *.zip
 *.gz
+
+# Cache de Ruff
+.ruff_cache\
+
+# Cache de Python
+**/__pycache__/
