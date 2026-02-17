@@ -8,6 +8,7 @@ de este archivo.
 
 import os
 import gzip
+import random
 import struct
 import urllib.request
 from typing import List, Tuple
@@ -185,24 +186,34 @@ def load_mnist_train(
     n_train: int | None = None,
     download_if_missing: bool = True,
     verbose: bool = True,
+    random_seed: int | None = None,
 ) -> Tuple[List[List[float]], List[int]]:
     """
     Carga el conjunto de entrenamiento de MNIST.
 
     :param data_dir: Directorio de datos. Si es None, usa Data/ por defecto.
     :type data_dir: str | None
-    :param n_train: Cantidad de datos de entrenamiento (por defecto lo carga todo)
+    :param n_train: Cantidad de ejemplos de entrenamiento a usar. Si es None, se cargan todos los datos disponibles.
     :type n_train: int | None
     :param download_if_missing: Si True, descarga los datos si no existen.
     :type download_if_missing: bool
     :param verbose: Si True, muestra mensajes de progreso.
     :type verbose: bool
+    :param random_seed: Semilla para reproducibilidad en el submuestreo.
+    :type random_seed: int | None
     :return: Tupla (X_train, Y_train)
     :rtype: Tuple[List[List[float]], List[int]]
     """
+
+    # Valida el n_train
     if n_train is not None and n_train < 1:
         raise ValueError(f"n_train debe ser >= 1, recibido: {n_train}")
 
+    # Configura semilla si se proporciona
+    if random_seed is not None:
+        random.seed(random_seed)
+
+    # Obtiene el directorio
     if data_dir is None:
         data_dir = get_data_directory()
 
@@ -215,30 +226,43 @@ def load_mnist_train(
     if download_if_missing:
         descargar_mnist(data_dir, verbose=verbose)
 
-    # Carga archivos
+    # Genera rutas de archivos
     train_images_path = os.path.join(data_dir, "train-images-idx3-ubyte.gz")
     train_labels_path = os.path.join(data_dir, "train-labels-idx1-ubyte.gz")
 
+    # Carga datos completos
     X_train = cargar_imagenes(train_images_path, verbose=verbose)
     Y_train = cargar_etiquetas(train_labels_path, verbose=verbose)
 
+    # Válida integridad
+    if len(X_train) != len(Y_train):
+        raise RuntimeError("Inconsistencia: número de imágenes y etiquetas no coincide")
+
+    total_samples = len(X_train)
+
     if n_train is None:
-        # Lo carga todo
+        # Carga la cantidad indicada
         X_subset = X_train
         Y_subset = Y_train
     else:
-        # Carga la cantidad indicada
-        if n_train > len(X_train):
+        # Lo carga todo
+        if n_train > total_samples:
             raise ValueError(
-                f"n_train ({n_train}) es mayor que los datos disponibles ({len(X_train)})"
+                f"n_train ({n_train}) es mayor que los datos disponibles ({total_samples})"
             )
-        X_subset = X_train[:n_train]
-        Y_subset = Y_train[:n_train]
+
+        indices = list(range(total_samples))
+        random.shuffle(indices)
+        selected_indices = indices[:n_train]
+
+        X_subset = [X_train[i] for i in selected_indices]
+        Y_subset = [Y_train[i] for i in selected_indices]
 
     if verbose:
         print(f"\n✓ Datos de entrenamiento seleccionados: {len(X_subset)} ejemplos")
 
     return X_subset, Y_subset
+
 
 
 def load_mnist_test(
