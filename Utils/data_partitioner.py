@@ -25,18 +25,21 @@ from mnist_loader import load_mnist_train, get_data_directory
 
 def partition_mnist_data(
     num_partitions: int,
+    n_train: int | None = None,
     data_dir: str | None = None,
     download_if_missing: bool = True,
     random_seed: int | None = None,
     verbose: bool = True,
 ) -> List[Tuple[List[List[float]], List[int]]]:
     """
-    Realiza un particionamiento estratificado por clase.
+    Carga los datos MNIST y realiza un particionamiento estratificado por clase.\n
     Garantiza que cada partición tendrá una proproción similar
     de cada dígito.
 
     :param num_partitions: Número de particiones deseadas (debe ser >= 1)
     :type num_partitions: int
+    :param n_train: Cantidad de ejemplos de entrenamiento a usar (opcional).
+    :type n_train: int | None
     :param data_dir: Directorio donde se encuentran/estarán los archivos MNIST (Por defecto Data/)
     :type data_dir: Optional[str]
     :param download_if_missing: Si True, descarga los datos si no existen.
@@ -74,7 +77,10 @@ def partition_mnist_data(
         print("\nCargando datos de entrenamiento...")
 
     X_train, Y_train = load_mnist_train(
-        data_dir=data_dir, download_if_missing=download_if_missing, verbose=verbose
+        data_dir=data_dir,
+        n_train=n_train,
+        download_if_missing=download_if_missing,
+        verbose=verbose,
     )
 
     if verbose:
@@ -160,7 +166,10 @@ def partition_mnist_data_simple(
     verbose: bool = False,
 ) -> List[Tuple[List[List[float]], List[int]]]:
     """
-    Versión simplificada que trabaja directamente con datos ya cargados.
+    Versión simplificada que trabaja directamente con datos ya cargados.\n
+    Realiza un particionamiento estratificado por clase.\n
+    Garantiza que cada partición tendrá una proproción similar
+    de cada dígito.
 
     :param num_partitions: Número de particiones deseadas (debe ser >= 1)
     :type num_partitions: int
@@ -334,6 +343,7 @@ def main():
     try:
         partitions = partition_mnist_data(
             num_partitions=5,
+            n_train=5000,
             download_if_missing=True,
             random_seed=42,  # Para reproducibilidad
             verbose=True,

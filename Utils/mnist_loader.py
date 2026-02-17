@@ -182,7 +182,7 @@ def cargar_etiquetas(archivo_gz: str, verbose: bool = False) -> List[int]:
 
 def load_mnist_train(
     data_dir: str | None = None,
-    n_train: int = 5000,
+    n_train: int | None = None,
     download_if_missing: bool = True,
     verbose: bool = True,
 ) -> Tuple[List[List[float]], List[int]]:
@@ -191,8 +191,8 @@ def load_mnist_train(
 
     :param data_dir: Directorio de datos. Si es None, usa Data/ por defecto.
     :type data_dir: str | None
-    :param n_train: Cantidad de datos de entrenamiento
-    :type n_train: int = 5000
+    :param n_train: Cantidad de datos de entrenamiento (por defecto lo carga todo)
+    :type n_train: int | None
     :param download_if_missing: Si True, descarga los datos si no existen.
     :type download_if_missing: bool
     :param verbose: Si True, muestra mensajes de progreso.
@@ -200,8 +200,8 @@ def load_mnist_train(
     :return: Tupla (X_train, Y_train)
     :rtype: Tuple[List[List[float]], List[int]]
     """
-    if n_train < 1 or n_train > 10000:
-        raise ValueError(f"n_train fuera de rango: {n_train}")
+    if n_train is not None and n_train < 1:
+        raise ValueError(f"n_train debe ser >= 1, recibido: {n_train}")
 
     if data_dir is None:
         data_dir = get_data_directory()
@@ -222,8 +222,18 @@ def load_mnist_train(
     X_train = cargar_imagenes(train_images_path, verbose=verbose)
     Y_train = cargar_etiquetas(train_labels_path, verbose=verbose)
 
-    X_subset = X_train[:n_train]
-    Y_subset = Y_train[:n_train]
+    if n_train is None:
+        # Lo carga todo
+        X_subset = X_train
+        Y_subset = Y_train
+    else:
+        # Carga la cantidad indicada
+        if n_train > len(X_train):
+            raise ValueError(
+                f"n_train ({n_train}) es mayor que los datos disponibles ({len(X_train)})"
+            )
+        X_subset = X_train[:n_train]
+        Y_subset = Y_train[:n_train]
 
     if verbose:
         print(f"\n✓ Datos de entrenamiento seleccionados: {len(X_subset)} ejemplos")
@@ -338,7 +348,7 @@ def main():
 
     # Ejemplo 1: Cargar solo entrenamiento
     print("\n--- Ejemplo 1: Cargar conjunto de entrenamiento ---")
-    X_train, Y_train = load_mnist_train(verbose=True)
+    X_train, Y_train = load_mnist_train(verbose=True, n_train=5000)
     print(f"\nPrimeras 5 etiquetas de entrenamiento: {Y_train[:5]}")
     print(f"Dimensiones de primera imagen: {len(X_train[0])} píxeles")
 
