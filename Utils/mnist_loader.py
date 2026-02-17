@@ -264,7 +264,6 @@ def load_mnist_train(
     return X_subset, Y_subset
 
 
-
 def load_mnist_test(
     data_dir: str | None = None, download_if_missing: bool = True, verbose: bool = True
 ) -> Tuple[List[List[float]], List[int]]:
