@@ -1,3 +1,6 @@
 # Archivos comprimidos
 *.zip
 *.gz
+.venv
+*.png
+/datos_mnist
