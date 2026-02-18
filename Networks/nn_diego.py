@@ -102,7 +102,7 @@ class DiegoNeuronalNetwork:
         self.b2 = vector_zeros(output_size)
 
         # Historial de entrenamiento
-        self.training_history: List[Dict[str, Any]] = []
+        self.training_history: Dict[str, Any] = {}
 
     def get_parameters(self) -> Dict[str, Any]:
         """
@@ -379,7 +379,7 @@ class DiegoNeuronalNetwork:
         epochs: int,
         learning_rate: float,
         verbose: bool = True,
-    ) -> List[Dict[str, Any]]:
+    ) -> Dict[str, Any]:
         """
         Entrena la red usando el algoritmo propuesto por Diego.
 
@@ -400,12 +400,22 @@ class DiegoNeuronalNetwork:
         :type learning_rate: float
         :param verbose: Si True, muestra progreso detallado
         :type verbose: bool
-        :return: Historial de entrenamiento con métricas por época
-        :rtype: List[Dict[str, Any]]
+        :return: Historial de entrenamiento con las siguientes claves:\n
+                 - accuracies: List[float] — precisión global por época.\n
+                 - losses: List[float] — pérdida global por época.\n
+                 - partition_accuracies: List[List[float]] — precisión de cada\n
+                   partición por época. Forma: [epoca][particion].\n
+                 - epochs_detail: List[Dict] — detalle completo por época.
+        :rtype: Dict[str, Any]
         """
-        # Inicializa datos
         num_partitions = len(partitions)
-        history = []
+
+        # Listas acumuladoras — formato esperado por experiment_runner y statistics_engine
+        accuracies: List[float] = []
+        losses: List[float] = []
+        # partition_accuracies[epoca] = [acc_part0, acc_part1, ...]
+        partition_accuracies: List[List[float]] = []
+        epochs_detail: List[Dict[str, Any]] = []
 
         if verbose:
             print("=" * 70)
@@ -423,28 +433,25 @@ class DiegoNeuronalNetwork:
             if verbose:
                 print(f"\n--- Época {epoch + 1}/{epochs} ---")
 
-            # Guarda parámetros globales iniciales de esta época
+            # Guarda parámetros globales al inicio de esta época
             global_params = self.get_parameters()
 
-            # Lista para almacenar parámetros de cada partición
             partition_parameters = []
             partition_metrics = []
 
-            # Entrena en cada partición
+            # Entrena en cada partición de forma independiente
             for partition_idx, (X_part, Y_part) in enumerate(partitions):
                 if verbose:
                     print(f"\n  Partición {partition_idx + 1}/{num_partitions}:")
                     print(f"    Ejemplos: {len(X_part)}")
 
-                # Restaura parámetros globales al inicio del entrenamiento de la partición
+                # Cada partición parte de los mismos parámetros globales
                 self.set_parameters(global_params)
 
-                # Entrenar en esta partición
                 loss, accuracy = self.train_on_batch(
                     X_part, Y_part, learning_rate, verbose=False
                 )
 
-                # Guarda parámetros resultantes
                 partition_parameters.append(self.get_parameters())
                 partition_metrics.append(
                     {"partition": partition_idx + 1, "loss": loss, "accuracy": accuracy}
@@ -458,11 +465,9 @@ class DiegoNeuronalNetwork:
                 print(f"\n  Promediando parámetros de {num_partitions} particiones...")
 
             averaged_params = average_network_parameters(partition_parameters)
-
-            # Establece parámetros promediados como nuevos parámetros globales
             self.set_parameters(averaged_params)
 
-            # Evalua en todas las particiones combinadas para métricas globales
+            # Evalúa el modelo promediado sobre todos los datos combinados
             all_X = []
             all_Y = []
             for X_part, Y_part in partitions:
@@ -471,19 +476,32 @@ class DiegoNeuronalNetwork:
 
             global_accuracy, global_loss = self.evaluate(all_X, all_Y)
 
-            # Guarda métricas de la época
-            epoch_info = {
-                "epoch": epoch + 1,
-                "global_loss": global_loss,
-                "global_accuracy": global_accuracy,
-                "partition_metrics": partition_metrics,
-            }
-            history.append(epoch_info)
+            # Acumula métricas en el formato esperado por Analytics
+            accuracies.append(global_accuracy)
+            losses.append(global_loss)
+            partition_accuracies.append(
+                [m["accuracy"] for m in partition_metrics]
+            )
+            epochs_detail.append(
+                {
+                    "epoch": epoch + 1,
+                    "global_loss": global_loss,
+                    "global_accuracy": global_accuracy,
+                    "partition_metrics": partition_metrics,
+                }
+            )
 
             if verbose:
                 print(f"\n  Resultado global Época {epoch + 1}:")
                 print(f"    Loss: {global_loss:.4f}, Accuracy: {global_accuracy:.2f}%")
                 print("-" * 50)
+
+        history: Dict[str, Any] = {
+            "accuracies": accuracies,
+            "losses": losses,
+            "partition_accuracies": partition_accuracies,
+            "epochs_detail": epochs_detail,
+        }
 
         self.training_history = history
 
@@ -494,66 +512,67 @@ class DiegoNeuronalNetwork:
 
         return history
 
+
 # ================
 # DEMOSTRACIÓN
 # ================
+
 
 def demo_federated_learning():
     """
     Demostración completa del entrenamiento federado con MNIST.
     """
-    
+
     print("\n" + "=" * 70)
     print("DEMO: RED NEURONAL CON FEDERATED LEARNING EN MNIST")
     print("=" * 70)
-    
+
     # 1. Cargar datos
     print("\n1. Cargando datos MNIST...")
     X_train, Y_train = load_mnist_train(n_train=10000, verbose=False)
     X_test, Y_test = load_mnist_test(verbose=False)
     print(f"   Entrenamiento: {len(X_train)} ejemplos")
     print(f"   Prueba: {len(X_test)} ejemplos")
-    
+
     # 2. Crear particiones estratificadas
     num_partitions = 2
     print(f"\n2. Creando {num_partitions} particiones estratificadas...")
-    
+
     partitions = partition_mnist_data_simple(
         num_partitions=num_partitions,
         X_train=X_train,
         Y_train=Y_train,
         random_seed=42,
-        verbose=False
+        verbose=False,
     )
-    
+
     for i, (X_part, Y_part) in enumerate(partitions):
         print(f"   Partición {i + 1}: {len(X_part)} ejemplos")
-    
+
     # 3. Crear red neuronal
     print("\n3. Creando red neuronal...")
     network = DiegoNeuronalNetwork(
-        input_size=784,
-        hidden_size=30,
-        output_size=10,
-        random_seed=42
+        input_size=784, hidden_size=30, output_size=10, random_seed=42
     )
     print(f"   Arquitectura: 784 → 30 → 10")
-    
+
     # 4. Entrenamiento federado
     print("\n4. Iniciando entrenamiento federado...")
     history = network.train_federated(
-        partitions=partitions,
-        epochs=10,
-        learning_rate=0.5,
-        verbose=True
+        partitions=partitions, epochs=10, learning_rate=0.5, verbose=True
     )
-    
+
+    # Muestra evolución de precisión usando el nuevo formato
+    print("\n   Evolución de precisión por época:")
+    for epoch, (acc, loss) in enumerate(zip(history["accuracies"], history["losses"])):
+        print(f"   Época {epoch + 1:2d}: {acc:.2f}%  loss={loss:.4f}")
+
     # 5. Evaluar en conjunto de prueba
     print("\n5. Evaluando en conjunto de prueba...")
     test_accuracy, test_loss = network.evaluate(X_test, Y_test)
     print(f"   Precisión en test: {test_accuracy:.2f}%")
     print(f"   Pérdida en test: {test_loss:.4f}")
-    
+
     # 6. Mostrar algunas predicciones
     print("\n6. Ejemplos de predicciones:")
     for i in range(5):
@@ -561,11 +580,11 @@ def demo_federated_learning():
         real = Y_test[i]
         status = "✓" if pred == real else "✗"
         print(f"   Imagen {i + 1}: Predicción={pred}, Real={real} {status}")
-    
+
     print("\n" + "=" * 70)
     print("DEMO COMPLETADA")
     print("=" * 70)
-    
+
     return network, history
 
 
