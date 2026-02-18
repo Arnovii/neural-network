@@ -357,18 +357,20 @@ def initialize_gradient_accumulators(parameters: Dict[str, Any]) -> Dict[str, An
     accumulators = {}
 
     for key, value in parameters.items():
+        grad_key = f"d{key}"
+
         if isinstance(value, list):
             if len(value) > 0 and isinstance(value[0], list):
                 # Matriz
                 rows = len(value)
                 cols = len(value[0])
-                accumulators[key] = matrix_zeros(rows, cols)
+                accumulators[grad_key] = matrix_zeros(rows, cols)
             else:
                 # Vector
-                accumulators[key] = vector_zeros(len(value))
+                accumulators[grad_key] = vector_zeros(len(value))
         else:
             # Escalar
-            accumulators[key] = 0.0
+            accumulators[grad_key] = 0.0
 
     return accumulators
 
@@ -523,11 +525,8 @@ def accumulate_gradients(
     :return: Diccionario con gradientes acumulados actualizados
     :rtype: Dict[str, Any]
     """
-    result = {}
-
-    for key in acc_gradients:
-        if key not in new_gradients:
-            result[key] = acc_gradients[key]
+    for key in new_gradients:
+        if key not in acc_gradients:
             continue
 
         acc_val = acc_gradients[key]
@@ -536,15 +535,15 @@ def accumulate_gradients(
         if isinstance(acc_val, list):
             if len(acc_val) > 0 and isinstance(acc_val[0], list):
                 # Matriz
-                result[key] = matrix_add(acc_val, new_val)
+                acc_gradients[key] = matrix_add(acc_val, new_val)
             else:
                 # Vector
-                result[key] = vector_add(acc_val, new_val)
+                acc_gradients[key] = vector_add(acc_val, new_val)
         else:
             # Escalar
-            result[key] = acc_val + new_val
+            acc_gradients[key] += new_val
 
-    return result
+    return acc_gradients
 
 
 def scale_gradients(gradients: Dict[str, Any], scale: float) -> Dict[str, Any]:
@@ -562,21 +561,19 @@ def scale_gradients(gradients: Dict[str, Any], scale: float) -> Dict[str, Any]:
     :return: Diccionario con gradientes escalados
     :rtype: Dict[str, Any]
     """
-    result = {}
-
     for key, value in gradients.items():
         if isinstance(value, list):
             if len(value) > 0 and isinstance(value[0], list):
                 # Matriz
-                result[key] = matrix_scale(value, scale)
+                gradients[key] = matrix_scale(value, scale)
             else:
                 # Vector
-                result[key] = vector_scale(value, scale)
+                gradients[key] = vector_scale(value, scale)
         else:
             # Escalar
-            result[key] = value * scale
+            gradients[key] *= scale
 
-    return result
+    return gradients
 
 
 # =======================

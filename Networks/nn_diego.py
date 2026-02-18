@@ -95,10 +95,10 @@ class DiegoNeuronalNetwork:
             random.seed(random_seed)
 
         # Inicialización de parámetros
-        self.W1 = xavier_initialization(hidden_size, input_size)
+        self.W1 = xavier_initialization(input_size, hidden_size)
         self.b1 = vector_zeros(hidden_size)
 
-        self.W2 = xavier_initialization(output_size, hidden_size)
+        self.W2 = xavier_initialization(hidden_size, output_size)
         self.b2 = vector_zeros(output_size)
 
         # Historial de entrenamiento
@@ -248,9 +248,10 @@ class DiegoNeuronalNetwork:
         # Inicializa acumuladores de gradientes
         accumulators = initialize_gradient_accumulators(
             {
-                "input_size": self.input_size,
-                "hidden_size": self.hidden_size,
-                "output_size": self.output_size,
+                "W1": self.W1,
+                "b1": self.b1,
+                "W2": self.W2,
+                "b2": self.b2,
             }
         )
         correct_predictions = 0
@@ -542,8 +543,8 @@ def demo_federated_learning():
     print("\n4. Iniciando entrenamiento federado...")
     history = network.train_federated(
         partitions=partitions,
-        epochs=5,
-        learning_rate=1.0,
+        epochs=10,
+        learning_rate=0.5,
         verbose=True
     )
     
