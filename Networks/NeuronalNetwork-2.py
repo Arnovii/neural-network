@@ -120,7 +120,7 @@ def descargar_mnist():
                 urllib.request.urlretrieve(url, archivo)
                 print(f"✓ {archivo} descargado desde AWS")
             except Exception as e:
-                print(f"  Error en AWS, intentando GitHub...")
+                print("  Error en AWS, intentando GitHub...")
                 try:
                     urllib.request.urlretrieve(urls_fallback[archivo], archivo)
                     print(f"✓ {archivo} descargado desde GitHub")
@@ -337,7 +337,7 @@ def main():
     print("  Cargando etiquetas de prueba...")
     Y_test = cargar_etiquetas("t10k-labels-idx1-ubyte.gz")
 
-    print(f"\n  Datos cargados exitosamente:")
+    print("\n  Datos cargados exitosamente:")
     print(f"  - Entrenamiento: {len(X_train)} imágenes")
     print(f"  - Prueba: {len(X_test)} imágenes")
     print(f"  - Tamaño imagen: {len(X_train[0])} píxeles (28×28)")

@@ -9,7 +9,7 @@ import json
 import random
 import time
 from datetime import datetime
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any
 
 import sys
 import os
@@ -62,7 +62,7 @@ def run_single_experiment(
 
     # Carga datos
     if verbose:
-        print(f"\n[Cargando datos...]")
+        print("\n[Cargando datos...]")
     X_train, Y_train = load_mnist_train(
         n_train=n_train, download_if_missing=True, verbose=False
     )
@@ -100,7 +100,7 @@ def run_single_experiment(
 
     # Evalua en conjunto de prueba
     if verbose:
-        print(f"\n[Evaluando en conjunto de prueba...]")
+        print("\n[Evaluando en conjunto de prueba...]")
     X_test, Y_test = load_mnist_test(verbose=False)
     test_accuracy, test_loss = network.evaluate(X_test[:1000], Y_test[:1000])
 
@@ -159,7 +159,7 @@ def run_multiple_experiments(
         print("=" * 70)
         print(f"EJECUTANDO {num_experiments} EXPERIMENTOS")
         print("=" * 70)
-        print(f"Configuración:")
+        print("Configuración:")
         print(f"  Particiones: {num_partitions}")
         print(f"  Épocas: {num_epochs}")
         print(f"  Neuronas ocultas: {hidden_neurons}")

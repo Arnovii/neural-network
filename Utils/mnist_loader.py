@@ -86,14 +86,14 @@ def descargar_mnist(data_dir: str | None = None, verbose: bool = True) -> str:
                 urllib.request.urlretrieve(url, filepath)
                 if verbose:
                     print(f"  ✓ {archivo} descargado desde AWS")
-            except Exception as e:
+            except Exception:
                 if verbose:
-                    print(f"  Error en AWS, intentando GitHub...")
+                    print("  Error en AWS, intentando GitHub...")
                 try:
                     urllib.request.urlretrieve(MNIST_URLS_FALLBACK[archivo], filepath)
                     if verbose:
                         print(f"  ✓ {archivo} descargado desde GitHub")
-                except Exception as e2:
+                except Exception:
                     if verbose:
                         print(f"  ERROR: No se pudo descargar {archivo}")
                     raise Exception(f"No se pudieron descargar los datos: {archivo}")

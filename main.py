@@ -16,8 +16,8 @@ import os
 # Asegura que los módulos locales se puedan importar
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from Analytics.experiment_runner import run_multiple_experiments, compare_configurations
-from Analytics.statistics_engine import compute_epoch_statistics, aggregate_experiments
+from Analytics.experiment_runner import run_multiple_experiments
+from Analytics.statistics_engine import compute_epoch_statistics
 from Analytics.chart_generator import (
     prepare_accuracy_chart_data,
     prepare_partition_comparison_data,
@@ -29,6 +29,7 @@ from Analytics.chart_generator import (
 # ================
 # MODO TÉRMINAL
 # ================
+
 
 def run_terminal_mode(args):
     """Ejecuta en modo terminal sin interfaz gráfica."""
@@ -77,9 +78,11 @@ def run_terminal_mode(args):
         bar = "█" * bar_length
         print(f"Época {epoch + 1:2d}: {mean:5.2f}% ± {std:4.2f}% {bar}")
 
+
 # ====================
 # MODO INTERACTIVO
 # ====================
+
 
 def run_interactive_mode():
     """Ejecuta la interfaz gráfica interactiva."""
@@ -102,8 +105,16 @@ def run_interactive_mode():
             # Datos de ejecuciones previas para comparación
             self.previous_results = []
             self.colors = [
-                "#2196F3", "#4CAF50", "#FF9800", "#9C27B0", "#F44336",
-                "#00BCD4", "#FFEB3B", "#795548", "#607D8B", "#E91E63",
+                "#2196F3",
+                "#4CAF50",
+                "#FF9800",
+                "#9C27B0",
+                "#F44336",
+                "#00BCD4",
+                "#FFEB3B",
+                "#795548",
+                "#607D8B",
+                "#E91E63",
             ]
             self.color_index = 0
 
@@ -122,8 +133,12 @@ def run_interactive_mode():
             ttk.Label(control_frame, text="Particiones:").pack(anchor=tk.W)
             self.partitions_var = tk.IntVar(value=2)
             ttk.Scale(
-                control_frame, from_=1, to=10, orient=tk.HORIZONTAL,
-                variable=self.partitions_var, length=200,
+                control_frame,
+                from_=1,
+                to=10,
+                orient=tk.HORIZONTAL,
+                variable=self.partitions_var,
+                length=200,
             ).pack(fill=tk.X, pady=5)
             ttk.Label(control_frame, textvariable=self.partitions_var).pack()
 
@@ -131,59 +146,85 @@ def run_interactive_mode():
             ttk.Label(control_frame, text="Épocas:").pack(anchor=tk.W, pady=(10, 0))
             self.epochs_var = tk.IntVar(value=5)
             ttk.Scale(
-                control_frame, from_=1, to=50, orient=tk.HORIZONTAL,
-                variable=self.epochs_var, length=200,
+                control_frame,
+                from_=1,
+                to=50,
+                orient=tk.HORIZONTAL,
+                variable=self.epochs_var,
+                length=200,
             ).pack(fill=tk.X, pady=5)
             ttk.Label(control_frame, textvariable=self.epochs_var).pack()
 
             # Número de experimentos
-            ttk.Label(control_frame, text="Experimentos:").pack(anchor=tk.W, pady=(10, 0))
+            ttk.Label(control_frame, text="Experimentos:").pack(
+                anchor=tk.W, pady=(10, 0)
+            )
             self.experiments_var = tk.IntVar(value=5)
             ttk.Scale(
-                control_frame, from_=1, to=20, orient=tk.HORIZONTAL,
-                variable=self.experiments_var, length=200,
+                control_frame,
+                from_=1,
+                to=20,
+                orient=tk.HORIZONTAL,
+                variable=self.experiments_var,
+                length=200,
             ).pack(fill=tk.X, pady=5)
             ttk.Label(control_frame, textvariable=self.experiments_var).pack()
 
             # Neuronas ocultas
-            ttk.Label(control_frame, text="Neuronas ocultas:").pack(anchor=tk.W, pady=(10, 0))
+            ttk.Label(control_frame, text="Neuronas ocultas:").pack(
+                anchor=tk.W, pady=(10, 0)
+            )
             self.hidden_var = tk.IntVar(value=30)
             ttk.Scale(
-                control_frame, from_=10, to=100, orient=tk.HORIZONTAL,
-                variable=self.hidden_var, length=200,
+                control_frame,
+                from_=10,
+                to=100,
+                orient=tk.HORIZONTAL,
+                variable=self.hidden_var,
+                length=200,
             ).pack(fill=tk.X, pady=5)
             ttk.Label(control_frame, textvariable=self.hidden_var).pack()
 
             # Tasa de aprendizaje
-            ttk.Label(control_frame, text="Tasa de aprendizaje:").pack(anchor=tk.W, pady=(10, 0))
+            ttk.Label(control_frame, text="Tasa de aprendizaje:").pack(
+                anchor=tk.W, pady=(10, 0)
+            )
             self.lr_var = tk.StringVar(value="1.0")
             ttk.Entry(control_frame, textvariable=self.lr_var, width=20).pack(pady=5)
 
             # Ejemplos de entrenamiento
-            ttk.Label(control_frame, text="Ejemplos de entrenamiento:").pack(anchor=tk.W, pady=(10, 0))
+            ttk.Label(control_frame, text="Ejemplos de entrenamiento:").pack(
+                anchor=tk.W, pady=(10, 0)
+            )
             self.n_train_var = tk.StringVar(value="5000")
-            ttk.Entry(control_frame, textvariable=self.n_train_var, width=20).pack(pady=5)
+            ttk.Entry(control_frame, textvariable=self.n_train_var, width=20).pack(
+                pady=5
+            )
 
             # Botones
             ttk.Separator(control_frame, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=20)
 
             ttk.Button(
-                control_frame, text="▶ Ejecutar Experimento",
+                control_frame,
+                text="▶ Ejecutar Experimento",
                 command=self._run_experiment,
             ).pack(fill=tk.X, pady=5)
 
             ttk.Button(
-                control_frame, text="📊 Comparar Configuraciones",
+                control_frame,
+                text="📊 Comparar Configuraciones",
                 command=self._compare_configurations,
             ).pack(fill=tk.X, pady=5)
 
             ttk.Button(
-                control_frame, text="🗑 Limpiar Gráficos",
+                control_frame,
+                text="🗑 Limpiar Gráficos",
                 command=self._clear_plots,
             ).pack(fill=tk.X, pady=5)
 
             ttk.Button(
-                control_frame, text="💾 Guardar Resultados",
+                control_frame,
+                text="💾 Guardar Resultados",
                 command=self._save_results,
             ).pack(fill=tk.X, pady=5)
 
@@ -203,8 +244,10 @@ def run_interactive_mode():
             # Barra de estado
             self.status_var = tk.StringVar(value="Listo")
             ttk.Label(
-                self.root, textvariable=self.status_var,
-                relief=tk.SUNKEN, anchor=tk.W,
+                self.root,
+                textvariable=self.status_var,
+                relief=tk.SUNKEN,
+                anchor=tk.W,
             ).pack(side=tk.BOTTOM, fill=tk.X)
 
         # ==================
@@ -239,7 +282,9 @@ def run_interactive_mode():
                 )
 
             except Exception as e:
-                messagebox.showerror("Error", f"Error ejecutando experimento:\n{str(e)}")
+                messagebox.showerror(
+                    "Error", f"Error ejecutando experimento:\n{str(e)}"
+                )
                 self.status_var.set("Error en ejecución")
 
         def _compare_configurations(self):
@@ -249,11 +294,13 @@ def run_interactive_mode():
                 return
 
             # Guarda configuración actual antes de ejecutar la nueva
-            self.previous_results.append({
-                "results": self.current_results,
-                "params": self.current_params,
-                "color": self.colors[self.color_index % len(self.colors)],
-            })
+            self.previous_results.append(
+                {
+                    "results": self.current_results,
+                    "params": self.current_params,
+                    "color": self.colors[self.color_index % len(self.colors)],
+                }
+            )
             self.color_index += 1
 
             self._run_experiment()
@@ -285,8 +332,12 @@ def run_interactive_mode():
                         "parameters": self.current_params,
                         "results": {
                             "timestamp": self.current_results["timestamp"],
-                            "final_mean_accuracy": self.current_results["final_mean_accuracy"],
-                            "final_std_accuracy": self.current_results["final_std_accuracy"],
+                            "final_mean_accuracy": self.current_results[
+                                "final_mean_accuracy"
+                            ],
+                            "final_std_accuracy": self.current_results[
+                                "final_std_accuracy"
+                            ],
                             "all_histories": self.current_results["all_histories"],
                         },
                     },
@@ -320,11 +371,20 @@ def run_interactive_mode():
 
             # --- Panel 1: Evolución del promedio con banda de desviación estándar ---
             acc_data = prepare_accuracy_chart_data(histories)
-            ax1.plot(acc_data["x"], acc_data["y_mean"], "o-", color=color,
-                     linewidth=2, label=label)
+            ax1.plot(
+                acc_data["x"],
+                acc_data["y_mean"],
+                "o-",
+                color=color,
+                linewidth=2,
+                label=label,
+            )
             ax1.fill_between(
-                acc_data["x"], acc_data["y_lower"], acc_data["y_upper"],
-                alpha=0.2, color=color,
+                acc_data["x"],
+                acc_data["y_lower"],
+                acc_data["y_upper"],
+                alpha=0.2,
+                color=color,
             )
             ax1.set_xlabel(acc_data["xlabel"])
             ax1.set_ylabel(acc_data["ylabel"])
@@ -339,8 +399,11 @@ def run_interactive_mode():
             if part_data:
                 for partition in part_data["partitions"]:
                     ax2.plot(
-                        partition["x"], partition["y"], "o-",
-                        label=f"Partición {partition['id']}", alpha=0.7,
+                        partition["x"],
+                        partition["y"],
+                        "o-",
+                        label=f"Partición {partition['id']}",
+                        alpha=0.7,
                     )
             ax2.set_xlabel(part_data.get("xlabel", "Época"))
             ax2.set_ylabel(part_data.get("ylabel", "Precisión (%)"))
@@ -355,12 +418,20 @@ def run_interactive_mode():
                 for i in range(len(dist_data["bins"]) - 1)
             ]
             ax3.bar(
-                bin_centers, dist_data["counts"],
+                bin_centers,
+                dist_data["counts"],
                 width=(dist_data["bins"][1] - dist_data["bins"][0]) * 0.9,
-                color=color, alpha=0.7, edgecolor="black",
+                color=color,
+                alpha=0.7,
+                edgecolor="black",
             )
-            ax3.axvline(dist_data["mean"], color="red", linestyle="--",
-                        linewidth=2, label="Promedio")
+            ax3.axvline(
+                dist_data["mean"],
+                color="red",
+                linestyle="--",
+                linewidth=2,
+                label="Promedio",
+            )
             ax3.set_xlabel(dist_data["xlabel"])
             ax3.set_ylabel(dist_data["ylabel"])
             ax3.set_title(dist_data["title"])
@@ -413,8 +484,12 @@ def run_interactive_mode():
                 linestyle = "--" if i == len(comp_data["configurations"]) - 1 else "-"
                 linewidth = 3 if linestyle == "--" else 2
                 ax1.plot(
-                    config["x"], config["y"], "o-", color=color,
-                    linewidth=linewidth, linestyle=linestyle,
+                    config["x"],
+                    config["y"],
+                    "o-",
+                    color=color,
+                    linewidth=linewidth,
+                    linestyle=linestyle,
                     label=f"{config['label']} ({config['final_accuracy']:.1f}%)",
                 )
 
@@ -438,31 +513,50 @@ def main():
     )
 
     parser.add_argument(
-        "--interactive", "-i", action="store_true",
+        "--interactive",
+        "-i",
+        action="store_true",
         help="Ejecutar en modo interactivo con interfaz gráfica",
     )
     parser.add_argument(
-        "--partitions", "-p", type=int, default=2,
+        "--partitions",
+        "-p",
+        type=int,
+        default=2,
         help="Número de particiones (default: 2)",
     )
     parser.add_argument(
-        "--epochs", "-e", type=int, default=5,
+        "--epochs",
+        "-e",
+        type=int,
+        default=5,
         help="Número de épocas (default: 5)",
     )
     parser.add_argument(
-        "--experiments", "-x", type=int, default=5,
+        "--experiments",
+        "-x",
+        type=int,
+        default=5,
         help="Número de experimentos a ejecutar (default: 5)",
     )
     parser.add_argument(
-        "--hidden-neurons", "-n", type=int, default=30,
+        "--hidden-neurons",
+        "-n",
+        type=int,
+        default=30,
         help="Número de neuronas en capa oculta (default: 30)",
     )
     parser.add_argument(
-        "--learning-rate", "-l", type=float, default=1.0,
+        "--learning-rate",
+        "-l",
+        type=float,
+        default=1.0,
         help="Tasa de aprendizaje (default: 1.0)",
     )
     parser.add_argument(
-        "--n-train", type=int, default=5000,
+        "--n-train",
+        type=int,
+        default=5000,
         help="Número de ejemplos de entrenamiento (default: 5000)",
     )
 

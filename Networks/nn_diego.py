@@ -479,9 +479,7 @@ class DiegoNeuronalNetwork:
             # Acumula métricas en el formato esperado por Analytics
             accuracies.append(global_accuracy)
             losses.append(global_loss)
-            partition_accuracies.append(
-                [m["accuracy"] for m in partition_metrics]
-            )
+            partition_accuracies.append([m["accuracy"] for m in partition_metrics])
             epochs_detail.append(
                 {
                     "epoch": epoch + 1,
@@ -554,7 +552,7 @@ def demo_federated_learning():
     network = DiegoNeuronalNetwork(
         input_size=784, hidden_size=30, output_size=10, random_seed=42
     )
-    print(f"   Arquitectura: 784 → 30 → 10")
+    print("   Arquitectura: 784 → 30 → 10")
 
     # 4. Entrenamiento federado
     print("\n4. Iniciando entrenamiento federado...")

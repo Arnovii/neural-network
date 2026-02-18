@@ -5,7 +5,7 @@ separando la lógica matemática de la presentación visual.
 
 import os
 import sys
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 

@@ -145,7 +145,7 @@ def partition_mnist_data(
             print(
                 f"\n  Partición {i + 1}: {len(X_partition)} ejemplos ({100.0 * len(X_partition) / len(X_train):.1f}%)"
             )
-            print(f"    Distribución por clase: ", end="")
+            print("    Distribución por clase: ", end="")
             for digit in range(10):
                 print(f"{digit}:{class_counts[digit]} ", end="")
             print()
@@ -288,7 +288,7 @@ def print_partition_summary(partitions: List[Tuple[List[List[float]], List[int]]
         print(f"\n--- Partición {i + 1} ---")
         print(f"  Ejemplos: {len(X)}")
         print(f"  Porcentaje del total: {100.0 * len(X) / total_examples:.1f}%")
-        print(f"  Distribución de clases:")
+        print("  Distribución de clases:")
         for digit in range(10):
             count = class_counts[digit]
             percentage = 100.0 * count / len(X) if X else 0
