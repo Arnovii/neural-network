@@ -29,6 +29,11 @@ Modo Términal
 # Ejecutar 10 experimentos con 2 particiones y 5 épocas
 python main.py --partitions 2 --epochs 5 --experiments 10
 
+# Ejemplos de uso
+python main.py --partitions 2 --epochs 5 --experiments 10
+python main.py -p 2 -e 5 -x 10
+python main.py --partitions 3 --epochs 10 --experiments 5 --hidden-neurons 50 --learning-rate 0.5 --n-train 8000
+
 # Ver todas las opciones
 python main.py --help
 ```
