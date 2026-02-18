@@ -9,9 +9,10 @@ y genera visualizaciones estadísticas.
 # IMPORTACIONES
 # ================
 
-import argparse
 import sys
 import os
+import argparse
+import json
 
 # Asegura que los módulos locales se puedan importar
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -121,6 +122,11 @@ def run_interactive_mode():
             self._create_ui()
 
         def _create_ui(self):
+
+            # Función helper para redonder valores
+            def snap_int(var):
+                return lambda v: var.set(int(round(float(v))))
+            
             # Panel izquierdo: Controles
             control_frame = ttk.Frame(self.root, padding="10")
             control_frame.pack(side=tk.LEFT, fill=tk.Y, padx=5, pady=5)
@@ -139,6 +145,7 @@ def run_interactive_mode():
                 orient=tk.HORIZONTAL,
                 variable=self.partitions_var,
                 length=200,
+                command=snap_int(self.partitions_var)
             ).pack(fill=tk.X, pady=5)
             ttk.Label(control_frame, textvariable=self.partitions_var).pack()
 
@@ -152,6 +159,7 @@ def run_interactive_mode():
                 orient=tk.HORIZONTAL,
                 variable=self.epochs_var,
                 length=200,
+                command=snap_int(self.epochs_var)
             ).pack(fill=tk.X, pady=5)
             ttk.Label(control_frame, textvariable=self.epochs_var).pack()
 
@@ -167,6 +175,7 @@ def run_interactive_mode():
                 orient=tk.HORIZONTAL,
                 variable=self.experiments_var,
                 length=200,
+                command=snap_int(self.experiments_var)
             ).pack(fill=tk.X, pady=5)
             ttk.Label(control_frame, textvariable=self.experiments_var).pack()
 
@@ -182,6 +191,7 @@ def run_interactive_mode():
                 orient=tk.HORIZONTAL,
                 variable=self.hidden_var,
                 length=200,
+                command=snap_int(self.hidden_var)
             ).pack(fill=tk.X, pady=5)
             ttk.Label(control_frame, textvariable=self.hidden_var).pack()
 
@@ -320,8 +330,6 @@ def run_interactive_mode():
             if not hasattr(self, "current_results"):
                 messagebox.showwarning("Advertencia", "No hay resultados para guardar")
                 return
-
-            import json
 
             filename = f"results/experiment_{self.current_results['timestamp']}.json"
             os.makedirs("results", exist_ok=True)
