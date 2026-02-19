@@ -1,13 +1,12 @@
 """
-Este módulo proporciona funciones para descargar y cargar el dataset MNIST
-de manera centralizadas.
+Descarga y carga del dataset MNIST.
 
-Los datos se almacenan en el directorio 'Data/' relativo a la ubicación
-de este archivo.
+Los archivos se almacenan en el directorio Data/ relativo a la raíz del proyecto.
+Las imágenes se devuelven normalizadas al rango [0, 1].
 """
 
-import os
 import gzip
+import os
 import random
 import struct
 import urllib.request
@@ -21,20 +20,17 @@ from typing import List, Tuple
 
 def get_data_directory() -> str:
     """
-    Obtiene la ruta absoluta al directorio de datos.
-    El directorio de datos está ubicado en 'Data/' relativo al directorio
-    padre de Utils/ (es decir, al directorio raíz del proyecto).
+    Devuelve la ruta absoluta al directorio Data/ del proyecto.
 
-    :return: Ruta absoluta al directorio Data/
+    El directorio se crea automáticamente si no existe.
+
+    :return: Ruta absoluta al directorio de datos
+    :rtype: str
     """
-    # Directorio donde está este archivo (Utils/)
     utils_dir = os.path.dirname(os.path.abspath(__file__))
-    # Directorio padre (raíz del proyecto)
     project_root = os.path.dirname(utils_dir)
-    # Directorio de datos
     data_dir = os.path.join(project_root, "Data")
 
-    # Crea directorio Data\ si no existe
     if not os.path.exists(data_dir):
         os.makedirs(data_dir)
         print(f"Creado directorio de datos: {data_dir}")
@@ -46,14 +42,14 @@ def get_data_directory() -> str:
 # DESCARGA DE DATOS
 # ==================
 
-MNIST_URLS = {
+_MNIST_URLS = {
     "train-images-idx3-ubyte.gz": "https://ossci-datasets.s3.amazonaws.com/mnist/train-images-idx3-ubyte.gz",
     "train-labels-idx1-ubyte.gz": "https://ossci-datasets.s3.amazonaws.com/mnist/train-labels-idx1-ubyte.gz",
     "t10k-images-idx3-ubyte.gz": "https://ossci-datasets.s3.amazonaws.com/mnist/t10k-images-idx3-ubyte.gz",
     "t10k-labels-idx1-ubyte.gz": "https://ossci-datasets.s3.amazonaws.com/mnist/t10k-labels-idx1-ubyte.gz",
 }
 
-MNIST_URLS_FALLBACK = {
+_MNIST_URLS_FALLBACK = {
     "train-images-idx3-ubyte.gz": "https://raw.githubusercontent.com/fgnt/mnist/master/train-images-idx3-ubyte.gz",
     "train-labels-idx1-ubyte.gz": "https://raw.githubusercontent.com/fgnt/mnist/master/train-labels-idx1-ubyte.gz",
     "t10k-images-idx3-ubyte.gz": "https://raw.githubusercontent.com/fgnt/mnist/master/t10k-images-idx3-ubyte.gz",
@@ -61,124 +57,102 @@ MNIST_URLS_FALLBACK = {
 }
 
 
-def descargar_mnist(data_dir: str | None = None, verbose: bool = True) -> str:
+def _descargar_mnist(data_dir: str, verbose: bool) -> None:
     """
-    Descarga MNIST desde mirrors alternativos confiables.
-    Fuentes: AWS Open Data (mirror oficial) o GitHub (fallback)
+    Descarga los cuatro archivos MNIST al directorio indicado.
 
-    :param data_dir: Directorio donde descargar los archivos. Si es None, se usa el directorio Data/ por defecto.
-    :type data_dir: Optional[str]
-    :param verbose: Si True, muestra mensajes de progreso.
+    Intenta primero el mirror de AWS; si falla, usa GitHub como respaldo.
+
+    :param data_dir: Directorio de destino
+    :type data_dir: str
+
+    :param verbose: Si True, muestra mensajes de progreso
     :type verbose: bool
-    :return: Ruta al directorio donde se descargaron los archivos.
-    :rtype: str
+
+    :raises Exception: Si ningún mirror responde correctamente
     """
-    if data_dir is None:
-        data_dir = get_data_directory()
-
-    for archivo, url in MNIST_URLS.items():
+    for archivo, url in _MNIST_URLS.items():
         filepath = os.path.join(data_dir, archivo)
-
-        if not os.path.exists(filepath):
-            if verbose:
-                print(f"Descargando {archivo}...")
-            try:
-                urllib.request.urlretrieve(url, filepath)
-                if verbose:
-                    print(f"  ✓ {archivo} descargado desde AWS")
-            except Exception:
-                if verbose:
-                    print("  Error en AWS, intentando GitHub...")
-                try:
-                    urllib.request.urlretrieve(MNIST_URLS_FALLBACK[archivo], filepath)
-                    if verbose:
-                        print(f"  ✓ {archivo} descargado desde GitHub")
-                except Exception:
-                    if verbose:
-                        print(f"  ERROR: No se pudo descargar {archivo}")
-                    raise Exception(f"No se pudieron descargar los datos: {archivo}")
-        else:
+        if os.path.exists(filepath):
             if verbose:
                 print(f"  ✓ {archivo} ya existe")
+            continue
 
-    return data_dir
+        if verbose:
+            print(f"  Descargando {archivo}...")
+        try:
+            urllib.request.urlretrieve(url, filepath)
+            if verbose:
+                print(f"  ✓ {archivo} descargado desde AWS")
+        except Exception:
+            if verbose:
+                print("  Reintentando desde GitHub...")
+            try:
+                urllib.request.urlretrieve(_MNIST_URLS_FALLBACK[archivo], filepath)
+                if verbose:
+                    print(f"  ✓ {archivo} descargado desde GitHub")
+            except Exception:
+                raise Exception(f"No se pudo descargar {archivo} desde ningún mirror")
 
 
-# ===============================
+# ================================
 # CARGA DE IMÁGENES Y ETIQUETAS
-# ===============================
+# ================================
 
 
-def cargar_imagenes(archivo_gz: str, verbose: bool = False) -> List[List[float]]:
+def _cargar_imagenes(archivo_gz: str) -> List[List[float]]:
     """
-    Carga imágenes de MNIST desde archivo .gz (formato IDX).
+    Carga imágenes desde un archivo MNIST en formato IDX comprimido.
 
-    :param archivo_gz: Ruta al archivo .gz con las imágenes.
+    :param archivo_gz: Ruta al archivo .gz
     :type archivo_gz: str
-    :param verbose: Si True, muestra información de carga.
-    :type verbose: bool
-    :return: Lista de imágenes, donde cada imagen es una lista de 784 floats normalizados en el rango [0, 1].
-    :rtype: List[List[float]]
-    """
-    if verbose:
-        print(f"  Cargando imágenes desde: {archivo_gz}")
 
+    :return: Lista de imágenes; cada imagen es una lista de 784 floats en [0, 1]
+    :rtype: List[List[float]]
+
+    :raises ValueError: Si el archivo no tiene el magic number correcto
+    """
     with gzip.open(archivo_gz, "rb") as f:
         magic, num, filas, cols = struct.unpack(">IIII", f.read(16))
         if magic != 2051:
             raise ValueError(
                 f"Magic number incorrecto: esperado 2051, obtenido {magic}"
             )
-
         buffer = f.read()
-        imagenes = []
-
-        for i in range(num):
-            inicio = i * filas * cols
-            fin = inicio + filas * cols
-            img = [b / 255.0 for b in buffer[inicio:fin]]
-            imagenes.append(img)
-
-        if verbose:
-            print(f"  ✓ Cargadas {num} imágenes ({filas}x{cols})")
-
-        return imagenes
+        pixeles_por_imagen = filas * cols
+        return [
+            [
+                b / 255.0
+                for b in buffer[i * pixeles_por_imagen : (i + 1) * pixeles_por_imagen]
+            ]
+            for i in range(num)
+        ]
 
 
-def cargar_etiquetas(archivo_gz: str, verbose: bool = False) -> List[int]:
+def _cargar_etiquetas(archivo_gz: str) -> List[int]:
     """
-    Carga etiquetas de MNIST desde archivo .gz (formato IDX).
+    Carga etiquetas desde un archivo MNIST en formato IDX comprimido.
 
-    :param archivo_gz: Ruta al archivo .gz con las etiquetas.
+    :param archivo_gz: Ruta al archivo .gz
     :type archivo_gz: str
-    :param verbose: Si True, muestra información de carga.
-    :type verbose: bool
-    :return: Lista de etiquetas (enteros 0-9).
+
+    :return: Lista de enteros en el rango [0, 9]
     :rtype: List[int]
 
+    :raises ValueError: Si el archivo no tiene el magic number correcto
     """
-    if verbose:
-        print(f"  Cargando etiquetas desde: {archivo_gz}")
-
     with gzip.open(archivo_gz, "rb") as f:
-        magic, num = struct.unpack(">II", f.read(8))
+        magic, _ = struct.unpack(">II", f.read(8))
         if magic != 2049:
             raise ValueError(
                 f"Magic number incorrecto: esperado 2049, obtenido {magic}"
             )
-
-        buffer = f.read()
-        etiquetas = [b for b in buffer]
-
-        if verbose:
-            print(f"  ✓ Cargadas {num} etiquetas")
-
-        return etiquetas
+        return list(f.read())
 
 
 # ========================
-# FUNCIONES DE ALTO NIVEL
-# =========================
+# FUNCIONES PÚBLICAS
+# ========================
 
 
 def load_mnist_train(
@@ -193,16 +167,23 @@ def load_mnist_train(
 
     :param data_dir: Directorio de datos. Si es None, usa Data/ por defecto.
     :type data_dir: str | None
-    :param n_train: Cantidad de ejemplos de entrenamiento a usar. Si es None, se cargan todos los datos disponibles.
+
+    :param n_train: Número de ejemplos a cargar. Si es None, carga los 60 000.
     :type n_train: int | None
+
     :param download_if_missing: Si True, descarga los datos si no existen.
     :type download_if_missing: bool
+
     :param verbose: Si True, muestra mensajes de progreso.
     :type verbose: bool
-    :param random_seed: Semilla para reproducibilidad en el submuestreo.
+
+    :param random_seed: Semilla para el submuestreo aleatorio.
     :type random_seed: int | None
+
     :return: Tupla (X_train, Y_train)
     :rtype: Tuple[List[List[float]], List[int]]
+
+    :raises ValueError: Si n_train es menor que 1 o mayor que los datos disponibles.
     """
 
     # Valida el n_train
@@ -219,194 +200,78 @@ def load_mnist_train(
 
     if verbose:
         print("=" * 60)
-        print("CARGANDO DATOS MNIST - ENTRENAMIENTO")
+        print("CARGANDO DATOS MNIST — ENTRENAMIENTO")
         print("=" * 60)
 
     # Descarga si es necesario
     if download_if_missing:
-        descargar_mnist(data_dir, verbose=verbose)
+        _descargar_mnist(data_dir, verbose=verbose)
 
-    # Genera rutas de archivos
-    train_images_path = os.path.join(data_dir, "train-images-idx3-ubyte.gz")
-    train_labels_path = os.path.join(data_dir, "train-labels-idx1-ubyte.gz")
-
-    # Carga datos completos
-    X_train = cargar_imagenes(train_images_path, verbose=verbose)
-    Y_train = cargar_etiquetas(train_labels_path, verbose=verbose)
+    # Carga datos desde las rutas de los archivos
+    X = _cargar_imagenes(os.path.join(data_dir, "train-images-idx3-ubyte.gz"))
+    Y = _cargar_etiquetas(os.path.join(data_dir, "train-labels-idx1-ubyte.gz"))
 
     # Válida integridad
-    if len(X_train) != len(Y_train):
+    if len(X) != len(Y):
         raise RuntimeError("Inconsistencia: número de imágenes y etiquetas no coincide")
 
-    total_samples = len(X_train)
-
     if n_train is None:
-        # Carga la cantidad indicada
-        X_subset = X_train
-        Y_subset = Y_train
-    else:
-        # Lo carga todo
-        if n_train > total_samples:
-            raise ValueError(
-                f"n_train ({n_train}) es mayor que los datos disponibles ({total_samples})"
-            )
+        if verbose:
+            print(f"\n✓ {len(X)} ejemplos de entrenamiento cargados")
+        return X, Y
 
-        indices = list(range(total_samples))
-        random.shuffle(indices)
-        selected_indices = indices[:n_train]
+    if n_train > len(X):
+        raise ValueError(f"n_train ({n_train}) supera los datos disponibles ({len(X)})")
 
-        X_subset = [X_train[i] for i in selected_indices]
-        Y_subset = [Y_train[i] for i in selected_indices]
+    # Selecciona de forma aleatoria valores para los subconjuntos
+    indices = random.sample(range(len(X)), n_train)
+    X_sub = [X[i] for i in indices]
+    Y_sub = [Y[i] for i in indices]
 
     if verbose:
-        print(f"\n✓ Datos de entrenamiento seleccionados: {len(X_subset)} ejemplos")
+        print(f"\n✓ {n_train} ejemplos de entrenamiento seleccionados")
 
-    return X_subset, Y_subset
+    return X_sub, Y_sub
 
 
 def load_mnist_test(
-    data_dir: str | None = None, download_if_missing: bool = True, verbose: bool = True
+    data_dir: str | None = None,
+    download_if_missing: bool = True,
+    verbose: bool = True,
 ) -> Tuple[List[List[float]], List[int]]:
     """
-    Carga el conjunto de prueba de MNIST.
+    Carga el conjunto de prueba de MNIST (10 000 ejemplos).
 
     :param data_dir: Directorio de datos. Si es None, usa Data/ por defecto.
     :type data_dir: str | None
+
     :param download_if_missing: Si True, descarga los datos si no existen.
     :type download_if_missing: bool
+
     :param verbose: Si True, muestra mensajes de progreso.
     :type verbose: bool
+
     :return: Tupla (X_test, Y_test)
     :rtype: Tuple[List[List[float]], List[int]]
     """
+
+    # Obtiene el directorio
     if data_dir is None:
         data_dir = get_data_directory()
 
     if verbose:
         print("=" * 60)
-        print("CARGANDO DATOS MNIST - PRUEBA")
+        print("CARGANDO DATOS MNIST — PRUEBA")
         print("=" * 60)
 
     # Descarga si es necesario
     if download_if_missing:
-        descargar_mnist(data_dir, verbose=verbose)
+        _descargar_mnist(data_dir, verbose=verbose)
 
-    # Carga archivos
-    test_images_path = os.path.join(data_dir, "t10k-images-idx3-ubyte.gz")
-    test_labels_path = os.path.join(data_dir, "t10k-labels-idx1-ubyte.gz")
-
-    X_test = cargar_imagenes(test_images_path, verbose=verbose)
-    Y_test = cargar_etiquetas(test_labels_path, verbose=verbose)
+    X = _cargar_imagenes(os.path.join(data_dir, "t10k-images-idx3-ubyte.gz"))
+    Y = _cargar_etiquetas(os.path.join(data_dir, "t10k-labels-idx1-ubyte.gz"))
 
     if verbose:
-        print(f"\n✓ Datos de prueba cargados: {len(X_test)} ejemplos")
+        print(f"\n✓ {len(X)} ejemplos de prueba cargados")
 
-    return X_test, Y_test
-
-
-def load_mnist_complete(
-    data_dir: str | None = None, download_if_missing: bool = True, verbose: bool = True
-) -> Tuple[List[List[float]], List[int], List[List[float]], List[int]]:
-    """
-    Carga el dataset MNIST completo (entrenamiento y prueba).
-
-    :param data_dir: Directorio de datos. Si es None, usa Data/ por defecto.
-    :type data_dir: str | None
-    :param download_if_missing: Si True, descarga los datos si no existen.
-    :type download_if_missing: bool
-    :param verbose: Si True, muestra mensajes de progreso.
-    :type verbose: bool
-    :return: Tupla (X_train, Y_train, X_test, Y_test)
-    :rtype: Tuple[List[List[float]], List[int], List[List[float]], List[int]]
-    """
-    if data_dir is None:
-        data_dir = get_data_directory()
-
-    if verbose:
-        print("=" * 60)
-        print("CARGANDO DATASET MNIST COMPLETO")
-        print("=" * 60)
-
-    # Descarga si es necesario
-    if download_if_missing:
-        descargar_mnist(data_dir, verbose=verbose)
-        if verbose:
-            print()
-
-    # Carga entrenamiento
-    X_train, Y_train = load_mnist_train(
-        data_dir, download_if_missing=False, verbose=verbose
-    )
-
-    if verbose:
-        print()
-
-    # Carga prueba
-    X_test, Y_test = load_mnist_test(
-        data_dir, download_if_missing=False, verbose=verbose
-    )
-
-    if verbose:
-        print("\n" + "=" * 60)
-        print(
-            f"TOTAL: {len(X_train)} entrenamiento + {len(X_test)} prueba = {len(X_train) + len(X_test)} ejemplos"
-        )
-        print("=" * 60)
-
-    return X_train, Y_train, X_test, Y_test
-
-
-# ================
-# EJEMPLO DE USO
-# =================
-
-
-def main():
-    """
-    Ejemplo de uso del cargador de MNIST.
-    """
-    print("\n" + "=" * 70)
-    print("EJEMPLO DE USO: MNIST LOADER")
-    print("=" * 70)
-
-    # Ejemplo 1: Cargar solo entrenamiento
-    print("\n--- Ejemplo 1: Cargar conjunto de entrenamiento ---")
-    X_train, Y_train = load_mnist_train(verbose=True, n_train=5000)
-    print(f"\nPrimeras 5 etiquetas de entrenamiento: {Y_train[:5]}")
-    print(f"Dimensiones de primera imagen: {len(X_train[0])} píxeles")
-
-    # Ejemplo 2: Cargar solo prueba
-    print("\n" + "-" * 70)
-    print("\n--- Ejemplo 2: Cargar conjunto de prueba ---")
-    X_test, Y_test = load_mnist_test(verbose=True)
-    print(f"\nPrimeras 5 etiquetas de prueba: {Y_test[:5]}")
-
-    # Ejemplo 3: Cargar todo
-    print("\n" + "-" * 70)
-    print("\n--- Ejemplo 3: Cargar dataset completo ---")
-    X_tr, Y_tr, X_te, Y_te = load_mnist_complete(verbose=True)
-
-    # Verificar consistencia
-    print("\n" + "=" * 70)
-    print("VERIFICACIÓN DE CONSISTENCIA")
-    print("=" * 70)
-    print(f"✓ X_train tiene {len(X_tr)} imágenes")
-    print(f"✓ Y_train tiene {len(Y_tr)} etiquetas")
-    print(f"✓ X_test tiene {len(X_te)} imágenes")
-    print(f"✓ Y_test tiene {len(Y_te)} etiquetas")
-    print(f"✓ Cada imagen tiene {len(X_tr[0])} píxeles (28x28)")
-
-    # Distribución de clases
-    print("\n" + "=" * 70)
-    print("DISTRIBUCIÓN DE CLASES EN ENTRENAMIENTO")
-    print("=" * 70)
-    class_counts = {i: 0 for i in range(10)}
-    for label in Y_tr:
-        class_counts[label] += 1
-    for digit, count in class_counts.items():
-        bar = "█" * (count // 200)
-        print(f"Dígito {digit}: {count:5d} ejemplos {bar}")
-
-
-if __name__ == "__main__":
-    main()
+    return X, Y

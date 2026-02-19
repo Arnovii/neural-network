@@ -1,44 +1,47 @@
 """
-Módulo de análisis estadístico y visualización para Algoritmo de Diego.
+Analytics — Ejecución de experimentos y análisis de resultados.
+
+Expone el orquestador de experimentos, las estadísticas por época/partición
+y las funciones de preparación de datos para gráficos.
 """
 
-from .statistics_engine import (
-    compute_epoch_statistics,
-    compute_partition_statistics,
-    aggregate_experiments,
-    compute_confidence_interval,
+from Analytics.experiment_runner import (
+    run_single_experiment,
+    run_multiple_experiments,
+    compare_configurations,
 )
 
-from .chart_generator import (
+from Analytics.statistics_engine import (
+    compute_epoch_statistics,
+    compute_partition_statistics,
+    compute_convergence_epoch,
+    compute_std,
+)
+
+from Analytics.chart_generator import (
     prepare_accuracy_chart_data,
     prepare_partition_comparison_data,
     prepare_convergence_data,
     prepare_distribution_data,
-)
-
-from .experiment_runner import (
-    run_single_experiment,
-    run_multiple_experiments,
-    compare_configurations,
-    save_experiment_results,
-    load_experiment_results,
+    prepare_comparison_chart_data,
+    export_to_csv,
 )
 
 __all__ = [
-    # Statistics Engine
+    # experiment_runner
+    "run_single_experiment",
+    "run_multiple_experiments",
+    "compare_configurations",
+    # statistics_engine
     "compute_epoch_statistics",
     "compute_partition_statistics",
-    "aggregate_experiments",
-    "compute_confidence_interval",
-    # Chart Generator
+    "compute_convergence_epoch",
+    "compute_std",
+    # chart_generator
     "prepare_accuracy_chart_data",
     "prepare_partition_comparison_data",
     "prepare_convergence_data",
     "prepare_distribution_data",
-    # Experiment Runner
-    "run_single_experiment",
-    "run_multiple_experiments",
-    "compare_configurations",
-    "save_experiment_results",
-    "load_experiment_results",
+    "prepare_comparison_chart_data",
+    "export_to_csv",
 ]

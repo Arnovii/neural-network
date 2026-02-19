@@ -1,24 +1,11 @@
 """
-Utilidades para carga y procesamiento de datos MNIST.
+Utils — Utilidades de soporte para NN_practica.
+
+Expone las funciones matemáticas, el cargador de MNIST y el particionador
+de datos que usan los módulos de red neuronal y análisis.
 """
 
-from .mnist_loader import (
-    load_mnist_train,
-    load_mnist_test,
-    load_mnist_complete,
-    descargar_mnist,
-    get_data_directory,
-)
-
-from .data_partitioner import (
-    partition_mnist_data,
-    partition_mnist_data_simple,
-    get_partition_statistics,
-    print_partition_summary,
-    merge_partitions,
-)
-
-from .math_utils import (
+from Utils.math_utils import (
     # Activaciones
     sigmoid,
     sigmoid_derivative_from_activation,
@@ -26,68 +13,53 @@ from .math_utils import (
     # Vectores
     vector_add,
     vector_subtract,
-    vector_dot,
-    vector_scale,
     vector_zeros,
     # Matrices
-    matrix_vector_multiply,
-    matrix_transpose,
-    outer_product,
     matrix_add,
-    matrix_scale,
-    matrix_zeros,
-    matrix_random_normal,
+    matrix_transpose,
+    matrix_vector_multiply,
+    outer_product,
+    # Inicialización
     xavier_initialization,
-    # Redes neuronales
-    compute_one_hot,
     # Algoritmo de Diego
-    average_vectors,
-    average_matrices,
     average_network_parameters,
-    # Gradientes
-    accumulate_gradients,
-    scale_gradients,
-    initialize_gradient_accumulators,
-    # Métricas
+    accumulate_outer_inplace,
+    accumulate_vector_inplace,
+    # Generales
     argmax,
+    compute_one_hot,
+)
+
+from Utils.mnist_loader import (
+    load_mnist_train,
+    load_mnist_test,
+)
+
+from Utils.data_partitioner import (
+    partition_mnist_data_simple,
 )
 
 __all__ = [
-    # MNIST Loader
-    "load_mnist_train",
-    "load_mnist_test",
-    "load_mnist_complete",
-    "descargar_mnist",
-    "get_data_directory",
-    # Data Partitioner
-    "partition_mnist_data",
-    "partition_mnist_data_simple",
-    "get_partition_statistics",
-    "print_partition_summary",
-    "merge_partitions",
-    # Math Utils
+    # math_utils
     "sigmoid",
     "sigmoid_derivative_from_activation",
     "softmax",
     "vector_add",
     "vector_subtract",
-    "vector_dot",
-    "vector_scale",
     "vector_zeros",
-    "matrix_vector_multiply",
-    "matrix_transpose",
-    "outer_product",
     "matrix_add",
-    "matrix_scale",
-    "matrix_zeros",
-    "matrix_random_normal",
+    "matrix_transpose",
+    "matrix_vector_multiply",
+    "outer_product",
     "xavier_initialization",
-    "compute_one_hot",
-    "average_vectors",
-    "average_matrices",
     "average_network_parameters",
-    "accumulate_gradients",
-    "scale_gradients",
-    "initialize_gradient_accumulators",
+    "accumulate_outer_inplace",
+    "accumulate_vector_inplace",
     "argmax",
+    "compute_one_hot",
+    # mnist_loader
+    "load_mnist_train",
+    "load_mnist_test",
+    # data_partitioner
+    "partition_mnist_data_simple",
 ]

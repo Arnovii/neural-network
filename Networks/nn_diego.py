@@ -1,40 +1,31 @@
 """
-Red Neuronal para MNIST basado en el algoritmo de Diego.
+Red neuronal para clasificación de MNIST con entrenamiento federado.
 
-Esta red implementa un algoritmo de entrenamiento donde:
-1. Los datos se dividen en múltiples particiones estratificadas
-2. Cada partición entrena la red de forma independiente
-3. Los parámetros (W1, b1, W2, b2) se promedian entre particiones
-4. La red se reinicializa con los parámetros promediados para la siguiente época
+Arquitectura: 784 (entrada) → oculta (sigmoide) → 10 (salida, softmax).
 
-Arquitectura: 784 (entrada) → 30 (oculta, sigmoide) → 10 (salida, softmax)
+El método principal es train_federated, que implementa el algoritmo de Diego:
+cada época entrena copias independientes de la red sobre distintas particiones
+y luego promedia los parámetros resultantes.
 """
-# ================
-# IMPORTACIONES
-# ================
 
 import math
 import os
 import random
 import sys
-from typing import Any, Dict, List, Tuple
+from typing import Any, Callable, Dict, List, Tuple
 
 # Agregaa directorio padre al path para importar Utils
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-# Importa utilidades
+# Importa utilidades matemáticas
 from Utils.math_utils import (
-    accumulate_gradients,
     accumulate_outer_inplace,
     accumulate_vector_inplace,
     argmax,
     average_network_parameters,
     compute_one_hot,
-    initialize_gradient_accumulators,
     matrix_transpose,
     matrix_vector_multiply,
-    outer_product,
-    scale_gradients,
     sigmoid,
     sigmoid_derivative_from_activation,
     softmax,
@@ -44,9 +35,6 @@ from Utils.math_utils import (
     xavier_initialization,
 )
 
-from Utils.data_partitioner import partition_mnist_data_simple
-from Utils.mnist_loader import load_mnist_test, load_mnist_train
-
 # =============
 # RED NEURONAL
 # =============
@@ -54,16 +42,17 @@ from Utils.mnist_loader import load_mnist_test, load_mnist_train
 
 class DiegoNeuronalNetwork:
     """
-    Red Neuronal que soporta el entrenamiento tipo Diego.
+    Red neuronal con soporte para el algoritmo de entrenamiento de Diego.
 
     Attributes:
-        input_size: Número de neuronas de entrada (784 para MNIST)
-        hidden_size: Número de neuronas en capa oculta
-        output_size: Número de neuronas de salida (10 para MNIST)
-        W1: Pesos de capa entrada → oculta
-        b1: Sesgos de capa oculta
-        W2: Pesos de capa oculta → salida
-        b2: Sesgos de capa de salidaad
+        input_size:  Número de neuronas de entrada (784 para MNIST).
+        hidden_size: Número de neuronas en la capa oculta.
+        output_size: Número de neuronas de salida (10 para MNIST).
+        W1:          Pesos entrada → capa oculta  (hidden_size × input_size).
+        b1:          Sesgos de la capa oculta     (hidden_size,).
+        W2:          Pesos capa oculta → salida   (output_size × hidden_size).
+        b2:          Sesgos de la capa de salida  (output_size,).
+        training_history: Historial del último entrenamiento federado.
     """
 
     def __init__(
@@ -74,7 +63,7 @@ class DiegoNeuronalNetwork:
         random_seed: int | None = None,
     ):
         """
-        Inicializa la red con pesos aleatorios usando inicialización Xavier.
+        Inicializa la red con pesos Xavier y sesgos en cero.
 
         :param input_size: Tamaño de la capa de entrada
         :type input_size: int
@@ -106,9 +95,13 @@ class DiegoNeuronalNetwork:
         # Historial de entrenamiento
         self.training_history: Dict[str, Any] = {}
 
+    # ========================
+    # GESTIÓN DE PARÁMETROS
+    # ========================
+
     def get_parameters(self) -> Dict[str, Any]:
         """
-        Obtiene los parámetros actuales de la red.
+        Devuelve una copia profunda de los parámetros actuales.
 
         :return: Diccionario con W1, b1, W2, b2
         :rtype: Dict[str, Any]
@@ -122,7 +115,7 @@ class DiegoNeuronalNetwork:
 
     def set_parameters(self, params: Dict[str, Any]) -> None:
         """
-        Establece los parámetros de la red.
+        Establece los parámetros de la red a partir de un diccionario.
 
         :param params: Diccionario con W1, b1, W2, b2
         :type params: Dict[str, Any]
@@ -132,91 +125,44 @@ class DiegoNeuronalNetwork:
         self.W2 = [row[:] for row in params["W2"]]
         self.b2 = params["b2"][:]
 
+    # ========================
+    # FORWARD PROPAGATION
+    # ========================
+
     def forward(self, x: List[float]) -> Tuple[List[float], Dict[str, Any]]:
         """
-        Realiza la propagación hacia adelante.
+        Propagación hacia adelante para una sola entrada.
 
-        :param x: Vector de entrada (imagen aplanada)
+        Se usa en predict y evaluate. El bucle de entrenamiento (train_on_batch)
+        tiene el forward inlined para evitar el overhead del diccionario cache.
+
+        :param x: Vector de entrada de tamaño input_size
         :type x: List[float]
 
-        :return:
-            - output: Probabilidades de cada clase después de aplicar la función softmax.\n
-            - cache: Valores intermedios para backpropagation
+        :return: Tupla (probabilidades softmax, cache con valores intermedios)
         :rtype: Tuple[List[float], Dict[str, Any]]
         """
         # Capa oculta: z1 = W1·x + b1
-        z1 = matrix_vector_multiply(self.W1, x)
-        z1 = vector_add(z1, self.b1)
+        z1 = vector_add(matrix_vector_multiply(self.W1, x), self.b1)
 
         # Activación sigmoide: a1 = σ(z1)
         a1 = [sigmoid(z) for z in z1]
 
         # Capa de salida: z2 = W2·a1 + b2
-        z2 = matrix_vector_multiply(self.W2, a1)
-        z2 = vector_add(z2, self.b2)
+        z2 = vector_add(matrix_vector_multiply(self.W2, a1), self.b2)
 
         # Softmax para probabilidades
         output = softmax(z2)
 
         # Guarda valores para backpropagation
-        cache = {"x": x[:], "z1": z1, "a1": a1, "z2": z2, "output": output}
+        cache = {"x": x[:], "a1": a1, "output": output}
 
         return output, cache
 
-    def backward(
-        self, y: int, cache: Dict[str, Any]
-    ) -> Tuple[List[List[float]], List[float], List[List[float]], List[float]]:
-        """
-        Retropropagación para calcular gradientes.
+    # ========================
+    # ENTRENAMIENTO
+    # ========================
 
-        :param y: Etiqueta verdadera asociada a la entrada (0-9)
-        :type y: int
-
-        :param cache: Valores guardados en forward propagation
-        :type cache: Dict[str, Any]
-
-        :return:
-                Gradientes calculados para cada parámetro del modelo:\n
-                - dW1: Gradiente de los pesos de la primera capa.\n
-                - db1: Gradiente de los sesgos de la primera capa.\n
-                - dW2: Gradiente de los pesos de la segunda capa.\
-                - db2: Gradiente de los sesgos de la segunda capa.
-        :rtype: Tuple[List[List[float]], List[float], List[List[float]], List[float]]
-        """
-        # Recupera valores de la cache
-        x = cache["x"]
-        a1 = cache["a1"]
-        output = cache["output"]
-
-        # Aplica One-hot encoding para la etiqueta
-        y_onehot = compute_one_hot(y, self.output_size)
-
-        # Gradiente de la capa de salida
-        # δ2 = output - y_onehot (derivada de cross-entropy + softmax)
-        delta2 = vector_subtract(output, y_onehot)
-
-        # Gradiente para W2 y b2
-        dW2 = outer_product(delta2, a1)
-        db2 = delta2[:]
-
-        # Gradiente de la capa oculta
-        # δ1 = (W2^T · δ2) ⊙ σ'(a1)
-        W2_T = matrix_transpose(self.W2)
-        delta1 = matrix_vector_multiply(W2_T, delta2)
-
-        # Derivada de sigmoide: σ'(z) = σ(z) * (1 - σ(z)) = a1 * (1 - a1)
-        sigmoid_prime = [sigmoid_derivative_from_activation(a) for a in a1]
-
-        # Producto elemento a elemento
-        delta1 = [delta1[i] * sigmoid_prime[i] for i in range(len(delta1))]
-
-        # Gradientes para W1 y b1
-        dW1 = outer_product(delta1, x)
-        db1 = delta1[:]
-
-        return dW1, db1, dW2, db2
-
-    # Este método es que usaba la primera red neuronal que hicimos
     def train_on_batch(
         self,
         X: List[List[float]],
@@ -225,84 +171,80 @@ class DiegoNeuronalNetwork:
         verbose: bool = False,
     ) -> Tuple[float, float]:
         """
-        Entrena la red en un batch de datos usando gradiente descendente.
+        Entrena la red sobre un batch completo usando gradiente descendente.
 
-        :param X: Lista de entradas (por ejemplo, imágenes representadas como listas de floats).
+        Realiza el forward y backward inline para cada ejemplo, acumulando
+        gradientes in-place (sin crear matrices intermedias). Al final aplica
+        una única actualización con el gradiente promedio del batch.
+
+        :param X: Lista de imágenes de entrada
         :type X: List[List[float]]
 
-        :param Y: Lista de etiquetas correspondientes a cada entrada.
+        :param Y: Lista de etiquetas correspondientes
         :type Y: List[int]
 
-        :param learning_rate: Tasa de aprendizaje utilizada para actualizar los parámetros.
+        :param learning_rate: Tasa de aprendizaje
         :type learning_rate: float
 
-        :param verbose: Si es True, muestra el progreso durante el entrenamiento.
+        :param verbose: Si True, reporta el progreso cada 1000 ejemplos
         :type verbose: bool
 
-        :return:
-            - loss (float): Pérdida promedio del batch.\n
-            - accuracy (float): Precisión del batch en porcentaje.
+        :return: Tupla (loss promedio, accuracy en porcentaje)
         :rtype: Tuple[float, float]
         """
         n = len(X)
 
-        # Acumuladores inicializados a cero. Se reutilizan in-place en cada ejemplo,
-        # evitando crear nuevas listas de matrices por cada iteración.
-        dW1_acc = [[0.0] * self.input_size  for _ in range(self.hidden_size)]
+        # Acumuladores inicializados a cero — se modifican in-place en cada ejemplo
+        dW1_acc = [[0.0] * self.input_size for _ in range(self.hidden_size)]
         db1_acc = [0.0] * self.hidden_size
         dW2_acc = [[0.0] * self.hidden_size for _ in range(self.output_size)]
         db2_acc = [0.0] * self.output_size
 
-        correct_predictions = 0
+        correct = 0
         total_loss = 0.0
 
-        for i in range(n):
-            # Forward propagation
-            x = X[i]
-
-            z1 = matrix_vector_multiply(self.W1, x)
-            z1 = vector_add(z1, self.b1)
+        for i, (xi, yi) in enumerate(zip(X, Y)):
+            # Forward Propagation
+            z1 = vector_add(matrix_vector_multiply(self.W1, xi), self.b1)
             a1 = [sigmoid(z) for z in z1]
-
-            z2 = matrix_vector_multiply(self.W2, a1)
-            z2 = vector_add(z2, self.b2)
+            z2 = vector_add(matrix_vector_multiply(self.W2, a1), self.b2)
             output = softmax(z2)
 
             # Métricas
-            prediction = argmax(output)
-            if prediction == Y[i]:
-                correct_predictions += 1
+            if argmax(output) == yi:
+                correct += 1
+            total_loss += -math.log(max(output[yi], 1e-15))
 
-            prob = max(output[Y[i]], 1e-15)
-            total_loss += -math.log(prob)
+            # Backward Propagation
+            # Aplica One-hot encoding para la etiqueta
+            y_onehot = compute_one_hot(yi, self.output_size)
 
-            # δ2 = output − y_onehot  (cross-entropy + softmax, derivada combinada)
-            y_onehot = compute_one_hot(Y[i], self.output_size)
+            # δ2 = output − y_onehot  (derivada combinada cross-entropy + softmax)
             delta2 = vector_subtract(output, y_onehot)
 
+            # Gradiente de la capa oculta
             # δ1 = (W2ᵀ · δ2) ⊙ σ'(a1)
             W2_T = matrix_transpose(self.W2)
-            delta1_raw = matrix_vector_multiply(W2_T, delta2)
-            delta1 = [delta1_raw[j] * sigmoid_derivative_from_activation(a1[j])
-                      for j in range(self.hidden_size)]
+            delta1 = [
+                d * sigmoid_derivative_from_activation(a)
+                for d, a in zip(matrix_vector_multiply(W2_T, delta2), a1)
+            ]
 
+            # Acumulación in-place:
             # accumulate_outer_inplace fusiona outer_product + matrix_add en un
-            # solo pase sobre los datos, sin crear matrices intermedias.
+            # solo pase, eliminando dos allocations de lista por ejemplo.
             accumulate_outer_inplace(dW2_acc, delta2, a1)
-            accumulate_outer_inplace(dW1_acc, delta1, x)
+            accumulate_outer_inplace(dW1_acc, delta1, xi)
             accumulate_vector_inplace(db2_acc, delta2)
             accumulate_vector_inplace(db1_acc, delta1)
 
             if verbose and (i + 1) % 1000 == 0:
                 print(f"    Procesados {i + 1}/{n} ejemplos...")
 
-        # _update_parameters aplica lr/n en un solo factor
+        # Actualización con factor único lr/n
         self._update_parameters(dW1_acc, db1_acc, dW2_acc, db2_acc, learning_rate, n)
 
-        loss = total_loss / n
-        accuracy = 100.0 * correct_predictions / n
-
-        return loss, accuracy
+        return total_loss / n, 100.0 * correct / n
 
     def _update_parameters(
         self,
@@ -314,10 +256,12 @@ class DiegoNeuronalNetwork:
         n: int,
     ) -> None:
         """
-        Actualiza los parámetros de la red in-place usando los gradientes acumulados.
+        Actualiza los parámetros in-place con el gradiente promediado.
 
-        Aplica lr/n como factor único en vez de escalar primero y restar después,
-        evitando la creación de matrices intermedias.
+        Aplica ``lr / n`` como factor único para evitar crear una matriz
+        intermedia escalada antes de restar.
+
+        Sería algo tipo: θ <- θ - (lr / n) * ∇θ
 
         :param dW1_acc: Gradientes acumulados de W1 (sin escalar)
         :type dW1_acc: List[List[float]]
@@ -334,7 +278,7 @@ class DiegoNeuronalNetwork:
         :param learning_rate: Tasa de aprendizaje
         :type learning_rate: float
 
-        :param n: Número de ejemplos del batch (para promediar gradientes)
+        :param n: Número de ejemplos del batch (para promediar los gradientes)
         :type n: int
         """
         factor = learning_rate / n
@@ -342,128 +286,75 @@ class DiegoNeuronalNetwork:
         for wi, dwi in zip(self.W1, dW1_acc):
             for j in range(len(wi)):
                 wi[j] -= factor * dwi[j]
-
         for j in range(self.hidden_size):
             self.b1[j] -= factor * db1_acc[j]
 
         for wi, dwi in zip(self.W2, dW2_acc):
             for j in range(len(wi)):
                 wi[j] -= factor * dwi[j]
-
         for j in range(self.output_size):
             self.b2[j] -= factor * db2_acc[j]
 
-    def predict(self, x: List[float]) -> int:
-        """
-        Predice la clase de una imagen.
-
-        :param x: Imagen aplanada
-        :type x: List[float]
-
-        :return: Clase predicha (0-9)
-        :rtype: int
-        """
-        output, _ = self.forward(x)
-        return argmax(output)
-
-    def evaluate(self, X: List[List[float]], Y: List[int]) -> Tuple[float, float]:
-        """
-        Evalúa la red en un conjunto de datos.
-
-        :param X: Lista de imágenes
-        :type X: List[List[float]]
-
-        :param Y: Lista de etiquetas verdaderas
-        :type Y: List[int]
-
-        :return:
-            - accuracy (float): Precisión en porcentaje.\n
-            - avg_loss (float): Pérdida promedio
-        :rtype: Tuple[float, float]
-        """
-
-        correct = 0
-        total_loss = 0.0
-        n = len(X)
-
-        for i in range(n):
-            output, _ = self.forward(X[i])
-            prediction = argmax(output)
-
-            if prediction == Y[i]:
-                correct += 1
-
-            # Estamos evaluando loss = -log(p)
-            # Si p = 0, entonces log(0) = - ∞
-            # Llegado ese caso, reemplazamos 0 por 1e-15
-            # Eso es Clipping Numéricos (estabilidad numérica)
-            prob = max(output[Y[i]], 1e-15)
-            total_loss += -math.log(prob)
-
-        accuracy = 100.0 * correct / n
-        avg_loss = total_loss / n
-
-        return accuracy, avg_loss
-
-    # Este es el algoritmo de Diego, pero "federated" sonaba más elegante
     def train_federated(
         self,
         partitions: List[Tuple[List[List[float]], List[int]]],
         epochs: int,
         learning_rate: float,
         verbose: bool = True,
-        on_epoch_end: Any = None,
+        on_epoch_end: Callable | None = None,
     ) -> Dict[str, Any]:
         """
-        Entrena la red usando el algoritmo propuesto por Diego.
+        Entrena la red usando el algoritmo de Diego.
 
-        Algoritmo:\n
-        Para cada época:
-            a. Guardar parámetros globales actuales
-            b. Para cada partición:\n
-                - Entrenar red en la partición
-                - Guardar parámetros resultantes\n
-            c. Promediar todos los parámetros obtenidos
-            d. Establecer parámetros promediados como nuevos globales
+        Por cada época:
 
-        :param partitions: Lista de particiones (X_partition, Y_partition)
+        1. Guarda los parámetros globales actuales.
+        2. Para cada partición: restaura los parámetros globales y entrena
+           de forma independiente con train_on_batch.
+        3. Promedia los parámetros de todas las particiones.
+        4. Establece el promedio como nuevos parámetros globales.
+
+        :param partitions: Lista de tuplas (X_partition, Y_partition)
         :type partitions: List[Tuple[List[List[float]], List[int]]]
-        :param epochs: Número de épocas de entrenamiento
+
+        :param epochs: Número de épocas
         :type epochs: int
+
         :param learning_rate: Tasa de aprendizaje
         :type learning_rate: float
-        :param verbose: Si True, muestra progreso detallado
+
+        :param verbose: Si True, muestra progreso detallado por época y partición
         :type verbose: bool
-        :param on_epoch_end: Callback opcional llamado al finalizar cada época.\n
-                             Firma: on_epoch_end(epoch: int, total_epochs: int,\n
-                             accuracy: float, loss: float) → None
+
+        :param on_epoch_end: Callback invocado al finalizar cada época con la firma
+                             ``on_epoch_end(epoch, total_epochs, accuracy, loss)``.
         :type on_epoch_end: Callable | None
-        :return: Historial de entrenamiento con las siguientes claves:\n
-                 - 'accuracies': List[float] — precisión global por época.\n
-                 - 'losses': List[float] — pérdida global por época.\n
-                 - 'partition_accuracies': List[List[float]] — precisión de cada\n
-                   partición por época. Forma: [epoca][particion].\n
-                 - 'epochs_detail': List[Dict] — detalle completo por época.
+        :return: Historial con las claves:
+
+                 - ``accuracies``: precisión global por época (List[float])
+                 - ``losses``: pérdida global por época (List[float])
+                 - ``partition_accuracies``: precisión por partición y época
+                   (List[List[float]]), forma [época][partición]
         :rtype: Dict[str, Any]
         """
         num_partitions = len(partitions)
 
-        # Listas acumuladoras — formato esperado por experiment_runner y statistics_engine
+        # Listas acumuladoras: formato esperado por experiment_runner y statistics_engine
         accuracies: List[float] = []
         losses: List[float] = []
+
         # partition_accuracies[epoca] = [acc_part0, acc_part1, ...]
         partition_accuracies: List[List[float]] = []
-        epochs_detail: List[Dict[str, Any]] = []
 
         if verbose:
             print("=" * 70)
-            print("ENTRENAMIENTO FEDERADO")
+            print("ENTRENAMIENTO CON ALGORITMO DE DIEGO")
             print("=" * 70)
-            print(f"Número de particiones: {num_partitions}")
-            print(f"Épocas: {epochs}")
-            print(f"Tasa de aprendizaje: {learning_rate}")
+            print(f"Particiones   : {num_partitions}")
+            print(f"Épocas        : {epochs}")
+            print(f"Learning rate : {learning_rate}")
             print(
-                f"Arquitectura: {self.input_size} → {self.hidden_size} → {self.output_size}"
+                f"Arquitectura  : {self.input_size} → {self.hidden_size} → {self.output_size}"
             )
             print("=" * 70)
 
@@ -474,67 +365,43 @@ class DiegoNeuronalNetwork:
             # Guarda parámetros globales al inicio de esta época
             global_params = self.get_parameters()
 
-            partition_parameters = []
+            partition_params = []
             partition_metrics = []
 
             # Entrena en cada partición de forma independiente
-            for partition_idx, (X_part, Y_part) in enumerate(partitions):
-                if verbose:
-                    print(f"\n  Partición {partition_idx + 1}/{num_partitions}:")
-                    print(f"    Ejemplos: {len(X_part)}")
-
+            for p_idx, (X_part, Y_part) in enumerate(partitions):
                 # Cada partición parte de los mismos parámetros globales
                 self.set_parameters(global_params)
+                loss, accuracy = self.train_on_batch(X_part, Y_part, learning_rate)
 
-                loss, accuracy = self.train_on_batch(
-                    X_part, Y_part, learning_rate, verbose=False
-                )
-
-                partition_parameters.append(self.get_parameters())
-                partition_metrics.append(
-                    {"partition": partition_idx + 1, "loss": loss, "accuracy": accuracy}
-                )
+                partition_params.append(self.get_parameters())
+                partition_metrics.append(accuracy)
 
                 if verbose:
-                    print(f"    Loss: {loss:.4f}, Accuracy: {accuracy:.2f}%")
+                    print(
+                        f"  Partición {p_idx + 1}: loss={loss:.4f}  acc={accuracy:.2f}%"
+                    )
 
             # Promedia parámetros de todas las particiones
-            if verbose:
-                print(f"\n  Promediando parámetros de {num_partitions} particiones...")
+            self.set_parameters(average_network_parameters(partition_params))
 
-            averaged_params = average_network_parameters(partition_parameters)
-            self.set_parameters(averaged_params)
-
-            # Evalúa el modelo promediado sobre todos los datos combinados
-            all_X = []
-            all_Y = []
+            # Evalúa el modelo global sobre todos los datos combinados
+            all_X: List[List[float]] = []
+            all_Y: List[int] = []
             for X_part, Y_part in partitions:
                 all_X.extend(X_part)
                 all_Y.extend(Y_part)
 
             global_accuracy, global_loss = self.evaluate(all_X, all_Y)
 
-            # Acumula métricas en el formato esperado por Analytics
             accuracies.append(global_accuracy)
             losses.append(global_loss)
-            partition_accuracies.append(
-                [m["accuracy"] for m in partition_metrics]
-            )
-            epochs_detail.append(
-                {
-                    "epoch": epoch + 1,
-                    "global_loss": global_loss,
-                    "global_accuracy": global_accuracy,
-                    "partition_metrics": partition_metrics,
-                }
-            )
+            partition_accuracies.append(partition_metrics)
 
             if verbose:
-                print(f"\n  Resultado global Época {epoch + 1}:")
-                print(f"    Loss: {global_loss:.4f}, Accuracy: {global_accuracy:.2f}%")
+                print(f"  Global → loss={global_loss:.4f}  acc={global_accuracy:.2f}%")
                 print("-" * 50)
 
-            # Notifica al caller que terminó esta época
             if on_epoch_end is not None:
                 on_epoch_end(epoch + 1, epochs, global_accuracy, global_loss)
 
@@ -542,94 +409,59 @@ class DiegoNeuronalNetwork:
             "accuracies": accuracies,
             "losses": losses,
             "partition_accuracies": partition_accuracies,
-            "epochs_detail": epochs_detail,
         }
-
         self.training_history = history
 
         if verbose:
             print("\n" + "=" * 70)
-            print("ENTRENAMIENTO FEDERADO COMPLETADO")
+            print("ENTRENAMIENTO COMPLETADO")
             print("=" * 70)
 
         return history
 
+    # ========================
+    # INFERENCIA Y EVALUACIÓN
+    # ========================
 
-# ================
-# DEMOSTRACIÓN
-# ================
+    def predict(self, x: List[float]) -> int:
+        """
+        Predice la clase de una sola imagen.
 
+        :param x: Imagen aplanada de tamaño input_size
+        :type x: List[float]
 
-def demo_federated_learning():
-    """
-    Demostración completa del entrenamiento con Algoritmo de Diego con MNIST.
-    """
+        :return: Clase predicha (0-9)
+        :rtype: int
+        """
+        output, _ = self.forward(x)
+        return argmax(output)
 
-    print("\n" + "=" * 70)
-    print("DEMO: RED NEURONAL CON ALGORITMO DE DIEGO EN MNIST")
-    print("=" * 70)
+    def evaluate(self, X: List[List[float]], Y: List[int]) -> Tuple[float, float]:
+        """
+        Evalúa la red sobre un conjunto de datos.
 
-    # 1. Cargar datos
-    print("\n1. Cargando datos MNIST...")
-    X_train, Y_train = load_mnist_train(n_train=10000, verbose=False)
-    X_test, Y_test = load_mnist_test(verbose=False)
-    print(f"   Entrenamiento: {len(X_train)} ejemplos")
-    print(f"   Prueba: {len(X_test)} ejemplos")
+        :param X: Lista de imágenes
+        :type X: List[List[float]]
 
-    # 2. Crear particiones estratificadas
-    num_partitions = 2
-    print(f"\n2. Creando {num_partitions} particiones estratificadas...")
+        :param Y: Lista de etiquetas verdaderas
+        :type Y: List[int]
 
-    partitions = partition_mnist_data_simple(
-        num_partitions=num_partitions,
-        X_train=X_train,
-        Y_train=Y_train,
-        random_seed=42,
-        verbose=False,
-    )
+        :return: Tupla (accuracy en porcentaje, loss promedio)
+        :rtype: Tuple[float, float]
+        """
+        correct = 0
+        total_loss = 0.0
+        n = len(X)
 
-    for i, (X_part, Y_part) in enumerate(partitions):
-        print(f"   Partición {i + 1}: {len(X_part)} ejemplos")
+        for xi, yi in zip(X, Y):
+            output, _ = self.forward(xi)
+            if argmax(output) == yi:
+                correct += 1
 
-    # 3. Crear red neuronal
-    print("\n3. Creando red neuronal...")
-    network = DiegoNeuronalNetwork(
-        input_size=784, hidden_size=30, output_size=10, random_seed=42
-    )
-    print("   Arquitectura: 784 → 30 → 10")
+            # Estamos evaluando loss = -log(p)
+            # Si p = 0, entonces log(0) = - ∞
+            # Llegado ese caso, reemplazamos 0 por 1e-15
+            # Eso es Clipping Numéricos (estabilidad numérica)
+            total_loss += -math.log(max(output[yi], 1e-15))
 
-    # 4. Entrenamiento con algoritmo de Diego
-    print("\n4. Iniciando entrenamiento con Algoritmo de Diego...")
-    history = network.train_federated(
-        partitions=partitions, epochs=10, learning_rate=0.5, verbose=True
-    )
-
-    # Muestra evolución de precisión usando el nuevo formato
-    print("\n   Evolución de precisión por época:")
-    for epoch, (acc, loss) in enumerate(zip(history["accuracies"], history["losses"])):
-        print(f"   Época {epoch + 1:2d}: {acc:.2f}%  loss={loss:.4f}")
-
-    # 5. Evaluar en conjunto de prueba
-    print("\n5. Evaluando en conjunto de prueba...")
-    test_accuracy, test_loss = network.evaluate(X_test, Y_test)
-    print(f"   Precisión en test: {test_accuracy:.2f}%")
-    print(f"   Pérdida en test: {test_loss:.4f}")
-
-    # 6. Mostrar algunas predicciones
-    print("\n6. Ejemplos de predicciones:")
-    for i in range(5):
-        pred = network.predict(X_test[i])
-        real = Y_test[i]
-        status = "✓" if pred == real else "✗"
-        print(f"   Imagen {i + 1}: Predicción={pred}, Real={real} {status}")
-
-    print("\n" + "=" * 70)
-    print("DEMO COMPLETADA")
-    print("=" * 70)
-
-    return network, history
-
-
-if __name__ == "__main__":
-    # Ejecutar demo principal
-    demo_federated_learning()
+        return 100.0 * correct / n, total_loss / n
