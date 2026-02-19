@@ -1,7 +1,7 @@
 """
-NN_practica - Punto de entrada principal
+Punto de entrada principal
 
-Ejecuta experimentos con el algoritmo
+Ejecuta experimentos de Algoritmo de Diego con redes neuronales
 y genera visualizaciones estadísticas.
 """
 
@@ -28,7 +28,7 @@ from Analytics.chart_generator import (
 )
 
 # ================
-# MODO TÉRMINAL
+# MODO TERMINAL
 # ================
 
 
@@ -152,31 +152,27 @@ def run_interactive_mode():
             # Datos de ejecuciones previas para comparación
             self.previous_results = []
             self.colors = [
-                "#2196F3",
-                "#4CAF50",
-                "#FF9800",
-                "#9C27B0",
-                "#F44336",
-                "#00BCD4",
-                "#FFEB3B",
-                "#795548",
-                "#607D8B",
-                "#E91E63",
+                "#2196F3", "#4CAF50", "#FF9800", "#9C27B0", "#F44336",
+                "#00BCD4", "#FFEB3B", "#795548", "#607D8B", "#E91E63",
             ]
             self.color_index = 0
+            
+            # Inicializa atributos para resultados de experimentos
+            self.current_results = None
+            self.current_params = None
 
             self._create_ui()
 
-        # ==================
+        # ================
         # CONSTRUCCIÓN UI
-        # ==================
+        # ================
 
         def _create_ui(self):
 
             # Helper: fuerza valores enteros en los sliders
             def snap_int(var):
                 return lambda v: var.set(int(round(float(v))))
-            
+
             # Panel izquierdo: Controles
             control_frame = ttk.Frame(self.root, padding="10")
             control_frame.pack(side=tk.LEFT, fill=tk.Y, padx=5, pady=5)
@@ -189,13 +185,9 @@ def run_interactive_mode():
             ttk.Label(control_frame, text="Particiones:").pack(anchor=tk.W)
             self.partitions_var = tk.IntVar(value=2)
             ttk.Scale(
-                control_frame,
-                from_=1,
-                to=10,
-                orient=tk.HORIZONTAL,
-                variable=self.partitions_var,
-                length=200,
-                command=snap_int(self.partitions_var)
+                control_frame, from_=1, to=10, orient=tk.HORIZONTAL,
+                variable=self.partitions_var, length=200,
+                command=snap_int(self.partitions_var),
             ).pack(fill=tk.X, pady=5)
             ttk.Label(control_frame, textvariable=self.partitions_var).pack()
 
@@ -203,63 +195,41 @@ def run_interactive_mode():
             ttk.Label(control_frame, text="Épocas:").pack(anchor=tk.W, pady=(10, 0))
             self.epochs_var = tk.IntVar(value=5)
             ttk.Scale(
-                control_frame,
-                from_=1,
-                to=50,
-                orient=tk.HORIZONTAL,
-                variable=self.epochs_var,
-                length=200,
-                command=snap_int(self.epochs_var)
+                control_frame, from_=1, to=50, orient=tk.HORIZONTAL,
+                variable=self.epochs_var, length=200,
+                command=snap_int(self.epochs_var),
             ).pack(fill=tk.X, pady=5)
             ttk.Label(control_frame, textvariable=self.epochs_var).pack()
 
             # Número de experimentos
-            ttk.Label(control_frame, text="Experimentos:").pack(
-                anchor=tk.W, pady=(10, 0)
-            )
+            ttk.Label(control_frame, text="Experimentos:").pack(anchor=tk.W, pady=(10, 0))
             self.experiments_var = tk.IntVar(value=5)
             ttk.Scale(
-                control_frame,
-                from_=1,
-                to=20,
-                orient=tk.HORIZONTAL,
-                variable=self.experiments_var,
-                length=200,
-                command=snap_int(self.experiments_var)
+                control_frame, from_=1, to=20, orient=tk.HORIZONTAL,
+                variable=self.experiments_var, length=200,
+                command=snap_int(self.experiments_var),
             ).pack(fill=tk.X, pady=5)
             ttk.Label(control_frame, textvariable=self.experiments_var).pack()
 
             # Neuronas ocultas
-            ttk.Label(control_frame, text="Neuronas de la capa oculta:").pack(
-                anchor=tk.W, pady=(10, 0)
-            )
+            ttk.Label(control_frame, text="Neuronas de la capa oculta:").pack(anchor=tk.W, pady=(10, 0))
             self.hidden_var = tk.IntVar(value=30)
             ttk.Scale(
-                control_frame,
-                from_=10,
-                to=100,
-                orient=tk.HORIZONTAL,
-                variable=self.hidden_var,
-                length=200,
-                command=snap_int(self.hidden_var)
+                control_frame, from_=10, to=100, orient=tk.HORIZONTAL,
+                variable=self.hidden_var, length=200,
+                command=snap_int(self.hidden_var),
             ).pack(fill=tk.X, pady=5)
             ttk.Label(control_frame, textvariable=self.hidden_var).pack()
 
             # Tasa de aprendizaje
-            ttk.Label(control_frame, text="Tasa de aprendizaje:").pack(
-                anchor=tk.W, pady=(10, 0)
-            )
+            ttk.Label(control_frame, text="Tasa de aprendizaje:").pack(anchor=tk.W, pady=(10, 0))
             self.lr_var = tk.StringVar(value="1.0")
             ttk.Entry(control_frame, textvariable=self.lr_var, width=20).pack(pady=5)
 
             # Ejemplos de entrenamiento
-            ttk.Label(control_frame, text="Ejemplos de entrenamiento:").pack(
-                anchor=tk.W, pady=(10, 0)
-            )
+            ttk.Label(control_frame, text="Ejemplos de entrenamiento:").pack(anchor=tk.W, pady=(10, 0))
             self.n_train_var = tk.StringVar(value="5000")
-            ttk.Entry(control_frame, textvariable=self.n_train_var, width=20).pack(
-                pady=5
-            )
+            ttk.Entry(control_frame, textvariable=self.n_train_var, width=20).pack(pady=5)
 
             # Botones
             ttk.Separator(control_frame, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=20)
@@ -316,22 +286,170 @@ def run_interactive_mode():
             # Barra de estado
             self.status_var = tk.StringVar(value="Listo")
             ttk.Label(
-                self.root,
-                textvariable=self.status_var,
-                relief=tk.SUNKEN,
-                anchor=tk.W,
+                self.root, textvariable=self.status_var,
+                relief=tk.SUNKEN, anchor=tk.W,
             ).pack(side=tk.BOTTOM, fill=tk.X)
+
+        # ================================
+        # VENTANA DE PROGRESO
+        # ================================
+
+        def _create_progress_window(self, num_experiments: int, num_epochs: int):
+            """
+            Crea una ventana modal que muestra el progreso del entrenamiento.
+
+            La ventana se mantiene responsive porque el entrenamiento corre
+            en un hilo separado y se comunica mediante una cola.
+
+            :param num_experiments: Total de experimentos a ejecutar
+            :type num_experiments: int
+            :param num_epochs: Total de épocas por experimento
+            :type num_epochs: int
+            :return: Diccionario con los widgets de la ventana de progreso
+            :rtype: dict
+            """
+            import tkinter as tk
+            from tkinter import ttk
+
+            win = tk.Toplevel(self.root)
+            win.title("Ejecutando experimentos...")
+            win.geometry("520x320")
+            win.resizable(False, False)
+            win.grab_set()  # Modal: bloquea interacción con la ventana principal
+            win.protocol("WM_DELETE_WINDOW", lambda: None)  # Deshabilita el cierre manual
+
+            # Título
+            ttk.Label(
+                win, text="Entrenamiento en progreso",
+                font=("Helvetica", 13, "bold"),
+            ).pack(pady=(18, 4))
+
+            # Experimento actual
+            exp_label_var = tk.StringVar(value="Inicializando...")
+            ttk.Label(win, textvariable=exp_label_var, font=("Helvetica", 10)).pack(pady=2)
+
+            # Barra de progreso general (experimentos)
+            ttk.Label(win, text="Progreso general:").pack(anchor=tk.W, padx=24, pady=(10, 0))
+            exp_progress = ttk.Progressbar(
+                win, orient=tk.HORIZONTAL, length=470,
+                mode="determinate", maximum=num_experiments,
+            )
+            exp_progress.pack(padx=24, pady=4)
+
+            # Barra de épocas del experimento actual
+            ttk.Label(win, text="Época actual:").pack(anchor=tk.W, padx=24, pady=(8, 0))
+            epoch_progress = ttk.Progressbar(
+                win, orient=tk.HORIZONTAL, length=470,
+                mode="determinate", maximum=num_epochs,
+            )
+            epoch_progress.pack(padx=24, pady=4)
+
+            # Último mensaje recibido
+            ttk.Label(win, text="Último estado:").pack(anchor=tk.W, padx=24, pady=(8, 0))
+            msg_var = tk.StringVar(value="—")
+            ttk.Label(
+                win, textvariable=msg_var,
+                font=("Helvetica", 9), foreground="#555555",
+                wraplength=470, justify=tk.LEFT,
+            ).pack(anchor=tk.W, padx=24)
+
+            return {
+                "window": win,
+                "exp_label_var": exp_label_var,
+                "exp_progress": exp_progress,
+                "epoch_progress": epoch_progress,
+                "msg_var": msg_var,
+            }
+
+        def _poll_progress_queue(self, progress_queue, widgets, num_experiments, num_epochs, on_done):
+            """
+            Revisa la cola de progreso periódicamente desde el hilo principal.
+
+            Tkinter no es thread-safe, por lo que el hilo de entrenamiento NUNCA
+            toca los widgets directamente. Solo escribe en la cola, y este método
+            — que siempre corre en el hilo principal — lee la cola y actualiza la UI.
+
+            Tipos de mensajes en la cola:
+              ('exp',   número_experimento) → avanza barra de experimentos
+              ('epoch', número_época)        → avanza barra de épocas
+              ('msg',   texto)               → actualiza etiqueta de estado
+              ('done',  resultado)           → entrenamiento terminado exitosamente
+              ('error', excepción)           → ocurrió un error en el hilo
+
+            :param progress_queue: Cola compartida entre hilo principal e hilo de entrenamiento
+            :param widgets: Diccionario con los widgets de la ventana de progreso
+            :param num_experiments: Total de experimentos (para calcular porcentaje)
+            :param num_epochs: Total de épocas (para calcular porcentaje)
+            :param on_done: Callback llamado con el resultado cuando termina con éxito
+            """
+            import queue as queue_module
+
+            try:
+                # Drena todos los mensajes disponibles en este ciclo de polling
+                while True:
+                    msg_type, payload = progress_queue.get_nowait()
+
+                    if msg_type == "exp":
+                        # Nuevo experimento iniciado
+                        widgets["exp_label_var"].set(
+                            f"Experimento {payload} de {num_experiments}"
+                        )
+                        widgets["exp_progress"]["value"] = payload - 1
+                        # Reinicia barra de épocas para el nuevo experimento
+                        widgets["epoch_progress"]["value"] = 0
+
+                    elif msg_type == "epoch":
+                        # Época completada dentro del experimento actual
+                        widgets["epoch_progress"]["value"] = payload
+
+                    elif msg_type == "msg":
+                        # Mensaje informativo de estado
+                        widgets["msg_var"].set(payload)
+
+                    elif msg_type == "done":
+                        # Entrenamiento completado exitosamente
+                        widgets["exp_progress"]["value"] = num_experiments
+                        widgets["epoch_progress"]["value"] = num_epochs
+                        widgets["window"].destroy()
+                        on_done(payload)
+                        return  # Detiene el polling
+
+                    elif msg_type == "error":
+                        widgets["window"].destroy()
+                        raise payload
+
+            except queue_module.Empty:
+                pass  # No hay mensajes nuevos; es normal, seguimos esperando
+
+            except Exception as e:
+                widgets["window"].destroy()
+                from tkinter import messagebox
+                messagebox.showerror("Error", f"Error ejecutando experimento:\n{str(e)}")
+                self.status_var.set("Error en ejecución")
+                return
+
+            # Reprograma el siguiente ciclo de polling cada 100ms
+            self.root.after(100, lambda: self._poll_progress_queue(
+                progress_queue, widgets, num_experiments, num_epochs, on_done
+            ))
 
         # ==================
         # ACCIONES DE BOTONES
         # ==================
 
         def _run_experiment(self):
-            """Ejecuta un experimento con los parámetros actuales."""
-            try:
-                self.status_var.set("Ejecutando experimentos...")
-                self.root.update()
+            """
+            Ejecuta un experimento con los parámetros actuales.
 
+            El entrenamiento se lanza en un hilo secundario para que la GUI
+            permanezca responsive. La comunicación entre hilos se hace mediante
+            queue.Queue, que es la única estructura thread-safe de Python estándar
+            recomendada para interactuar con tkinter desde otro hilo.
+            """
+            import threading
+            import queue
+
+            try:
                 params = {
                     "num_partitions": self.partitions_var.get(),
                     "num_epochs": self.epochs_var.get(),
@@ -341,42 +459,92 @@ def run_interactive_mode():
                     "n_train": int(self.n_train_var.get()),
                     "verbose": False,
                 }
+            except ValueError as e:
+                from tkinter import messagebox
+                messagebox.showerror("Error de parámetros", str(e))
+                return
 
-                results = run_multiple_experiments(**params)
+            progress_queue = queue.Queue()
+            num_experiments = params["num_experiments"]
+            num_epochs = params["num_epochs"]
 
+            # Crea la ventana de progreso antes de lanzar el hilo
+            widgets = self._create_progress_window(num_experiments, num_epochs)
+            self.status_var.set("Ejecutando experimentos...")
+
+            # ── Hilo de entrenamiento ──────────────────────────────────────────
+            # REGLA CLAVE: este hilo NUNCA toca widgets de tkinter.
+            # Solo escribe en progress_queue con put(), que es thread-safe.
+            def training_thread():
+                current_exp = [0]  # Lista mutable para poder modificar en el closure
+
+                def on_progress(msg: str):
+                    """
+                    Callback invocado desde experiment_runner y nn_diego.
+                    Interpreta el texto para extraer el tipo de evento y lo encola.
+                    """
+                    # Siempre encola el mensaje de texto para mostrarlo
+                    progress_queue.put(("msg", msg))
+
+                    # Detecta inicio de nuevo experimento: "EXPERIMENTO X/Y"
+                    if msg.startswith("EXPERIMENTO"):
+                        try:
+                            exp_num = int(msg.split()[1].split("/")[0])
+                            current_exp[0] = exp_num
+                            progress_queue.put(("exp", exp_num))
+                        except (IndexError, ValueError):
+                            pass
+
+                    # Detecta fin de época: "[Época X/Y — Precisión: ...]"
+                    elif msg.startswith("[Época"):
+                        try:
+                            epoch_num = int(msg.split()[1].split("/")[0])
+                            progress_queue.put(("epoch", epoch_num))
+                        except (IndexError, ValueError):
+                            pass
+
+                try:
+                    results = run_multiple_experiments(**params, on_progress=on_progress)
+                    progress_queue.put(("done", results))
+                except Exception as e:
+                    progress_queue.put(("error", e))
+
+            # ── Callback al completar ──────────────────────────────────────────
+            def on_training_done(results):
                 self.current_results = results
                 self.current_params = params
-
                 self._plot_results(results, params, comparison=False)
-
                 self.status_var.set(
                     f"Completado: Precisión final = {results['final_mean_accuracy']:.2f}%"
                 )
 
-            except Exception as e:
-                messagebox.showerror(
-                    "Error", f"Error ejecutando experimento:\n{str(e)}"
-                )
-                self.status_var.set("Error en ejecución")
+            # Lanza el hilo como daemon para que no bloquee el cierre de la app
+            thread = threading.Thread(target=training_thread, daemon=True)
+            thread.start()
+
+            # Inicia el ciclo de polling en el hilo principal (cada 100ms)
+            self.root.after(100, lambda: self._poll_progress_queue(
+                progress_queue, widgets, num_experiments, num_epochs, on_training_done
+            ))
 
         def _compare_configurations(self):
             """Superpone el resultado actual con ejecuciones anteriores."""
             if not hasattr(self, "current_results"):
+                from tkinter import messagebox
                 messagebox.showwarning("Advertencia", "Primero ejecuta un experimento")
                 return
 
             # Guarda configuración actual antes de ejecutar la nueva
-            self.previous_results.append(
-                {
-                    "results": self.current_results,
-                    "params": self.current_params,
-                    "color": self.colors[self.color_index % len(self.colors)],
-                }
-            )
+            self.previous_results.append({
+                "results": self.current_results,
+                "params": self.current_params,
+                "color": self.colors[self.color_index % len(self.colors)],
+            })
             self.color_index += 1
 
+            # Marca que al terminar se debe ejecutar _plot_comparison
+            self._pending_comparison = True
             self._run_experiment()
-            self._plot_comparison()
 
         def _clear_plots(self):
             """Limpia todos los gráficos."""
@@ -389,12 +557,13 @@ def run_interactive_mode():
 
         def _save_results(self):
             """Guarda los resultados del experimento actual."""
-            if not hasattr(self, "current_results"):
+            if not hasattr(self, "current_results") or self.current_results is None:
+                from tkinter import messagebox
                 messagebox.showwarning("Advertencia", "No hay resultados para guardar")
                 return
 
             filename = f"Results/experiment_{self.current_results['timestamp']}.json"
-            os.makedirs("results", exist_ok=True)
+            os.makedirs("Results", exist_ok=True)
 
             with open(filename, "w") as f:
                 json.dump(
@@ -402,19 +571,15 @@ def run_interactive_mode():
                         "parameters": self.current_params,
                         "results": {
                             "timestamp": self.current_results["timestamp"],
-                            "final_mean_accuracy": self.current_results[
-                                "final_mean_accuracy"
-                            ],
-                            "final_std_accuracy": self.current_results[
-                                "final_std_accuracy"
-                            ],
+                            "final_mean_accuracy": self.current_results["final_mean_accuracy"],
+                            "final_std_accuracy": self.current_results["final_std_accuracy"],
                             "all_histories": self.current_results["all_histories"],
                         },
                     },
-                    f,
-                    indent=2,
+                    f, indent=2,
                 )
 
+            from tkinter import messagebox
             messagebox.showinfo("Éxito", f"Resultados guardados en:\n{filename}")
             self.status_var.set(f"Guardado: {filename}")
 
@@ -442,19 +607,12 @@ def run_interactive_mode():
             # --- Panel 1: Evolución del promedio con banda de desviación estándar ---
             acc_data = prepare_accuracy_chart_data(histories)
             ax1.plot(
-                acc_data["x"],
-                acc_data["y_mean"],
-                "o-",
-                color=color,
-                linewidth=2,
-                label=label,
+                acc_data["x"], acc_data["y_mean"], "o-",
+                color=color, linewidth=2, label=label,
             )
             ax1.fill_between(
-                acc_data["x"],
-                acc_data["y_lower"],
-                acc_data["y_upper"],
-                alpha=0.2,
-                color=color,
+                acc_data["x"], acc_data["y_lower"], acc_data["y_upper"],
+                alpha=0.2, color=color,
             )
             ax1.set_xlabel(acc_data["xlabel"])
             ax1.set_ylabel(acc_data["ylabel"])
@@ -463,17 +621,13 @@ def run_interactive_mode():
             ax1.grid(True, alpha=0.3)
 
             # --- Panel 2: Comparación por partición (último experimento) ---
-            # Se filtra el último historial individualmente para ver particiones
             last_history = [histories[-1]] if histories else []
             part_data = prepare_partition_comparison_data(last_history)
             if part_data:
                 for partition in part_data["partitions"]:
                     ax2.plot(
-                        partition["x"],
-                        partition["y"],
-                        "o-",
-                        label=f"Partición {partition['id']}",
-                        alpha=0.7,
+                        partition["x"], partition["y"], "o-",
+                        label=f"Partición {partition['id']}", alpha=0.7,
                     )
             ax2.set_xlabel(part_data.get("xlabel", "Época"))
             ax2.set_ylabel(part_data.get("ylabel", "Precisión (%)"))
@@ -488,19 +642,13 @@ def run_interactive_mode():
                 for i in range(len(dist_data["bins"]) - 1)
             ]
             ax3.bar(
-                bin_centers,
-                dist_data["counts"],
+                bin_centers, dist_data["counts"],
                 width=(dist_data["bins"][1] - dist_data["bins"][0]) * 0.9,
-                color=color,
-                alpha=0.7,
-                edgecolor="black",
+                color=color, alpha=0.7, edgecolor="black",
             )
             ax3.axvline(
-                dist_data["mean"],
-                color="red",
-                linestyle="--",
-                linewidth=2,
-                label="Promedio",
+                dist_data["mean"], color="red", linestyle="--",
+                linewidth=2, label="Promedio",
             )
             ax3.set_xlabel(dist_data["xlabel"])
             ax3.set_ylabel(dist_data["ylabel"])
@@ -519,6 +667,11 @@ def run_interactive_mode():
 
             self.fig.tight_layout()
             self.canvas.draw()
+
+            # Si estaba pendiente una comparación, la ejecuta ahora que hay datos frescos
+            if getattr(self, "_pending_comparison", False):
+                self._pending_comparison = False
+                self._plot_comparison()
 
         def _plot_comparison(self):
             """
@@ -540,7 +693,7 @@ def run_interactive_mode():
             ]
 
             # Agrega configuración actual
-            if hasattr(self, "current_results"):
+            if hasattr(self, "current_results") and self.current_params is not None:
                 all_results.append(self.current_results)
                 labels.append(
                     f"P={self.current_params['num_partitions']}, "
@@ -554,12 +707,8 @@ def run_interactive_mode():
                 linestyle = "--" if i == len(comp_data["configurations"]) - 1 else "-"
                 linewidth = 3 if linestyle == "--" else 2
                 ax1.plot(
-                    config["x"],
-                    config["y"],
-                    "o-",
-                    color=color,
-                    linewidth=linewidth,
-                    linestyle=linestyle,
+                    config["x"], config["y"], "o-",
+                    color=color, linewidth=linewidth, linestyle=linestyle,
                     label=f"{config['label']} ({config['final_accuracy']:.1f}%)",
                 )
 
@@ -577,56 +726,42 @@ def run_interactive_mode():
     root.mainloop()
 
 
+# ==========
+# ENTRADA
+# ==========
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="NN_practica - Análisis de Algoritmo de Diego para MNIST"
     )
 
     parser.add_argument(
-        "--interactive",
-        "-i",
-        action="store_true",
+        "--interactive", "-i", action="store_true",
         help="Ejecutar en modo interactivo con interfaz gráfica",
     )
     parser.add_argument(
-        "--partitions",
-        "-p",
-        type=int,
-        default=2,
+        "--partitions", "-p", type=int, default=2,
         help="Número de particiones (default: 2)",
     )
     parser.add_argument(
-        "--epochs",
-        "-e",
-        type=int,
-        default=5,
+        "--epochs", "-e", type=int, default=5,
         help="Número de épocas (default: 5)",
     )
     parser.add_argument(
-        "--experiments",
-        "-x",
-        type=int,
-        default=5,
+        "--experiments", "-x", type=int, default=5,
         help="Número de experimentos a ejecutar (default: 5)",
     )
     parser.add_argument(
-        "--hidden-neurons",
-        "-n",
-        type=int,
-        default=30,
+        "--hidden-neurons", "-n", type=int, default=30,
         help="Número de neuronas en capa oculta (default: 30)",
     )
     parser.add_argument(
-        "--learning-rate",
-        "-l",
-        type=float,
-        default=1.0,
+        "--learning-rate", "-l", type=float, default=1.0,
         help="Tasa de aprendizaje (default: 1.0)",
     )
     parser.add_argument(
-        "--n-train",
-        type=int,
-        default=5000,
+        "--n-train", type=int, default=5000,
         help="Número de ejemplos de entrenamiento (default: 5000)",
     )
 
@@ -634,7 +769,7 @@ def main():
 
     # Crea directorios necesarios
     os.makedirs("Data", exist_ok=True)
-    os.makedirs("results", exist_ok=True)
+    os.makedirs("Results", exist_ok=True)
 
     if args.interactive:
         run_interactive_mode()

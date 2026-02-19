@@ -9,7 +9,7 @@ import json
 import random
 import time
 from datetime import datetime
-from typing import List, Dict, Any
+from typing import Any, Callable, Dict, List, Tuple
 
 import sys
 import os
@@ -29,6 +29,7 @@ def run_single_experiment(
     n_train: int = 5000,
     random_seed: int | None = None,
     verbose: bool = False,
+    on_progress: Any = None,
 ) -> Dict[str, Any]:
     """
     Ejecuta un único experimento de Algoritmo de Diego.
@@ -54,20 +55,31 @@ def run_single_experiment(
     :param verbose: Si True, muestra progreso
     :type verbose: bool
 
+    :param on_progress: Callback opcional para reportar progreso.\n
+                        Firma: on_progress(mensaje: str) → None
+    :type on_progress: Callable | None
+
     :return: Historial del experimento con métricas
     :rtype: Dict[str, Any]
     """
+    def _notify(msg: str) -> None:
+        """Envía un mensaje de progreso si hay callback registrado."""
+        if on_progress is not None:
+            on_progress(msg)
+        if verbose:
+            print(msg)
+
     if random_seed is not None:
         random.seed(random_seed)
 
     # Carga datos
-    if verbose:
-        print("\n[Cargando datos...]")
+    _notify("[Cargando datos MNIST...]")
     X_train, Y_train = load_mnist_train(
         n_train=n_train, download_if_missing=True, verbose=False
     )
 
     # Crea particiones
+    _notify(f"[Creando {num_partitions} particiones estratificadas...]")
     partitions = partition_mnist_data_simple(
         num_partitions=num_partitions,
         X_train=X_train,
@@ -76,10 +88,8 @@ def run_single_experiment(
         verbose=False,
     )
 
-    # Crea y entrena la red
-    if verbose:
-        print(f"[Creando red: 784 → {hidden_neurons} → 10]")
-
+    # Crea la red
+    _notify(f"[Inicializando red: 784 → {hidden_neurons} → 10]")
     network = DiegoNeuronalNetwork(
         input_size=784,
         hidden_size=hidden_neurons,
@@ -89,23 +99,27 @@ def run_single_experiment(
 
     start_time = time.time()
 
+    # Construye el callback de época que traduce el formato de train_federated
+    # al mensaje de texto que entiende on_progress
+    def _on_epoch_end(epoch: int, total: int, accuracy: float, loss: float) -> None:
+        _notify(f"[Época {epoch}/{total} — Precisión: {accuracy:.2f}%  Loss: {loss:.4f}]")
+
     history = network.train_federated(
         partitions=partitions,
         epochs=num_epochs,
         learning_rate=learning_rate,
         verbose=verbose,
+        on_epoch_end=_on_epoch_end,
     )
 
     elapsed_time = time.time() - start_time
 
-    # Evalua en conjunto de prueba
-    if verbose:
-        print("\n[Evaluando en conjunto de prueba...]")
+    # Evalúa en conjunto de prueba
+    _notify("[Evaluando en conjunto de prueba...]")
     X_test, Y_test = load_mnist_test(verbose=False)
     test_accuracy, test_loss = network.evaluate(X_test[:1000], Y_test[:1000])
 
-    if verbose:
-        print(f"[Precisión en test: {test_accuracy:.2f}%]")
+    _notify(f"[Precisión en test: {test_accuracy:.2f}%]")
 
     return {
         "accuracies": history["accuracies"],
@@ -127,6 +141,7 @@ def run_multiple_experiments(
     learning_rate: float = 1.0,
     n_train: int = 5000,
     verbose: bool = True,
+    on_progress: Any = None,
 ) -> Dict[str, Any]:
     """
     Ejecuta múltiples experimentos con diferentes semillas aleatorias.
@@ -152,29 +167,31 @@ def run_multiple_experiments(
     :param verbose: Si True, muestra progreso
     :type verbose: bool
 
+    :param on_progress: Callback opcional para reportar progreso.\n
+                        Firma: on_progress(mensaje: str) → None
+    :type on_progress: Callable | None
+
     :return: Resultados agregados de todos los experimentos
     :rtype: Dict[str, Any]
     """
-    if verbose:
-        print("=" * 70)
-        print(f"EJECUTANDO {num_experiments} EXPERIMENTOS")
-        print("=" * 70)
-        print("Configuración:")
-        print(f"  Particiones: {num_partitions}")
-        print(f"  Épocas: {num_epochs}")
-        print(f"  Neuronas ocultas: {hidden_neurons}")
-        print(f"  Tasa de aprendizaje: {learning_rate}")
-        print(f"  Ejemplos: {n_train}")
-        print("=" * 70)
+    def _notify(msg: str) -> None:
+        """Envía un mensaje de progreso si hay callback registrado."""
+        if on_progress is not None:
+            on_progress(msg)
+        if verbose:
+            print(msg)
+
+    _notify(f"{'=' * 70}")
+    _notify(f"EJECUTANDO {num_experiments} EXPERIMENTOS")
+    _notify(f"  Particiones: {num_partitions} | Épocas: {num_epochs} | "
+            f"Neuronas: {hidden_neurons} | LR: {learning_rate} | N: {n_train}")
+    _notify(f"{'=' * 70}")
 
     all_histories = []
     test_accuracies = []
 
     for exp_idx in range(num_experiments):
-        if verbose:
-            print(f"\n{'-' * 70}")
-            print(f"EXPERIMENTO {exp_idx + 1}/{num_experiments}")
-            print(f"{'-' * 70}")
+        _notify(f"EXPERIMENTO {exp_idx + 1}/{num_experiments}")
 
         # Semilla única para cada experimento
         seed = random.randint(0, 1000000)
@@ -187,10 +204,12 @@ def run_multiple_experiments(
             n_train=n_train,
             random_seed=seed,
             verbose=verbose,
+            on_progress=on_progress,
         )
 
         all_histories.append(result)
         test_accuracies.append(result["test_accuracy"])
+        _notify(f"  ✓ Completado — Precisión final: {result['final_accuracy']:.2f}%")
 
     # Calcula estadísticas finales
     final_accuracies = [h["final_accuracy"] for h in all_histories]
@@ -222,13 +241,8 @@ def run_multiple_experiments(
         "test_accuracies": test_accuracies,
     }
 
-    if verbose:
-        print(f"\n{'=' * 70}")
-        print("RESUMEN DE RESULTADOS")
-        print(f"{'=' * 70}")
-        print(f"Precisión final promedio: {mean_accuracy:.2f}% ± {std_accuracy:.2f}%")
-        print(f"Precisión en test promedio: {mean_test:.2f}%")
-        print(f"{'=' * 70}")
+    _notify(f"Precisión final promedio: {mean_accuracy:.2f}% ± {std_accuracy:.2f}%")
+    _notify(f"Precisión en test promedio: {mean_test:.2f}%")
 
     return results
 
@@ -279,7 +293,7 @@ def save_experiment_results(
     :rtype: str
     """
     if filename is None:
-        filename = f"results/experiment_{results['timestamp']}.json"
+        filename = f"Results/experiment_{results['timestamp']}.json"
 
     # Asegura que existe el directorio
     os.makedirs(os.path.dirname(filename), exist_ok=True)

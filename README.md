@@ -3,14 +3,14 @@
 Proyecto de redes neuronales con implementación del algoritmo propuesto por Diego (promediado de parámetros por época) para el dataset MNIST.
 
 ## Estructura del Proyecto
-NN_practica/
-├── Analytics/ # Análisis estadístico y visualización
-├── Networks/ # Red neuronal federada
-├── Utils/ # Utilidades matemáticas y carga de datos
-├── Data/ # Datos MNIST (descargados automáticamente)
-├── results/ # Resultados de experimentos
-├── main.py # Punto de entrada
-└── requirements.txt # Dependencias
+NN_practica/  
+├── Analytics/ # Análisis estadístico y visualización  
+├── Networks/ # Red neuronal federada  
+├── Utils/ # Utilidades matemáticas y carga de datos  
+├── Data/ # Datos MNIST (descargados automáticamente)  
+├── results/ # Resultados de experimentos  
+├── main.py # Punto de entrada  
+└── requirements.txt # Dependencias  
 
 ## Instalación
 Con Pip:

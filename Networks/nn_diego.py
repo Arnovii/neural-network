@@ -378,6 +378,7 @@ class DiegoNeuronalNetwork:
         epochs: int,
         learning_rate: float,
         verbose: bool = True,
+        on_epoch_end: Any = None,
     ) -> Dict[str, Any]:
         """
         Entrena la red usando el algoritmo propuesto por Diego.
@@ -399,27 +400,30 @@ class DiegoNeuronalNetwork:
         :type learning_rate: float
         :param verbose: Si True, muestra progreso detallado
         :type verbose: bool
+        :param on_epoch_end: Callback opcional llamado al finalizar cada época.\n
+                             Firma: on_epoch_end(epoch: int, total_epochs: int,\n
+                             accuracy: float, loss: float) → None
+        :type on_epoch_end: Callable | None
         :return: Historial de entrenamiento con las siguientes claves:\n
-                 - accuracies: List[float] — precisión global por época.\n
-                 - losses: List[float] — pérdida global por época.\n
-                 - partition_accuracies: List[List[float]] — precisión de cada\n
+                 - 'accuracies': List[float] — precisión global por época.\n
+                 - 'losses': List[float] — pérdida global por época.\n
+                 - 'partition_accuracies': List[List[float]] — precisión de cada\n
                    partición por época. Forma: [epoca][particion].\n
-                 - epochs_detail: List[Dict] — detalle completo por época.
+                 - 'epochs_detail': List[Dict] — detalle completo por época.
         :rtype: Dict[str, Any]
         """
         num_partitions = len(partitions)
 
-        # Listas acumuladoras
+        # Listas acumuladoras — formato esperado por experiment_runner y statistics_engine
         accuracies: List[float] = []
         losses: List[float] = []
-        
         # partition_accuracies[epoca] = [acc_part0, acc_part1, ...]
         partition_accuracies: List[List[float]] = []
         epochs_detail: List[Dict[str, Any]] = []
 
         if verbose:
             print("=" * 70)
-            print("ENTRENAMIENTO CON ALGORITMO DE DIEGO")
+            print("ENTRENAMIENTO FEDERADO")
             print("=" * 70)
             print(f"Número de particiones: {num_partitions}")
             print(f"Épocas: {epochs}")
@@ -479,7 +483,9 @@ class DiegoNeuronalNetwork:
             # Acumula métricas en el formato esperado por Analytics
             accuracies.append(global_accuracy)
             losses.append(global_loss)
-            partition_accuracies.append([m["accuracy"] for m in partition_metrics])
+            partition_accuracies.append(
+                [m["accuracy"] for m in partition_metrics]
+            )
             epochs_detail.append(
                 {
                     "epoch": epoch + 1,
@@ -494,6 +500,10 @@ class DiegoNeuronalNetwork:
                 print(f"    Loss: {global_loss:.4f}, Accuracy: {global_accuracy:.2f}%")
                 print("-" * 50)
 
+            # Notifica al caller que terminó esta época
+            if on_epoch_end is not None:
+                on_epoch_end(epoch + 1, epochs, global_accuracy, global_loss)
+
         history: Dict[str, Any] = {
             "accuracies": accuracies,
             "losses": losses,
@@ -505,7 +515,7 @@ class DiegoNeuronalNetwork:
 
         if verbose:
             print("\n" + "=" * 70)
-            print("ENTRENAMIENTO CON ALGORITMO DE DIEGO  COMPLETADO")
+            print("ENTRENAMIENTO FEDERADO COMPLETADO")
             print("=" * 70)
 
         return history
