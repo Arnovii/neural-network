@@ -59,7 +59,7 @@ def run_terminal_mode(args):
     # Calcula estadísticas
     stats = compute_epoch_statistics(results["all_histories"])
 
-    # Mostra resumen
+    # Muestra resumen
     print("\n" + "=" * 70)
     print("RESUMEN DE RESULTADOS")
     print("=" * 70)
@@ -68,7 +68,7 @@ def run_terminal_mode(args):
     print(f"Mejor precisión alcanzada: {max(stats['max']):.2f}%")
 
     # Guarda resultados
-    output_file = f"results/experiment_{results['timestamp']}.json"
+    output_file = f"Results/experiment_{results['timestamp']}.json"
     print(f"\nResultados guardados en: {output_file}")
 
     # Gráfico ASCII usando datos preparados por chart_generator
@@ -96,12 +96,58 @@ def run_interactive_mode():
         print(f"Error: No se pueden cargar las librerías gráficas: {e}")
         print("Instala las dependencias con: pip install matplotlib")
         sys.exit(1)
+    
+    # Dibuja los mensajes emergentes al pasar el mouse
+    class ToolTip:
+        def __init__(self, widget, text):
+            self.widget = widget
+            self.text = text
+            self.tip_window = None
 
+            widget.bind("<Enter>", self.show_tip)
+            widget.bind("<Leave>", self.hide_tip)
+
+        def show_tip(self, event=None):
+            if self.tip_window or not self.text:
+                return
+
+            x = self.widget.winfo_rootx() + 20
+            y = self.widget.winfo_rooty() + 20
+
+            self.tip_window = tw = tk.Toplevel(self.widget)
+            tw.wm_overrideredirect(True)
+            tw.wm_geometry(f"+{x}+{y}")
+
+            label = tk.Label(
+                tw,
+                text=self.text,
+                justify="left",
+                background="#ffffe0",
+                relief="solid",
+                borderwidth=1,
+                font=("Helvetica", 9),
+            )
+            label.pack(ipadx=5, ipady=3)
+
+        def hide_tip(self, event=None):
+            if self.tip_window:
+                self.tip_window.destroy()
+                self.tip_window = None
+
+    # Aplicación principal
     class FederatedLearningApp:
         def __init__(self, root):
             self.root = root
+
+            # Obtiene la resolución de la pantalla
+            ancho = root.winfo_screenwidth()
+            alto = root.winfo_screenheight()
+
+            # Establece el título
             self.root.title("NN_practica - Análisis de  Algoritmo de Diego")
-            self.root.geometry("1400x900")
+            
+            # Configura geometry con el formato "ancho x alto + 0 + 0"
+            root.geometry(f"{ancho}x{alto}+0+0")
 
             # Datos de ejecuciones previas para comparación
             self.previous_results = []
@@ -121,9 +167,13 @@ def run_interactive_mode():
 
             self._create_ui()
 
+        # ==================
+        # CONSTRUCCIÓN UI
+        # ==================
+
         def _create_ui(self):
 
-            # Función helper para redonder valores
+            # Helper: fuerza valores enteros en los sliders
             def snap_int(var):
                 return lambda v: var.set(int(round(float(v))))
             
@@ -180,7 +230,7 @@ def run_interactive_mode():
             ttk.Label(control_frame, textvariable=self.experiments_var).pack()
 
             # Neuronas ocultas
-            ttk.Label(control_frame, text="Neuronas ocultas:").pack(
+            ttk.Label(control_frame, text="Neuronas de la capa oculta:").pack(
                 anchor=tk.W, pady=(10, 0)
             )
             self.hidden_var = tk.IntVar(value=30)
@@ -214,29 +264,41 @@ def run_interactive_mode():
             # Botones
             ttk.Separator(control_frame, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=20)
 
-            ttk.Button(
+            btn_run = ttk.Button(
                 control_frame,
-                text="▶ Ejecutar Experimento",
+                text="Ejecutar Experimento",
                 command=self._run_experiment,
-            ).pack(fill=tk.X, pady=5)
+            )
+            btn_run.pack(fill=tk.X, pady=5)
+            ToolTip(btn_run, "Ejecuta el algoritmo con los parámetros actuales")
 
-            ttk.Button(
+            btn_compare = ttk.Button(
                 control_frame,
-                text="📊 Comparar Configuraciones",
+                text="Comparar Configuraciones",
                 command=self._compare_configurations,
-            ).pack(fill=tk.X, pady=5)
+            )
+            btn_compare.pack(fill=tk.X, pady=5)
+            ToolTip(
+                btn_compare,
+                "Ejecuta un nuevo experimento y lo superpone\n"
+                "con los resultados actualmente mostrados."
+            )
 
-            ttk.Button(
+            btn_clear = ttk.Button(
                 control_frame,
-                text="🗑 Limpiar Gráficos",
+                text="Limpiar Gráficos",
                 command=self._clear_plots,
-            ).pack(fill=tk.X, pady=5)
+            )
+            btn_clear.pack(fill=tk.X, pady=5)
+            ToolTip(btn_clear, "Borra todas las gráficas actuales")
 
-            ttk.Button(
+            btn_save = ttk.Button(
                 control_frame,
-                text="💾 Guardar Resultados",
+                text="Guardar Resultados",
                 command=self._save_results,
-            ).pack(fill=tk.X, pady=5)
+            )
+            btn_save.pack(fill=tk.X, pady=5)
+            ToolTip(btn_save, "Guarda los resultados actuales en un archivo JSON")
 
             # Panel derecho: Gráficos
             self.fig, self.axes = plt.subplots(2, 2, figsize=(10, 8), dpi=100)
@@ -331,7 +393,7 @@ def run_interactive_mode():
                 messagebox.showwarning("Advertencia", "No hay resultados para guardar")
                 return
 
-            filename = f"results/experiment_{self.current_results['timestamp']}.json"
+            filename = f"Results/experiment_{self.current_results['timestamp']}.json"
             os.makedirs("results", exist_ok=True)
 
             with open(filename, "w") as f:
