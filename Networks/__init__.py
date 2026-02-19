@@ -1,5 +1,5 @@
 """
-Redes neuronales para Federated Learning.
+Redes neuronales para Algoritmo de Diego.
 """
 
 from .nn_diego import DiegoNeuronalNetwork

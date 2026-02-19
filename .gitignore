@@ -3,7 +3,10 @@
 *.gz
 
 # Cache de Ruff
-.ruff_cache\
+.ruff_cache/*
 
 # Cache de Python
 **/__pycache__/
+
+# Resultados exportados
+results/*

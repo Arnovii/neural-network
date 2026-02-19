@@ -1,7 +1,7 @@
 """
 NN_practica - Punto de entrada principal
 
-Ejecuta experimentos de Federated Learning con redes neuronales
+Ejecuta experimentos con el algoritmo
 y genera visualizaciones estadísticas.
 """
 
@@ -100,7 +100,7 @@ def run_interactive_mode():
     class FederatedLearningApp:
         def __init__(self, root):
             self.root = root
-            self.root.title("NN_practica - Análisis de Federated Learning")
+            self.root.title("NN_practica - Análisis de  Algoritmo de Diego")
             self.root.geometry("1400x900")
 
             # Datos de ejecuciones previas para comparación
@@ -241,7 +241,7 @@ def run_interactive_mode():
             # Panel derecho: Gráficos
             self.fig, self.axes = plt.subplots(2, 2, figsize=(10, 8), dpi=100)
             self.fig.suptitle(
-                "Análisis de Federated Learning", fontsize=14, fontweight="bold"
+                "Análisis de Algoritmo de Diego", fontsize=14, fontweight="bold"
             )
 
             plot_frame = ttk.Frame(self.root)
@@ -517,7 +517,7 @@ def run_interactive_mode():
 
 def main():
     parser = argparse.ArgumentParser(
-        description="NN_practica - Análisis de Federated Learning para MNIST"
+        description="NN_practica - Análisis de Algoritmo de Diego para MNIST"
     )
 
     parser.add_argument(

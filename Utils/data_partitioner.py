@@ -381,7 +381,7 @@ for fold in range(5):
 
         # Ejemplo 2: Crear particiones para entrenamiento distribuido
         print("\n" + "=" * 70)
-        print("EJEMPLO 2: Entrenamiento Distribuido (Federated Learning)")
+        print("EJEMPLO 2: Entrenamiento Distribuido (Algoritmo de Diego)")
         print("=" * 70)
 
         federated_partitions = partition_mnist_data(

@@ -284,8 +284,7 @@ class DiegoNeuronalNetwork:
                 print(f"    Procesados {i + 1}/{n} ejemplos...")
 
         # Calcular gradientes promedio
-        scale_factor = 1.0 / n
-        scale_gradients(accumulators, scale_factor)
+        scale_gradients(accumulators, 1.0 / n)
 
         # Actualizar parámetros
         self._update_parameters(accumulators, learning_rate)
@@ -410,16 +409,17 @@ class DiegoNeuronalNetwork:
         """
         num_partitions = len(partitions)
 
-        # Listas acumuladoras — formato esperado por experiment_runner y statistics_engine
+        # Listas acumuladoras
         accuracies: List[float] = []
         losses: List[float] = []
+        
         # partition_accuracies[epoca] = [acc_part0, acc_part1, ...]
         partition_accuracies: List[List[float]] = []
         epochs_detail: List[Dict[str, Any]] = []
 
         if verbose:
             print("=" * 70)
-            print("ENTRENAMIENTO FEDERADO")
+            print("ENTRENAMIENTO CON ALGORITMO DE DIEGO")
             print("=" * 70)
             print(f"Número de particiones: {num_partitions}")
             print(f"Épocas: {epochs}")
@@ -505,7 +505,7 @@ class DiegoNeuronalNetwork:
 
         if verbose:
             print("\n" + "=" * 70)
-            print("ENTRENAMIENTO FEDERADO COMPLETADO")
+            print("ENTRENAMIENTO CON ALGORITMO DE DIEGO  COMPLETADO")
             print("=" * 70)
 
         return history
@@ -518,11 +518,11 @@ class DiegoNeuronalNetwork:
 
 def demo_federated_learning():
     """
-    Demostración completa del entrenamiento federado con MNIST.
+    Demostración completa del entrenamiento con Algoritmo de Diego con MNIST.
     """
 
     print("\n" + "=" * 70)
-    print("DEMO: RED NEURONAL CON FEDERATED LEARNING EN MNIST")
+    print("DEMO: RED NEURONAL CON ALGORITMO DE DIEGO EN MNIST")
     print("=" * 70)
 
     # 1. Cargar datos
@@ -554,8 +554,8 @@ def demo_federated_learning():
     )
     print("   Arquitectura: 784 → 30 → 10")
 
-    # 4. Entrenamiento federado
-    print("\n4. Iniciando entrenamiento federado...")
+    # 4. Entrenamiento con algoritmo de Diego
+    print("\n4. Iniciando entrenamiento con Algoritmo de Diego...")
     history = network.train_federated(
         partitions=partitions, epochs=10, learning_rate=0.5, verbose=True
     )

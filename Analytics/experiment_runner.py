@@ -1,5 +1,5 @@
 """
-Ejecutor de experimentos para Federated Learning.
+Ejecutor de experimentos para Algoritmo de Diego.
 
 Gestiona la ejecución de múltiples entrenamientos con diferentes
 configuraciones y semillas aleatorias.
@@ -31,7 +31,7 @@ def run_single_experiment(
     verbose: bool = False,
 ) -> Dict[str, Any]:
     """
-    Ejecuta un único experimento de Federated Learning.
+    Ejecuta un único experimento de Algoritmo de Diego.
 
     :param num_partitions: Número de particiones
     :type num_partitions: int

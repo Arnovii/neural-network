@@ -1,5 +1,5 @@
 """
-Módulo de análisis estadístico y visualización para Federated Learning.
+Módulo de análisis estadístico y visualización para Algoritmo de Diego.
 """
 
 from .statistics_engine import (
