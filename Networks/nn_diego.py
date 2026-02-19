@@ -25,6 +25,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # Importa utilidades
 from Utils.math_utils import (
     accumulate_gradients,
+    accumulate_outer_inplace,
+    accumulate_vector_inplace,
     argmax,
     average_network_parameters,
     compute_one_hot,
@@ -242,82 +244,114 @@ class DiegoNeuronalNetwork:
             - accuracy (float): Precisión del batch en porcentaje.
         :rtype: Tuple[float, float]
         """
-        # Calcula cantidad de imágenes de entrada
         n = len(X)
 
-        # Inicializa acumuladores de gradientes
-        accumulators = initialize_gradient_accumulators(
-            {
-                "W1": self.W1,
-                "b1": self.b1,
-                "W2": self.W2,
-                "b2": self.b2,
-            }
-        )
+        # Acumuladores inicializados a cero. Se reutilizan in-place en cada ejemplo,
+        # evitando crear nuevas listas de matrices por cada iteración.
+        dW1_acc = [[0.0] * self.input_size  for _ in range(self.hidden_size)]
+        db1_acc = [0.0] * self.hidden_size
+        dW2_acc = [[0.0] * self.hidden_size for _ in range(self.output_size)]
+        db2_acc = [0.0] * self.output_size
+
         correct_predictions = 0
         total_loss = 0.0
 
-        # Acumula gradientes de todos los ejemplos
         for i in range(n):
-            # Forward pass
-            output, cache = self.forward(X[i])
+            # Forward propagation
+            x = X[i]
 
-            # Calcula predicción y precisión
+            z1 = matrix_vector_multiply(self.W1, x)
+            z1 = vector_add(z1, self.b1)
+            a1 = [sigmoid(z) for z in z1]
+
+            z2 = matrix_vector_multiply(self.W2, a1)
+            z2 = vector_add(z2, self.b2)
+            output = softmax(z2)
+
+            # Métricas
             prediction = argmax(output)
             if prediction == Y[i]:
                 correct_predictions += 1
 
-            # Calcular pérdida (cross-entropy)
-            # Evita log(0) con clipping
             prob = max(output[Y[i]], 1e-15)
             total_loss += -math.log(prob)
 
-            # Backward pass
-            dW1, db1, dW2, db2 = self.backward(Y[i], cache)
+            # δ2 = output − y_onehot  (cross-entropy + softmax, derivada combinada)
+            y_onehot = compute_one_hot(Y[i], self.output_size)
+            delta2 = vector_subtract(output, y_onehot)
 
-            # Acumular gradientes
-            accumulate_gradients(
-                accumulators, {"dW1": dW1, "db1": db1, "dW2": dW2, "db2": db2}
-            )
+            # δ1 = (W2ᵀ · δ2) ⊙ σ'(a1)
+            W2_T = matrix_transpose(self.W2)
+            delta1_raw = matrix_vector_multiply(W2_T, delta2)
+            delta1 = [delta1_raw[j] * sigmoid_derivative_from_activation(a1[j])
+                      for j in range(self.hidden_size)]
+
+            # accumulate_outer_inplace fusiona outer_product + matrix_add en un
+            # solo pase sobre los datos, sin crear matrices intermedias.
+            accumulate_outer_inplace(dW2_acc, delta2, a1)
+            accumulate_outer_inplace(dW1_acc, delta1, x)
+            accumulate_vector_inplace(db2_acc, delta2)
+            accumulate_vector_inplace(db1_acc, delta1)
 
             if verbose and (i + 1) % 1000 == 0:
                 print(f"    Procesados {i + 1}/{n} ejemplos...")
 
-        # Calcular gradientes promedio
-        scale_gradients(accumulators, 1.0 / n)
+        # _update_parameters aplica lr/n en un solo factor
+        self._update_parameters(dW1_acc, db1_acc, dW2_acc, db2_acc, learning_rate, n)
 
-        # Actualizar parámetros
-        self._update_parameters(accumulators, learning_rate)
-
-        # Calcular métricas
         loss = total_loss / n
         accuracy = 100.0 * correct_predictions / n
 
         return loss, accuracy
 
     def _update_parameters(
-        self, accumulators: Dict[str, Any], learning_rate: float
+        self,
+        dW1_acc: List[List[float]],
+        db1_acc: List[float],
+        dW2_acc: List[List[float]],
+        db2_acc: List[float],
+        learning_rate: float,
+        n: int,
     ) -> None:
         """
-        Actualiza los parámetros usando los gradientes acumulados.
+        Actualiza los parámetros de la red in-place usando los gradientes acumulados.
 
-        :param accumulators: Diccionario con gradientes acumulados
-        :type accumulators: Dict[str, Any]
+        Aplica lr/n como factor único en vez de escalar primero y restar después,
+        evitando la creación de matrices intermedias.
+
+        :param dW1_acc: Gradientes acumulados de W1 (sin escalar)
+        :type dW1_acc: List[List[float]]
+
+        :param db1_acc: Gradientes acumulados de b1 (sin escalar)
+        :type db1_acc: List[float]
+
+        :param dW2_acc: Gradientes acumulados de W2 (sin escalar)
+        :type dW2_acc: List[List[float]]
+
+        :param db2_acc: Gradientes acumulados de b2 (sin escalar)
+        :type db2_acc: List[float]
 
         :param learning_rate: Tasa de aprendizaje
         :type learning_rate: float
-        """
-        # Actualizar W1 y b1
-        for j in range(self.hidden_size):
-            for k in range(self.input_size):
-                self.W1[j][k] -= learning_rate * accumulators["dW1"][j][k]
-            self.b1[j] -= learning_rate * accumulators["db1"][j]
 
-        # Actualizar W2 y b2
+        :param n: Número de ejemplos del batch (para promediar gradientes)
+        :type n: int
+        """
+        factor = learning_rate / n
+
+        for wi, dwi in zip(self.W1, dW1_acc):
+            for j in range(len(wi)):
+                wi[j] -= factor * dwi[j]
+
+        for j in range(self.hidden_size):
+            self.b1[j] -= factor * db1_acc[j]
+
+        for wi, dwi in zip(self.W2, dW2_acc):
+            for j in range(len(wi)):
+                wi[j] -= factor * dwi[j]
+
         for j in range(self.output_size):
-            for k in range(self.hidden_size):
-                self.W2[j][k] -= learning_rate * accumulators["dW2"][j][k]
-            self.b2[j] -= learning_rate * accumulators["db2"][j]
+            self.b2[j] -= factor * db2_acc[j]
 
     def predict(self, x: List[float]) -> int:
         """

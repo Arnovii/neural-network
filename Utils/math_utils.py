@@ -183,7 +183,8 @@ def matrix_vector_multiply(
         raise ValueError(
             f"Dimensiones incompatibles: matriz {len(matrix)}×{len(matrix[0])}, vector {len(vector)}"
         )
-    return [vector_dot(row, vector) for row in matrix]
+    # zip evita la sobrecarga de __getitem__ en cada iteración
+    return [sum(a * b for a, b in zip(row, vector)) for row in matrix]
 
 
 def matrix_transpose(matrix: List[List[float]]) -> List[List[float]]:
@@ -544,6 +545,48 @@ def accumulate_gradients(
             acc_gradients[key] += new_val
 
     return acc_gradients
+
+
+def accumulate_outer_inplace(
+    acc: List[List[float]], v_col: List[float], v_row: List[float]
+) -> None:
+    """
+    Acumula el producto externo v_col ⊗ v_row directamente sobre acc.\n
+    Equivale a: acc += outer_product(v_col, v_row), pero sin crear la matriz
+    intermedia del producto externo ni una nueva matriz para la suma.
+
+    Esto fusiona outer_product + matrix_add en un solo pase, lo que elimina
+    dos allocations de lista por cada ejemplo de entrenamiento. Para matrices
+    grandes como dW1 (30×784) con miles de ejemplos, el ahorro es significativo.
+
+    :param acc: Acumulador a modificar in-place (filas × columnas)
+    :type acc: List[List[float]]
+
+    :param v_col: Vector columna (define las filas del resultado)
+    :type v_col: List[float]
+
+    :param v_row: Vector fila (define las columnas del resultado)
+    :type v_row: List[float]
+    """
+    for i, vi in enumerate(v_col):
+        row = acc[i]
+        for j, vj in enumerate(v_row):
+            row[j] += vi * vj
+
+
+def accumulate_vector_inplace(acc: List[float], v: List[float]) -> None:
+    """
+    Acumula v sobre acc directamente: acc[i] += v[i] para todo i.\n
+    Equivale a vector_add pero sin crear una nueva lista.
+
+    :param acc: Vector acumulador a modificar in-place
+    :type acc: List[float]
+
+    :param v: Vector a sumar
+    :type v: List[float]
+    """
+    for i in range(len(acc)):
+        acc[i] += v[i]
 
 
 def scale_gradients(gradients: Dict[str, Any], scale: float) -> Dict[str, Any]:
