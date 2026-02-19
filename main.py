@@ -318,7 +318,7 @@ def run_interactive_mode() -> None:
             btn_save.pack(fill=tk.X, pady=5)
             ToolTip(btn_save, "Guarda los resultados actuales en un archivo JSON")
 
-            # ── Panel derecho: gráficos ───────────────────────────────────────
+            # Panel derecho: gráficos
             self.fig, self.axes = plt.subplots(2, 2, figsize=(10, 8), dpi=100)
             self.fig.suptitle(
                 "Análisis de Algoritmo de Diego", fontsize=14, fontweight="bold"
