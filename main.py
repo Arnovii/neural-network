@@ -138,16 +138,15 @@ def run_interactive_mode():
     class FederatedLearningApp:
         def __init__(self, root):
             self.root = root
-
-            # Obtiene la resolución de la pantalla
-            ancho = root.winfo_screenwidth()
-            alto = root.winfo_screenheight()
+            self.root.columnconfigure(0, weight=0)  # Panel izquierdo fijo
+            self.root.columnconfigure(1, weight=1)  # Panel derecho expandible
+            self.root.rowconfigure(0, weight=1)
 
             # Establece el título
             self.root.title("NN_practica - Análisis de  Algoritmo de Diego")
             
-            # Configura geometry con el formato "ancho x alto + 0 + 0"
-            root.geometry(f"{ancho}x{alto}+0+0")
+            # Ajusta tamaño de ventana al espacio utilizable respetando la barra de tareas
+            root.state("zoomed")
 
             # Datos de ejecuciones previas para comparación
             self.previous_results = []
@@ -175,7 +174,7 @@ def run_interactive_mode():
 
             # Panel izquierdo: Controles
             control_frame = ttk.Frame(self.root, padding="10")
-            control_frame.pack(side=tk.LEFT, fill=tk.Y, padx=5, pady=5)
+            control_frame.grid(row=0, column=0, sticky="ns", padx=5, pady=5)
 
             ttk.Label(
                 control_frame, text="Parámetros", font=("Helvetica", 14, "bold")
@@ -277,7 +276,7 @@ def run_interactive_mode():
             )
 
             plot_frame = ttk.Frame(self.root)
-            plot_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=5, pady=5)
+            plot_frame.grid(row=0, column=1, sticky="nsew", padx=5, pady=5)
 
             self.canvas = FigureCanvasTkAgg(self.fig, master=plot_frame)
             self.canvas.draw()
@@ -285,14 +284,19 @@ def run_interactive_mode():
 
             # Barra de estado
             self.status_var = tk.StringVar(value="Listo")
-            ttk.Label(
-                self.root, textvariable=self.status_var,
-                relief=tk.SUNKEN, anchor=tk.W,
-            ).pack(side=tk.BOTTOM, fill=tk.X)
 
-        # ================================
+            status_bar = ttk.Label(
+                self.root,
+                textvariable=self.status_var,
+                relief=tk.SUNKEN,
+                anchor=tk.W,
+            )
+
+            status_bar.grid(row=1, column=0, columnspan=2, sticky="ew")
+
+        # =====================
         # VENTANA DE PROGRESO
-        # ================================
+        # =====================
 
         def _create_progress_window(self, num_experiments: int, num_epochs: int):
             """
@@ -433,9 +437,9 @@ def run_interactive_mode():
                 progress_queue, widgets, num_experiments, num_epochs, on_done
             ))
 
-        # ==================
+        # =====================
         # ACCIONES DE BOTONES
-        # ==================
+        # =====================
 
         def _run_experiment(self):
             """
@@ -472,7 +476,10 @@ def run_interactive_mode():
             widgets = self._create_progress_window(num_experiments, num_epochs)
             self.status_var.set("Ejecutando experimentos...")
 
-            # ── Hilo de entrenamiento ──────────────────────────────────────────
+            # ========================
+            # HILO DE ENTRENAMIENTO
+            # ========================
+
             # REGLA CLAVE: este hilo NUNCA toca widgets de tkinter.
             # Solo escribe en progress_queue con put(), que es thread-safe.
             def training_thread():
@@ -509,7 +516,10 @@ def run_interactive_mode():
                 except Exception as e:
                     progress_queue.put(("error", e))
 
-            # ── Callback al completar ──────────────────────────────────────────
+            # ========================
+            # CALLBACK AL COMPLETAR
+            # ========================
+
             def on_training_done(results):
                 self.current_results = results
                 self.current_params = params
@@ -604,7 +614,7 @@ def run_interactive_mode():
 
             histories = results["all_histories"]
 
-            # --- Panel 1: Evolución del promedio con banda de desviación estándar ---
+            # Panel 1: Evolución del promedio con banda de desviación estándar
             acc_data = prepare_accuracy_chart_data(histories)
             ax1.plot(
                 acc_data["x"], acc_data["y_mean"], "o-",
@@ -620,7 +630,7 @@ def run_interactive_mode():
             ax1.legend(loc="lower right")
             ax1.grid(True, alpha=0.3)
 
-            # --- Panel 2: Comparación por partición (último experimento) ---
+            # Panel 2: Comparación por partición (último experimento)
             last_history = [histories[-1]] if histories else []
             part_data = prepare_partition_comparison_data(last_history)
             if part_data:
@@ -635,7 +645,7 @@ def run_interactive_mode():
             ax2.legend(loc="lower right")
             ax2.grid(True, alpha=0.3)
 
-            # --- Panel 3: Distribución de precisión final ---
+            # Panel 3: Distribución de precisión final
             dist_data = prepare_distribution_data(histories)
             bin_centers = [
                 (dist_data["bins"][i] + dist_data["bins"][i + 1]) / 2
@@ -656,7 +666,7 @@ def run_interactive_mode():
             ax3.legend()
             ax3.grid(True, alpha=0.3)
 
-            # --- Panel 4: Mejora por época ---
+            # Panel 4: Mejora por época
             conv_data = prepare_convergence_data(histories)
             ax4.bar(conv_data["x"], conv_data["y"], color=color, alpha=0.7)
             ax4.axhline(0, color="black", linestyle="-", linewidth=0.5)
