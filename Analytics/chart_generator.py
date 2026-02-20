@@ -10,7 +10,6 @@ from Analytics.statistics_engine import (
     compute_convergence_epoch,
     compute_epoch_statistics,
     compute_partition_statistics,
-    compute_std,
 )
 
 
@@ -58,12 +57,14 @@ def prepare_partition_comparison_data(
     }
 
     for p_idx, epoch_stats in enumerate(p_stats["by_partition"]):
-        data["partitions"].append({
-            "id": p_idx + 1,
-            "x": list(range(1, len(epoch_stats) + 1)),
-            "y": [e["mean"] for e in epoch_stats],
-            "std": [e["std"] for e in epoch_stats],
-        })
+        data["partitions"].append(
+            {
+                "id": p_idx + 1,
+                "x": list(range(1, len(epoch_stats) + 1)),
+                "y": [e["mean"] for e in epoch_stats],
+                "std": [e["std"] for e in epoch_stats],
+            }
+        )
 
     return data
 
@@ -130,14 +131,16 @@ def prepare_comparison_chart_data(
 
     for result, label in zip(all_results, config_labels):
         stats = compute_epoch_statistics(result["all_histories"])
-        data["configurations"].append({
-            "label": label,
-            "x": list(range(1, len(stats["mean"]) + 1)),
-            "y": stats["mean"],
-            "std": stats["std"],
-            "final_accuracy": result.get("final_mean_accuracy", 0.0),
-            "final_std": result.get("final_std_accuracy", 0.0),
-        })
+        data["configurations"].append(
+            {
+                "label": label,
+                "x": list(range(1, len(stats["mean"]) + 1)),
+                "y": stats["mean"],
+                "std": stats["std"],
+                "final_accuracy": result.get("final_mean_accuracy", 0.0),
+                "final_std": result.get("final_std_accuracy", 0.0),
+            }
+        )
 
     return data
 

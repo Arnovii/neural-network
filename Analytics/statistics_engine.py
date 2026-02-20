@@ -49,12 +49,14 @@ def compute_partition_statistics(histories: List[Dict[str, Any]]) -> Dict[str, A
         epoch_stats = []
         for epoch in range(num_epochs):
             accs = pa[:, epoch, p_idx]
-            epoch_stats.append({
-                "mean": float(np.mean(accs)),
-                "std": float(np.std(accs, ddof=0)),
-                "min": float(np.min(accs)),
-                "max": float(np.max(accs)),
-            })
+            epoch_stats.append(
+                {
+                    "mean": float(np.mean(accs)),
+                    "std": float(np.std(accs, ddof=0)),
+                    "min": float(np.min(accs)),
+                    "max": float(np.max(accs)),
+                }
+            )
         by_partition.append(epoch_stats)
 
     return {
@@ -79,7 +81,7 @@ def compute_convergence_epoch(
     diffs = np.diff(accs)  # mejoras época a época
 
     for i in range(window - 1, len(diffs)):
-        window_mean = np.mean(np.abs(diffs[i - window + 1: i + 1]))
+        window_mean = np.mean(np.abs(diffs[i - window + 1 : i + 1]))
         if window_mean < threshold:
             return i + 1  # +1 porque diff reduce la longitud en 1
 

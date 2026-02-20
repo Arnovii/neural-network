@@ -58,7 +58,9 @@ def run_single_experiment(
     start_time = time.time()
 
     def _on_epoch_end(epoch: int, total: int, accuracy: float, loss: float) -> None:
-        _notify(f"[Época {epoch}/{total} — Precisión: {accuracy:.2f}%  Loss: {loss:.4f}]")
+        _notify(
+            f"[Época {epoch}/{total} — Precisión: {accuracy:.2f}%  Loss: {loss:.4f}]"
+        )
 
     history = network.train_federated(
         partitions=partitions,
@@ -107,8 +109,10 @@ def run_multiple_experiments(
 
     _notify("=" * 70)
     _notify(f"EJECUTANDO {num_experiments} EXPERIMENTOS")
-    _notify(f"  Particiones: {num_partitions} | Épocas: {num_epochs} | "
-            f"Neuronas: {hidden_neurons} | LR: {learning_rate} | N: {n_train}")
+    _notify(
+        f"  Particiones: {num_partitions} | Épocas: {num_epochs} | "
+        f"Neuronas: {hidden_neurons} | LR: {learning_rate} | N: {n_train}"
+    )
     _notify("=" * 70)
 
     all_histories = []
@@ -136,7 +140,9 @@ def run_multiple_experiments(
     final_accs = np.array([h["final_accuracy"] for h in all_histories])
     test_accs = np.array(test_accuracies)
 
-    _notify(f"Precisión final promedio: {np.mean(final_accs):.2f}% ± {np.std(final_accs):.2f}%")
+    _notify(
+        f"Precisión final promedio: {np.mean(final_accs):.2f}% ± {np.std(final_accs):.2f}%"
+    )
     _notify(f"Precisión en test promedio: {np.mean(test_accs):.2f}%")
 
     return {

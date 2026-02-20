@@ -19,11 +19,22 @@ def partition_mnist_data_simple(
     Divide datos en N particiones estratificadas por clase.
 
     :param num_partitions: Número de particiones (>= 1)
-    :param X_train: Imágenes de entrenamiento (N, 784)
-    :param Y_train: Etiquetas (N,)
+    :type num_partitions: int
+
+    :param X_train: Imágenes de entrenamiento con forma (N, 784)
+    :type X_train: np.ndarray
+
+    :param Y_train: Etiquetas con forma (N,)
+    :type Y_train: np.ndarray
+
     :param random_seed: Semilla para reproducibilidad
-    :param verbose: Si True, muestra info por partición
+    :type random_seed: int | None
+
+    :param verbose: Si True, muestra información por partición
+    :type verbose: bool
+
     :return: Lista de tuplas (X_partition, Y_partition)
+    :rtype: List[Tuple[np.ndarray, np.ndarray]]
     """
     if num_partitions < 1:
         raise ValueError("El número de particiones debe ser al menos 1")

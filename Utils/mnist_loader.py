@@ -8,6 +8,10 @@ import os
 import numpy as np
 from typing import Tuple
 
+# =======================
+# CONFIGURACIÓN DE RUTAS
+# =======================
+
 
 def get_data_directory() -> str:
     """Devuelve la ruta absoluta al directorio Data/ del proyecto."""
@@ -16,6 +20,11 @@ def get_data_directory() -> str:
     data_dir = os.path.join(project_root, "Data")
     os.makedirs(data_dir, exist_ok=True)
     return data_dir
+
+
+# ==================
+# DESCARGA DE DATOS
+# ==================
 
 
 def load_mnist_train(
@@ -44,8 +53,9 @@ def load_mnist_train(
         print("CARGANDO DATOS MNIST — ENTRENAMIENTO")
         print("=" * 60)
 
-    dataset = datasets.MNIST(root=data_dir, train=True,
-                             download=download_if_missing, transform=None)
+    dataset = datasets.MNIST(
+        root=data_dir, train=True, download=download_if_missing, transform=None
+    )
 
     total = len(dataset)
     if n_train is not None and n_train > total:
@@ -92,8 +102,9 @@ def load_mnist_test(
         print("CARGANDO DATOS MNIST — PRUEBA")
         print("=" * 60)
 
-    dataset = datasets.MNIST(root=data_dir, train=False,
-                             download=download_if_missing, transform=None)
+    dataset = datasets.MNIST(
+        root=data_dir, train=False, download=download_if_missing, transform=None
+    )
 
     X = np.zeros((len(dataset), 784))
     Y = np.zeros(len(dataset), dtype=int)

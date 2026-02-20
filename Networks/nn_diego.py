@@ -8,11 +8,20 @@ Implementación nativa con NumPy (operaciones matriciales vectorizadas).
 import numpy as np
 from typing import Any, Callable, Dict, List, Tuple
 
+# Importa utilidades matemáticas
 from Utils.math_utils import (
-    argmax, average_network_parameters, compute_one_hot,
-    sigmoid, sigmoid_derivative_from_activation, softmax,
-    xavier_initialization, vector_zeros,
+    argmax,
+    average_network_parameters,
+    sigmoid,
+    sigmoid_derivative_from_activation,
+    softmax,
+    xavier_initialization,
+    vector_zeros,
 )
+
+# =============
+# RED NEURONAL
+# =============
 
 
 class DiegoNeuronalNetwork:
@@ -20,6 +29,16 @@ class DiegoNeuronalNetwork:
     Red neuronal con soporte para el algoritmo de entrenamiento de Diego.
 
     Todos los parámetros internos son np.ndarray.
+
+    Attributes:
+        input_size:  Número de neuronas de entrada (784 para MNIST).
+        hidden_size: Número de neuronas en la capa oculta.
+        output_size: Número de neuronas de salida (10 para MNIST).
+        W1:          Pesos entrada → capa oculta  (hidden_size × input_size).
+        b1:          Sesgos de la capa oculta     (hidden_size,).
+        W2:          Pesos capa oculta → salida   (output_size × hidden_size).
+        b2:          Sesgos de la capa de salida  (output_size,).
+        training_history: Historial del último entrenamiento federado.
     """
 
     def __init__(
@@ -33,14 +52,18 @@ class DiegoNeuronalNetwork:
         self.hidden_size = hidden_size
         self.output_size = output_size
 
+        # Establece la semilla si se proporciona
         if random_seed is not None:
             np.random.seed(random_seed)
 
+        # Inicialización de parámetros
         self.W1 = xavier_initialization(input_size, hidden_size)
         self.b1 = vector_zeros(hidden_size)
+
         self.W2 = xavier_initialization(hidden_size, output_size)
         self.b2 = vector_zeros(output_size)
 
+        # Historial de entrenamiento
         self.training_history: Dict[str, Any] = {}
 
     # ========================
@@ -48,7 +71,12 @@ class DiegoNeuronalNetwork:
     # ========================
 
     def get_parameters(self) -> Dict[str, np.ndarray]:
-        """Devuelve una copia de los parámetros actuales."""
+        """
+        Devuelve una copia de los parámetros actuales.
+
+        :return: Diccionario con W1, b1, W2, b2
+        :rtype: Dict[str, np.ndarray]
+        """
         return {
             "W1": self.W1.copy(),
             "b1": self.b1.copy(),
@@ -57,7 +85,15 @@ class DiegoNeuronalNetwork:
         }
 
     def set_parameters(self, params: Dict[str, np.ndarray]) -> None:
-        """Establece los parámetros a partir de un diccionario."""
+        """
+        Establece los parámetros a partir de un diccionario.
+
+        :param params: Diccionario con claves W1, b1, W2, b2
+        :type params: Dict[str, np.ndarray]
+
+        :return: None
+        :rtype: None
+        """
         self.W1 = params["W1"].copy()
         self.b1 = params["b1"].copy()
         self.W2 = params["W2"].copy()
@@ -72,7 +108,10 @@ class DiegoNeuronalNetwork:
         Forward para una sola entrada (vector 1-D).
 
         :param x: Vector de entrada (input_size,)
-        :return: (probabilidades softmax, cache)
+        :type x: np.ndarray
+
+        :return: (probabilidades softmax, cache intermedio)
+        :rtype: Tuple[np.ndarray, Dict[str, Any]]
         """
         z1 = self.W1 @ x + self.b1
         a1 = sigmoid(z1)
@@ -99,9 +138,19 @@ class DiegoNeuronalNetwork:
         operaciones matriciales de NumPy (mucho más rápido).
 
         :param X: Imágenes (N, 784)
+        :type X: np.ndarray
+
         :param Y: Etiquetas (N,)
+        :type Y: np.ndarray
+
         :param learning_rate: Tasa de aprendizaje
+        :type learning_rate: float
+
+        :param verbose: Si True muestra información adicional
+        :type verbose: bool
+
         :return: (loss promedio, accuracy %)
+        :rtype: Tuple[float, float]
         """
         n = len(X)
 
@@ -110,9 +159,9 @@ class DiegoNeuronalNetwork:
         X_T = X.T  # (784, N)
 
         Z1 = self.W1 @ X_T + self.b1[:, np.newaxis]  # (hidden, N)
-        A1 = sigmoid(Z1)                               # (hidden, N)
+        A1 = sigmoid(Z1)  # (hidden, N)
 
-        Z2 = self.W2 @ A1 + self.b2[:, np.newaxis]    # (output, N)
+        Z2 = self.W2 @ A1 + self.b2[:, np.newaxis]  # (output, N)
 
         # Softmax por columna (cada columna es un ejemplo)
         Z2_stable = Z2 - np.max(Z2, axis=0, keepdims=True)
@@ -135,15 +184,15 @@ class DiegoNeuronalNetwork:
         delta2 = A2 - Y_onehot
 
         # Gradientes capa 2
-        dW2 = (1.0 / n) * (delta2 @ A1.T)          # (output, hidden)
-        db2 = (1.0 / n) * np.sum(delta2, axis=1)    # (output,)
+        dW2 = (1.0 / n) * (delta2 @ A1.T)  # (output, hidden)
+        db2 = (1.0 / n) * np.sum(delta2, axis=1)  # (output,)
 
         # δ1 = (W2^T · δ2) ⊙ σ'(A1), forma (hidden, N)
         delta1 = (self.W2.T @ delta2) * sigmoid_derivative_from_activation(A1)
 
         # Gradientes capa 1
-        dW1 = (1.0 / n) * (delta1 @ X_T.T)          # (hidden, input)
-        db1 = (1.0 / n) * np.sum(delta1, axis=1)     # (hidden,)
+        dW1 = (1.0 / n) * (delta1 @ X_T.T)  # (hidden, input)
+        db1 = (1.0 / n) * np.sum(delta1, axis=1)  # (hidden,)
 
         # --- Actualización ---
         self.W1 -= learning_rate * dW1
@@ -169,7 +218,23 @@ class DiegoNeuronalNetwork:
         2. Entrena cada partición independientemente.
         3. Promedia parámetros de todas las particiones.
 
-        :return: Historial con accuracies, losses, partition_accuracies
+        :param partitions: Lista de particiones (X_part, Y_part)
+        :type partitions: List[Tuple[np.ndarray, np.ndarray]]
+
+        :param epochs: Número de épocas
+        :type epochs: int
+
+        :param learning_rate: Tasa de aprendizaje
+        :type learning_rate: float
+
+        :param verbose: Si True muestra progreso
+        :type verbose: bool
+
+        :param on_epoch_end: Callback opcional al final de cada época
+        :type on_epoch_end: Callable | None
+
+        :return: Historial con accuracies, losses y métricas por partición
+        :rtype: Dict[str, Any]
         """
         num_partitions = len(partitions)
         accuracies: List[float] = []
@@ -183,7 +248,9 @@ class DiegoNeuronalNetwork:
             print(f"Particiones   : {num_partitions}")
             print(f"Épocas        : {epochs}")
             print(f"Learning rate : {learning_rate}")
-            print(f"Arquitectura  : {self.input_size} → {self.hidden_size} → {self.output_size}")
+            print(
+                f"Arquitectura  : {self.input_size} → {self.hidden_size} → {self.output_size}"
+            )
             print("=" * 70)
 
         for epoch in range(epochs):
@@ -201,7 +268,9 @@ class DiegoNeuronalNetwork:
                 partition_metrics.append(accuracy)
 
                 if verbose:
-                    print(f"  Partición {p_idx + 1}: loss={loss:.4f}  acc={accuracy:.2f}%")
+                    print(
+                        f"  Partición {p_idx + 1}: loss={loss:.4f}  acc={accuracy:.2f}%"
+                    )
 
             # Promedia parámetros
             self.set_parameters(average_network_parameters(partition_params))
@@ -234,7 +303,14 @@ class DiegoNeuronalNetwork:
     # ========================
 
     def predict(self, x: np.ndarray) -> int:
-        """Predice la clase de una sola imagen."""
+        """
+        Predice la clase de una sola imagen.
+
+        :param x: Imagen (input_size,)
+        :type x: np.ndarray
+        :return: Clase predicha
+        :rtype: int
+        """
         output, _ = self.forward(x)
         return argmax(output)
 
@@ -243,8 +319,11 @@ class DiegoNeuronalNetwork:
         Evalúa la red sobre un conjunto de datos (vectorizado).
 
         :param X: Imágenes (N, 784)
+        :type X: np.ndarray
         :param Y: Etiquetas (N,)
+        :type Y: np.ndarray
         :return: (accuracy %, loss promedio)
+        :rtype: Tuple[float, float]
         """
         n = len(X)
         X_T = X.T
