@@ -1,15 +1,13 @@
 """
 Descarga y carga del dataset MNIST.
 
-Los archivos se almacenan en el directorio Data/ relativo a la raíz del proyecto.
+Utiliza torchvision para descargar y cargar los datos de forma sencilla.
 Las imágenes se devuelven normalizadas al rango [0, 1].
 """
 
-import gzip
 import os
 import random
-import struct
-import urllib.request
+import numpy as np
 from typing import List, Tuple
 
 
@@ -36,118 +34,6 @@ def get_data_directory() -> str:
         print(f"Creado directorio de datos: {data_dir}")
 
     return data_dir
-
-
-# ==================
-# DESCARGA DE DATOS
-# ==================
-
-_MNIST_URLS = {
-    "train-images-idx3-ubyte.gz": "https://ossci-datasets.s3.amazonaws.com/mnist/train-images-idx3-ubyte.gz",
-    "train-labels-idx1-ubyte.gz": "https://ossci-datasets.s3.amazonaws.com/mnist/train-labels-idx1-ubyte.gz",
-    "t10k-images-idx3-ubyte.gz": "https://ossci-datasets.s3.amazonaws.com/mnist/t10k-images-idx3-ubyte.gz",
-    "t10k-labels-idx1-ubyte.gz": "https://ossci-datasets.s3.amazonaws.com/mnist/t10k-labels-idx1-ubyte.gz",
-}
-
-_MNIST_URLS_FALLBACK = {
-    "train-images-idx3-ubyte.gz": "https://raw.githubusercontent.com/fgnt/mnist/master/train-images-idx3-ubyte.gz",
-    "train-labels-idx1-ubyte.gz": "https://raw.githubusercontent.com/fgnt/mnist/master/train-labels-idx1-ubyte.gz",
-    "t10k-images-idx3-ubyte.gz": "https://raw.githubusercontent.com/fgnt/mnist/master/t10k-images-idx3-ubyte.gz",
-    "t10k-labels-idx1-ubyte.gz": "https://raw.githubusercontent.com/fgnt/mnist/master/t10k-labels-idx1-ubyte.gz",
-}
-
-
-def _descargar_mnist(data_dir: str, verbose: bool) -> None:
-    """
-    Descarga los cuatro archivos MNIST al directorio indicado.
-
-    Intenta primero el mirror de AWS; si falla, usa GitHub como respaldo.
-
-    :param data_dir: Directorio de destino
-    :type data_dir: str
-
-    :param verbose: Si True, muestra mensajes de progreso
-    :type verbose: bool
-
-    :raises Exception: Si ningún mirror responde correctamente
-    """
-    for archivo, url in _MNIST_URLS.items():
-        filepath = os.path.join(data_dir, archivo)
-        if os.path.exists(filepath):
-            if verbose:
-                print(f"  ✓ {archivo} ya existe")
-            continue
-
-        if verbose:
-            print(f"  Descargando {archivo}...")
-        try:
-            urllib.request.urlretrieve(url, filepath)
-            if verbose:
-                print(f"  ✓ {archivo} descargado desde AWS")
-        except Exception:
-            if verbose:
-                print("  Reintentando desde GitHub...")
-            try:
-                urllib.request.urlretrieve(_MNIST_URLS_FALLBACK[archivo], filepath)
-                if verbose:
-                    print(f"  ✓ {archivo} descargado desde GitHub")
-            except Exception:
-                raise Exception(f"No se pudo descargar {archivo} desde ningún mirror")
-
-
-# ================================
-# CARGA DE IMÁGENES Y ETIQUETAS
-# ================================
-
-
-def _cargar_imagenes(archivo_gz: str) -> List[List[float]]:
-    """
-    Carga imágenes desde un archivo MNIST en formato IDX comprimido.
-
-    :param archivo_gz: Ruta al archivo .gz
-    :type archivo_gz: str
-
-    :return: Lista de imágenes; cada imagen es una lista de 784 floats en [0, 1]
-    :rtype: List[List[float]]
-
-    :raises ValueError: Si el archivo no tiene el magic number correcto
-    """
-    with gzip.open(archivo_gz, "rb") as f:
-        magic, num, filas, cols = struct.unpack(">IIII", f.read(16))
-        if magic != 2051:
-            raise ValueError(
-                f"Magic number incorrecto: esperado 2051, obtenido {magic}"
-            )
-        buffer = f.read()
-        pixeles_por_imagen = filas * cols
-        return [
-            [
-                b / 255.0
-                for b in buffer[i * pixeles_por_imagen : (i + 1) * pixeles_por_imagen]
-            ]
-            for i in range(num)
-        ]
-
-
-def _cargar_etiquetas(archivo_gz: str) -> List[int]:
-    """
-    Carga etiquetas desde un archivo MNIST en formato IDX comprimido.
-
-    :param archivo_gz: Ruta al archivo .gz
-    :type archivo_gz: str
-
-    :return: Lista de enteros en el rango [0, 9]
-    :rtype: List[int]
-
-    :raises ValueError: Si el archivo no tiene el magic number correcto
-    """
-    with gzip.open(archivo_gz, "rb") as f:
-        magic, _ = struct.unpack(">II", f.read(8))
-        if magic != 2049:
-            raise ValueError(
-                f"Magic number incorrecto: esperado 2049, obtenido {magic}"
-            )
-        return list(f.read())
 
 
 # ========================
@@ -185,6 +71,7 @@ def load_mnist_train(
 
     :raises ValueError: Si n_train es menor que 1 o mayor que los datos disponibles.
     """
+    from torchvision import datasets
 
     # Valida el n_train
     if n_train is not None and n_train < 1:
@@ -203,35 +90,47 @@ def load_mnist_train(
         print("CARGANDO DATOS MNIST — ENTRENAMIENTO")
         print("=" * 60)
 
-    # Descarga si es necesario
-    if download_if_missing:
-        _descargar_mnist(data_dir, verbose=verbose)
+    # Carga el dataset usando torchvision (transform=None: imágenes PIL, sin tensores)
+    dataset = datasets.MNIST(
+        root=data_dir,
+        train=True,
+        download=download_if_missing,
+        transform=None,
+    )
 
-    # Carga datos desde las rutas de los archivos
-    X = _cargar_imagenes(os.path.join(data_dir, "train-images-idx3-ubyte.gz"))
-    Y = _cargar_etiquetas(os.path.join(data_dir, "train-labels-idx1-ubyte.gz"))
+    total_disponible = len(dataset)
 
-    # Válida integridad
-    if len(X) != len(Y):
-        raise RuntimeError("Inconsistencia: número de imágenes y etiquetas no coincide")
+    if n_train is not None and n_train > total_disponible:
+        raise ValueError(
+            f"n_train ({n_train}) supera los datos disponibles ({total_disponible})"
+        )
 
-    if n_train is None:
-        if verbose:
-            print(f"\n✓ {len(X)} ejemplos de entrenamiento cargados")
-        return X, Y
+    # Determina cuántas imágenes cargar
+    cantidad = n_train if n_train is not None else total_disponible
 
-    if n_train > len(X):
-        raise ValueError(f"n_train ({n_train}) supera los datos disponibles ({len(X)})")
+    # Selecciona índices (submuestreo aleatorio si n_train < total)
+    if n_train is not None and n_train < total_disponible:
+        indices = random.sample(range(total_disponible), n_train)
+    else:
+        indices = list(range(cantidad))
 
-    # Selecciona de forma aleatoria valores para los subconjuntos
-    indices = random.sample(range(len(X)), n_train)
-    X_sub = [X[i] for i in indices]
-    Y_sub = [Y[i] for i in indices]
+    # Convierte cada imagen PIL a lista de 784 floats normalizados en [0, 1]
+    X: List[List[float]] = []
+    Y: List[int] = []
+
+    for i in indices:
+        imagen, etiqueta = dataset[i]
+        # np.array(imagen) convierte PIL a array 28×28
+        # .flatten() lo convierte a vector de 784
+        # / 255.0 normaliza al rango [0, 1]
+        pixeles = (np.array(imagen).flatten() / 255.0).tolist()
+        X.append(pixeles)
+        Y.append(int(etiqueta))
 
     if verbose:
-        print(f"\n✓ {n_train} ejemplos de entrenamiento seleccionados")
+        print(f"\n✓ {len(X)} ejemplos de entrenamiento cargados")
 
-    return X_sub, Y_sub
+    return X, Y
 
 
 def load_mnist_test(
@@ -254,6 +153,7 @@ def load_mnist_test(
     :return: Tupla (X_test, Y_test)
     :rtype: Tuple[List[List[float]], List[int]]
     """
+    from torchvision import datasets
 
     # Obtiene el directorio
     if data_dir is None:
@@ -264,12 +164,23 @@ def load_mnist_test(
         print("CARGANDO DATOS MNIST — PRUEBA")
         print("=" * 60)
 
-    # Descarga si es necesario
-    if download_if_missing:
-        _descargar_mnist(data_dir, verbose=verbose)
+    # Carga el dataset de prueba usando torchvision
+    dataset = datasets.MNIST(
+        root=data_dir,
+        train=False,
+        download=download_if_missing,
+        transform=None,
+    )
 
-    X = _cargar_imagenes(os.path.join(data_dir, "t10k-images-idx3-ubyte.gz"))
-    Y = _cargar_etiquetas(os.path.join(data_dir, "t10k-labels-idx1-ubyte.gz"))
+    # Convierte cada imagen a lista de 784 floats normalizados
+    X: List[List[float]] = []
+    Y: List[int] = []
+
+    for i in range(len(dataset)):
+        imagen, etiqueta = dataset[i]
+        pixeles = (np.array(imagen).flatten() / 255.0).tolist()
+        X.append(pixeles)
+        Y.append(int(etiqueta))
 
     if verbose:
         print(f"\n✓ {len(X)} ejemplos de prueba cargados")

@@ -107,7 +107,7 @@ def run_single_experiment(
     # al mensaje de texto que entiende on_progress
     def _on_epoch_end(epoch: int, total: int, accuracy: float, loss: float) -> None:
         _notify(
-            f"[Época {epoch}/{total} — Precisión: {accuracy:.2f}%  Loss: {loss:.4f}]"
+            f"[Época {epoch}/{total}] — Precisión: {accuracy:.2f}%  Loss: {loss:.4f}]"
         )
 
     history = network.train_federated(
