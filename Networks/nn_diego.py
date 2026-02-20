@@ -14,6 +14,8 @@ import random
 import sys
 from typing import Any, Callable, Dict, List, Tuple
 
+import numpy as np
+
 # Agregaa directorio padre al path para importar Utils
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -194,11 +196,13 @@ class DiegoNeuronalNetwork:
         """
         n = len(X)
 
-        # Acumuladores inicializados a cero — se modifican in-place en cada ejemplo
-        dW1_acc = [[0.0] * self.input_size for _ in range(self.hidden_size)]
-        db1_acc = [0.0] * self.hidden_size
-        dW2_acc = [[0.0] * self.hidden_size for _ in range(self.output_size)]
-        db2_acc = [0.0] * self.output_size
+        # np.zeros crea arrays contiguos en memoria C.
+        # accumulate_outer_inplace y accumulate_vector_inplace de math_utils_numpy
+        # usan np.add(..., out=acc) directamente sobre ellos, sin conversión.
+        dW1_acc = np.zeros((self.hidden_size, self.input_size), dtype=np.float64)
+        db1_acc = np.zeros(self.hidden_size, dtype=np.float64)
+        dW2_acc = np.zeros((self.output_size, self.hidden_size), dtype=np.float64)
+        db2_acc = np.zeros(self.output_size, dtype=np.float64)
 
         correct = 0
         total_loss = 0.0
@@ -248,10 +252,10 @@ class DiegoNeuronalNetwork:
 
     def _update_parameters(
         self,
-        dW1_acc: List[List[float]],
-        db1_acc: List[float],
-        dW2_acc: List[List[float]],
-        db2_acc: List[float],
+        dW1_acc: Any,
+        db1_acc: Any,
+        dW2_acc: Any,
+        db2_acc: Any,
         learning_rate: float,
         n: int,
     ) -> None:
@@ -283,17 +287,22 @@ class DiegoNeuronalNetwork:
         """
         factor = learning_rate / n
 
-        for wi, dwi in zip(self.W1, dW1_acc):
-            for j in range(len(wi)):
-                wi[j] -= factor * dwi[j]
-        for j in range(self.hidden_size):
-            self.b1[j] -= factor * db1_acc[j]
+        # Actualización vectorizada: sin bucles Python, opera en C
+        W1_np = np.asarray(self.W1)
+        W1_np -= factor * np.asarray(dW1_acc)
+        self.W1 = W1_np.tolist()
 
-        for wi, dwi in zip(self.W2, dW2_acc):
-            for j in range(len(wi)):
-                wi[j] -= factor * dwi[j]
-        for j in range(self.output_size):
-            self.b2[j] -= factor * db2_acc[j]
+        b1_np = np.asarray(self.b1)
+        b1_np -= factor * np.asarray(db1_acc)
+        self.b1 = b1_np.tolist()
+
+        W2_np = np.asarray(self.W2)
+        W2_np -= factor * np.asarray(dW2_acc)
+        self.W2 = W2_np.tolist()
+
+        b2_np = np.asarray(self.b2)
+        b2_np -= factor * np.asarray(db2_acc)
+        self.b2 = b2_np.tolist()
 
     def train_federated(
         self,
@@ -348,7 +357,7 @@ class DiegoNeuronalNetwork:
 
         if verbose:
             print("=" * 70)
-            print("ENTRENAMIENTO CON ALGORITMO DE DIEGO")
+            print("ENTRENAMIENTO FEDERADO")
             print("=" * 70)
             print(f"Particiones   : {num_partitions}")
             print(f"Épocas        : {epochs}")

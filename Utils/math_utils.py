@@ -7,8 +7,9 @@ acumulación eficiente de gradientes).
 """
 
 import math
-import random
 from typing import Any, Dict, List
+
+import numpy as np
 
 # =========================
 # FUNCIONES DE ACTIVACIÓN
@@ -59,10 +60,13 @@ def softmax(z_list: List[float]) -> List[float]:
     :return: Lista de probabilidades
     :rtype: List[float]
     """
-    max_z = max(z_list)
-    exp_z = [math.exp(z - max_z) for z in z_list]
-    total = sum(exp_z)
-    return [e / total for e in exp_z]
+    z = np.array(z_list, dtype=np.float64)
+
+    # Estabilización numérica
+    z -= z.max()
+
+    e = np.exp(z)
+    return (e / e.sum()).tolist()
 
 
 # =============================
@@ -87,7 +91,7 @@ def vector_add(v1: List[float], v2: List[float]) -> List[float]:
     """
     if len(v1) != len(v2):
         raise ValueError(f"Vectores de distinto tamaño: {len(v1)} vs {len(v2)}")
-    return [a + b for a, b in zip(v1, v2)]
+    return (np.asarray(v1) + np.asarray(v2)).tolist()
 
 
 def vector_subtract(v1: List[float], v2: List[float]) -> List[float]:
@@ -107,7 +111,7 @@ def vector_subtract(v1: List[float], v2: List[float]) -> List[float]:
     """
     if len(v1) != len(v2):
         raise ValueError(f"Vectores de distinto tamaño: {len(v1)} vs {len(v2)}")
-    return [a - b for a, b in zip(v1, v2)]
+    return (np.asarray(v1) - np.asarray(v2)).tolist()
 
 
 def vector_zeros(size: int) -> List[float]:
@@ -152,7 +156,7 @@ def matrix_vector_multiply(
             f"Dimensiones incompatibles: matriz {len(matrix)}×{len(matrix[0])}, "
             f"vector {len(vector)}"
         )
-    return [sum(a * b for a, b in zip(row, vector)) for row in matrix]
+    return (np.asarray(matrix) @ np.asarray(vector)).tolist()
 
 
 def matrix_transpose(matrix: List[List[float]]) -> List[List[float]]:
@@ -167,8 +171,7 @@ def matrix_transpose(matrix: List[List[float]]) -> List[List[float]]:
     """
     if not matrix:
         return []
-    rows, cols = len(matrix), len(matrix[0])
-    return [[matrix[i][j] for i in range(rows)] for j in range(cols)]
+    return np.asarray(matrix).T.tolist()
 
 
 def outer_product(v_col: List[float], v_row: List[float]) -> List[List[float]]:
@@ -184,7 +187,7 @@ def outer_product(v_col: List[float], v_row: List[float]) -> List[List[float]]:
     :return: Matriz de tamaño len(v_col) × len(v_row)
     :rtype: List[List[float]]
     """
-    return [[vc * vr for vr in v_row] for vc in v_col]
+    return np.outer(v_col, v_row).tolist()
 
 
 def matrix_add(A: List[List[float]], B: List[List[float]]) -> List[List[float]]:
@@ -202,9 +205,10 @@ def matrix_add(A: List[List[float]], B: List[List[float]]) -> List[List[float]]:
 
     :raises ValueError: Si las matrices tienen dimensiones distintas
     """
-    if len(A) != len(B) or len(A[0]) != len(B[0]):
+    a, b = np.asarray(A), np.asarray(B)
+    if a.shape != b.shape:
         raise ValueError("Las matrices deben tener las mismas dimensiones")
-    return [[A[i][j] + B[i][j] for j in range(len(A[0]))] for i in range(len(A))]
+    return (a + b).tolist()
 
 
 # ==============================
@@ -230,7 +234,7 @@ def xavier_initialization(fan_in: int, fan_out: int) -> List[List[float]]:
     :rtype: List[List[float]]
     """
     std = math.sqrt(2.0 / (fan_in + fan_out))
-    return [[random.gauss(0.0, std) for _ in range(fan_in)] for _ in range(fan_out)]
+    return np.random.normal(0.0, std, (fan_out, fan_in)).tolist()
 
 
 # ===========================================
@@ -252,14 +256,12 @@ def average_vectors(vectors: List[List[float]]) -> List[float]:
     """
     if not vectors:
         raise ValueError("No se puede promediar una lista vacía")
-    n = len(vectors)
+
     size = len(vectors[0])
     if any(len(v) != size for v in vectors):
         raise ValueError("Todos los vectores deben tener el mismo tamaño")
-    result = vector_zeros(size)
-    for v in vectors:
-        result = vector_add(result, v)
-    return [x / n for x in result]
+
+    return np.mean(np.array(vectors, dtype=np.float64), axis=0).tolist()
 
 
 def average_matrices(matrices: List[List[List[float]]]) -> List[List[float]]:
@@ -276,14 +278,24 @@ def average_matrices(matrices: List[List[List[float]]]) -> List[List[float]]:
     """
     if not matrices:
         raise ValueError("No se puede promediar una lista vacía")
-    n = len(matrices)
-    rows, cols = len(matrices[0]), len(matrices[0][0])
-    if any(len(m) != rows or len(m[0]) != cols for m in matrices):
-        raise ValueError("Todas las matrices deben tener las mismas dimensiones")
-    result = [[0.0] * cols for _ in range(rows)]
+
+    rows = len(matrices[0])
+    if rows == 0:
+        raise ValueError("Las matrices no pueden estar vacías")
+
+    cols = len(matrices[0][0])
+
+    # Valida dimensiones y forma rectangular
     for m in matrices:
-        result = matrix_add(result, m)
-    return [[v / n for v in row] for row in result]
+        if len(m) != rows:
+            raise ValueError("Todas las matrices deben tener las mismas dimensiones")
+        for row in m:
+            if len(row) != cols:
+                raise ValueError(
+                    "Todas las matrices deben tener las mismas dimensiones"
+                )
+
+    return np.mean(np.array(matrices, dtype=np.float64), axis=0).tolist()
 
 
 def average_network_parameters(parameters_list: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -320,7 +332,7 @@ def average_network_parameters(parameters_list: List[Dict[str, Any]]) -> Dict[st
         elif isinstance(first, list):
             averaged[key] = average_vectors(values)
         else:
-            averaged[key] = sum(values) / len(values)
+            averaged[key] = float(np.mean(values))
 
     return averaged
 
@@ -330,9 +342,7 @@ def average_network_parameters(parameters_list: List[Dict[str, Any]]) -> Dict[st
 # ============================================================
 
 
-def accumulate_outer_inplace(
-    acc: List[List[float]], v_col: List[float], v_row: List[float]
-) -> None:
+def accumulate_outer_inplace(acc: Any, v_col: List[float], v_row: List[float]) -> None:
     """
     Acumula el producto externo v_col ⊗ v_row directamente sobre acc.
 
@@ -342,7 +352,7 @@ def accumulate_outer_inplace(
     por batch, elimina dos allocations de lista por ejemplo.
 
     :param acc: Acumulador modificado in-place (m×n)
-    :type acc: List[List[float]]
+    :type acc: List[List[float]] | np.ndarray
 
     :param v_col: Vector columna de longitud m
     :type v_col: List[float]
@@ -350,26 +360,22 @@ def accumulate_outer_inplace(
     :param v_row: Vector fila de longitud n
     :type v_row: List[float]
     """
-    for i, vi in enumerate(v_col):
-        row = acc[i]
-        for j, vj in enumerate(v_row):
-            row[j] += vi * vj
+    np.add(acc, np.outer(v_col, v_row), out=acc)
 
 
-def accumulate_vector_inplace(acc: List[float], v: List[float]) -> None:
+def accumulate_vector_inplace(acc: Any, v: List[float]) -> None:
     """
     Acumula v sobre acc directamente: ``acc[i] += v[i]`` para todo i.
 
     Equivale a ``vector_add`` pero sin crear una nueva lista.
 
     :param acc: Vector acumulador modificado in-place
-    :type acc: List[float]
+    :type acc: List[float] | np.ndarray
 
     :param v: Vector a sumar
     :type v: List[float]
     """
-    for i in range(len(acc)):
-        acc[i] += v[i]
+    np.add(acc, v, out=acc)
 
 
 # ======================
@@ -386,7 +392,7 @@ def argmax(vector: List[float]) -> int:
     :return: Índice del valor máximo
     :rtype: int
     """
-    return max(range(len(vector)), key=lambda i: vector[i])
+    return int(np.argmax(vector))
 
 
 def compute_one_hot(label: int, num_classes: int) -> List[float]:
@@ -406,6 +412,6 @@ def compute_one_hot(label: int, num_classes: int) -> List[float]:
     """
     if label < 0 or label >= num_classes:
         raise ValueError(f"Etiqueta {label} fuera del rango [0, {num_classes})")
-    one_hot = [0.0] * num_classes
+    one_hot = np.zeros(num_classes, dtype=np.float64)
     one_hot[label] = 1.0
-    return one_hot
+    return one_hot.tolist()

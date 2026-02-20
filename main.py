@@ -213,12 +213,184 @@ def run_interactive_mode() -> None:
             self.previous_results: list = []
             self.color_index: int = 0
             self._pending_comparison: bool = False
-
-            # Inicializa atributos para resultados de experimentos
             self.current_results: dict = {}
             self.current_params: dict = {}
 
             self._create_ui()
+
+        # ==========================
+        # SISTEMA DE HOVER (TOOLTIP)
+        # ==========================
+
+        class _HoverManager:
+            """
+            Muestra tooltips flotantes al pasar el mouse sobre los elementos
+            graficados en una figura de matplotlib embebida en tkinter.
+
+            Diseño:
+            - Una sola anotación invisible por cada ejes (ax). Se hace
+              visible y se reposiciona cuando el cursor está cerca de un
+              punto de interés, y vuelve a ocultarse en caso contrario.
+            - Un único event handler ``motion_notify_event`` por figura,
+              registrado una sola vez. Al redibujar los paneles se llama
+              a ``reset`` para limpiar los elementos registrados del ciclo
+              anterior y registrar los nuevos.
+
+            Elementos soportados:
+            - ``Line2D``  → puntos de la curva (epoch, valor)
+            - ``Rectangle`` (bar) → barras del histograma y del gráfico de mejora
+
+            :param fig: Figura de matplotlib a observar
+            :type fig: matplotlib.figure.Figure
+
+            :param canvas: Canvas de tkinter que contiene la figura
+            :type canvas: FigureCanvasTkAgg
+            """
+
+            # Tolerancia en puntos de pantalla para activar el tooltip
+            _PICK_RADIUS = 8
+
+            # Estilo del cuadro del tooltip
+            _BBOX_STYLE = dict(
+                boxstyle="round,pad=0.45",
+                facecolor="#ffffcc",
+                edgecolor="#888888",
+                linewidth=0.8,
+                alpha=0.92,
+            )
+            _ARROW_STYLE = dict(arrowstyle="->", color="#666666", lw=0.8)
+
+            def __init__(self, fig, canvas) -> None:
+                self.fig = fig
+                self.canvas = canvas
+
+                # Lista de (ax, lista_de_artistas_con_datos_adjuntos)
+                # Se llena con register_* y se vacía con reset().
+                self._entries: list = []
+
+                # Una anotación por axes; se crea bajo demanda
+                self._annotations: dict = {}
+
+                # ID del handler de matplotlib (para poder desconectarlo)
+                self._cid = fig.canvas.mpl_connect("motion_notify_event", self._on_move)
+
+            def reset(self) -> None:
+                """
+                Elimina todos los artistas registrados y oculta las anotaciones.
+
+                Debe llamarse antes de redibujar los paneles para que las
+                referencias a artistas del ciclo anterior no queden activas.
+                """
+                self._entries.clear()
+                for annot in self._annotations.values():
+                    annot.set_visible(False)
+
+            def register_lines(self, ax, lines: list, fmt: str) -> None:
+                """
+                Registra una lista de ``Line2D`` para mostrar tooltip.
+
+                :param ax: Ejes que contienen las líneas
+                :param lines: Lista de objetos ``Line2D``
+                :param fmt: Cadena de formato. Puede usar ``{x}`` y ``{y}``,
+                            o ``{epoch}`` y ``{val}`` como alias de los mismos.
+                            Ejemplo: ``"Época: {x}\\nAcc: {y:.2f}%"``
+                """
+                self._entries.append(("lines", ax, lines, fmt))
+
+            def register_bars(self, ax, bars, fmt: str) -> None:
+                """
+                Registra un ``BarContainer`` o lista de ``Rectangle`` para tooltip.
+
+                :param ax: Ejes que contienen las barras
+                :param bars: ``BarContainer`` devuelto por ``ax.bar``
+                :param fmt: Cadena de formato con ``{x}`` (centro de la barra)
+                            y ``{y}`` (altura). Ejemplo: ``"Mejora: {y:+.3f}%"``
+                """
+                self._entries.append(("bars", ax, list(bars), fmt))
+
+            def _get_annotation(self, ax):
+                """Devuelve (creando si es necesario) la anotación asociada al ax."""
+                if ax not in self._annotations:
+                    annot = ax.annotate(
+                        "",
+                        xy=(0, 0),
+                        xytext=(14, 14),
+                        textcoords="offset points",
+                        bbox=self._BBOX_STYLE,
+                        arrowprops=self._ARROW_STYLE,
+                        fontsize=8.5,
+                        zorder=10,
+                    )
+                    annot.set_visible(False)
+                    self._annotations[ax] = annot
+                return self._annotations[ax]
+
+            def _on_move(self, event) -> None:
+                """
+                Callback de matplotlib llamado en cada movimiento del mouse.
+
+                Itera sobre los artistas registrados para el axes bajo el cursor.
+                Si encuentra uno cercano, muestra el tooltip; si no, lo oculta.
+                El redibujado se hace con ``draw_idle`` para no bloquear la GUI.
+                """
+                updated = False
+
+                for entry in self._entries:
+                    kind, ax, artists, fmt = entry
+
+                    # El tooltip solo se activa cuando el cursor está en ese axes
+                    if event.inaxes != ax:
+                        annot = self._annotations.get(ax)
+                        if annot and annot.get_visible():
+                            annot.set_visible(False)
+                            updated = True
+                        continue
+
+                    annot = self._get_annotation(ax)
+                    hit = False
+
+                    if kind == "lines":
+                        for line in artists:
+                            cont, ind = line.contains(event)
+                            if cont:
+                                idx = ind["ind"][0]
+                                xd, yd = line.get_xdata(), line.get_ydata()
+                                xv, yv = float(xd[idx]), float(yd[idx])
+                                text = fmt.format(x=xv, epoch=xv, y=yv, val=yv)
+                                annot.xy = (xv, yv)
+                                annot.set_text(text)
+                                annot.set_visible(True)
+                                hit = True
+                                break
+
+                    elif kind == "bars":
+                        for rect in artists:
+                            if not rect.get_visible():
+                                continue
+                            x0 = rect.get_x()
+                            w = rect.get_width()
+                            h = rect.get_height()
+                            # Comprueba si el cursor está dentro de la barra
+                            if x0 <= event.xdata <= x0 + w:
+                                cx = x0 + w / 2
+                                ybot = rect.get_y()
+                                ytop = ybot + h
+                                # Posiciona el tooltip en el centro superior
+                                text = fmt.format(x=cx, y=h)
+                                annot.xy = (cx, ytop)
+                                annot.set_text(text)
+                                annot.set_visible(True)
+                                hit = True
+                                break
+
+                    if not hit and annot.get_visible():
+                        annot.set_visible(False)
+                        updated = True
+                    elif hit:
+                        updated = True
+
+                if updated:
+                    self.canvas.draw_idle()
 
         # ================
         # CONSTRUCCIÓN UI
@@ -330,6 +502,9 @@ def run_interactive_mode() -> None:
             self.canvas = FigureCanvasTkAgg(self.fig, master=plot_frame)
             self.canvas.draw()
             self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+
+            # Hover manager: se instancia una vez y se reutiliza en cada redibujado
+            self._hover = FederatedLearningApp._HoverManager(self.fig, self.canvas)
 
             # Barra de estado
             self.status_var = tk.StringVar(value="Listo")
@@ -725,6 +900,10 @@ def run_interactive_mode() -> None:
             color = self._current_color()
             label = f"P={params['num_partitions']}, E={params['num_epochs']}"
 
+            # Limpia artistas del ciclo anterior para que el hover no reciba
+            # referencias obsoletas a líneas/barras que ya no están en pantalla
+            self._hover.reset()
+
             if not comparison:
                 for ax in self.axes.flatten():
                     ax.clear()
@@ -733,7 +912,7 @@ def run_interactive_mode() -> None:
 
             # Panel 1 — Curva de aprendizaje con banda ±1σ
             acc = prepare_accuracy_chart_data(histories)
-            ax1.plot(
+            (line1,) = ax1.plot(
                 acc["x"], acc["y_mean"], "o-", color=color, linewidth=2, label=label
             )
             ax1.fill_between(
@@ -746,14 +925,19 @@ def run_interactive_mode() -> None:
             )
             ax1.legend(loc="lower right")
             ax1.grid(True, alpha=0.3)
+            self._hover.register_lines(
+                ax1, [line1], "Época: {x:.0f}\nAcc media: {y:.2f}%"
+            )
 
             # Panel 2 — Comparación por partición (último experimento)
             part = prepare_partition_comparison_data([histories[-1]])
+            part_lines = []
             if part:
                 for p in part["partitions"]:
-                    ax2.plot(
+                    (ln,) = ax2.plot(
                         p["x"], p["y"], "o-", label=f"Partición {p['id']}", alpha=0.7
                     )
+                    part_lines.append((ln, p["id"]))
             ax2.set(
                 xlabel=part.get("xlabel", "Época"),
                 ylabel=part.get("ylabel", "Precisión (%)"),
@@ -761,34 +945,45 @@ def run_interactive_mode() -> None:
             )
             ax2.legend(loc="lower right")
             ax2.grid(True, alpha=0.3)
+            for ln, pid in part_lines:
+                self._hover.register_lines(
+                    ax2, [ln], f"Partición {pid}\nÉpoca: {{x:.0f}}\nAcc: {{y:.2f}}%"
+                )
 
             # Panel 3 — Distribución de precisión final
             dist = prepare_distribution_data(histories)
+            bin_w = dist["bins"][1] - dist["bins"][0]
             bin_centers = [
                 (dist["bins"][i] + dist["bins"][i + 1]) / 2
                 for i in range(len(dist["bins"]) - 1)
             ]
-            ax3.bar(
+            bars3 = ax3.bar(
                 bin_centers,
                 dist["counts"],
-                width=(dist["bins"][1] - dist["bins"][0]) * 0.9,
+                width=bin_w * 0.9,
                 color=color,
                 alpha=0.7,
                 edgecolor="black",
             )
             ax3.axvline(
-                dist["mean"], color="red", linestyle="--", linewidth=2, label="Promedio"
+                dist["mean"],
+                color="red",
+                linestyle="--",
+                linewidth=2,
+                label=f"Media: {dist['mean']:.2f}%",
             )
             ax3.set(xlabel=dist["xlabel"], ylabel=dist["ylabel"], title=dist["title"])
             ax3.legend()
             ax3.grid(True, alpha=0.3)
+            self._hover.register_bars(ax3, bars3, "Acc: {x:.2f}%\nFrecuencia: {y:.0f}")
 
             # Panel 4 — Mejora por época
             conv = prepare_convergence_data(histories)
-            ax4.bar(conv["x"], conv["y"], color=color, alpha=0.7)
+            bars4 = ax4.bar(conv["x"], conv["y"], color=color, alpha=0.7)
             ax4.axhline(0, color="black", linewidth=0.5)
             ax4.set(xlabel=conv["xlabel"], ylabel=conv["ylabel"], title=conv["title"])
             ax4.grid(True, alpha=0.3)
+            self._hover.register_bars(ax4, bars4, "Época: {x:.0f}\nMejora: {y:+.3f}%")
 
             self.fig.tight_layout()
             self.canvas.draw()
@@ -804,12 +999,14 @@ def run_interactive_mode() -> None:
 
             La configuración actual se dibuja con línea discontinua y mayor
             grosor para distinguirla visualmente de las anteriores.
+            Registra todas las líneas en el hover manager.
             """
             if not self.previous_results:
                 return
 
             ax1 = self.axes.flatten()[0]
             ax1.clear()
+            self._hover.reset()
 
             # Construye lista unificada de resultados y etiquetas para chart_generator
             all_results = [p["results"] for p in self.previous_results]
@@ -817,6 +1014,7 @@ def run_interactive_mode() -> None:
                 f"P={p['params']['num_partitions']}, E={p['params']['num_epochs']}"
                 for p in self.previous_results
             ]
+
             # Agrega configuración actual
             if hasattr(self, "current_results"):
                 all_results.append(self.current_results)
@@ -830,7 +1028,7 @@ def run_interactive_mode() -> None:
 
             for i, cfg in enumerate(comp["configurations"]):
                 is_current = i == n_configs - 1
-                ax1.plot(
+                (ln,) = ax1.plot(
                     cfg["x"],
                     cfg["y"],
                     "o-",
@@ -838,6 +1036,10 @@ def run_interactive_mode() -> None:
                     linewidth=3 if is_current else 2,
                     linestyle="--" if is_current else "-",
                     label=f"{cfg['label']} ({cfg['final_accuracy']:.1f}%)",
+                )
+                lbl = cfg["label"]
+                self._hover.register_lines(
+                    ax1, [ln], f"{lbl}\nÉpoca: {{x:.0f}}\nAcc: {{y:.2f}}%"
                 )
 
             ax1.set(xlabel=comp["xlabel"], ylabel=comp["ylabel"], title=comp["title"])
