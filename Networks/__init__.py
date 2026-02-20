@@ -1,4 +1,5 @@
 """
+Networks/__init__.py
 Networks — Modelos de red neuronal para NN_practica.
 
 Expone DiegoNeuronalNetwork, la única red del proyecto.
