@@ -225,8 +225,30 @@ def run_interactive_mode() -> None:
                 return lambda v: var.set(int(round(float(v))))
 
             # Panel izquierdo: controles
-            ctrl = ttk.Frame(self.root, padding="10")
-            ctrl.grid(row=0, column=0, sticky="ns", padx=5, pady=5)
+            ctrl_container = ttk.Frame(self.root, width=260)
+            ctrl_container.grid(row=0, column=0, sticky="ns", padx=5, pady=5)
+
+            # Evita que el grid lo estire horizontalmente
+            ctrl_container.grid_propagate(False)
+
+            canvas = tk.Canvas(ctrl_container, width=260, highlightthickness=0)
+            scrollbar = ttk.Scrollbar(ctrl_container, orient="vertical", command=canvas.yview)
+
+            scrollable_frame = ttk.Frame(canvas, padding="10")
+
+            scrollable_frame.bind(
+                "<Configure>",
+                lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+            )
+
+            canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+            canvas.configure(yscrollcommand=scrollbar.set)
+
+            canvas.pack(side="left", fill="y", expand=True)
+            scrollbar.pack(side="right", fill="y")
+
+            # Ahora ctrl es el frame interno
+            ctrl = scrollable_frame
 
             ttk.Label(ctrl, text="Parámetros", font=("Helvetica", 14, "bold")).pack(
                 pady=10
