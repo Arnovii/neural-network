@@ -1,4 +1,5 @@
 """
+Analytics/chart_generator.py
 Preparación de datos para visualización.
 
 Transforma los historiales de entrenamiento en estructuras listas para
