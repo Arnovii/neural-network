@@ -1,60 +1,25 @@
 """
+Networks/nn_diego.py
 Red neuronal para clasificación de MNIST con entrenamiento federado.
-
 Arquitectura: 784 (entrada) → oculta (sigmoide) → 10 (salida, softmax).
-
-El método principal es train_federated, que implementa el algoritmo de Diego:
-cada época entrena copias independientes de la red sobre distintas particiones
-y luego promedia los parámetros resultantes.
+Implementación nativa con NumPy (operaciones matriciales vectorizadas).
 """
 
-import math
-import os
-import random
-import sys
+import numpy as np
 from typing import Any, Callable, Dict, List, Tuple
 
-import numpy as np
-
-# Agregaa directorio padre al path para importar Utils
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-# Importa utilidades matemáticas
 from Utils.math_utils import (
-    accumulate_outer_inplace,
-    accumulate_vector_inplace,
-    argmax,
-    average_network_parameters,
-    compute_one_hot,
-    matrix_transpose,
-    matrix_vector_multiply,
-    sigmoid,
-    sigmoid_derivative_from_activation,
-    softmax,
-    vector_add,
-    vector_subtract,
-    vector_zeros,
-    xavier_initialization,
+    argmax, average_network_parameters, compute_one_hot,
+    sigmoid, sigmoid_derivative_from_activation, softmax,
+    xavier_initialization, vector_zeros,
 )
-
-# =============
-# RED NEURONAL
-# =============
 
 
 class DiegoNeuronalNetwork:
     """
     Red neuronal con soporte para el algoritmo de entrenamiento de Diego.
 
-    Attributes:
-        input_size:  Número de neuronas de entrada (784 para MNIST).
-        hidden_size: Número de neuronas en la capa oculta.
-        output_size: Número de neuronas de salida (10 para MNIST).
-        W1:          Pesos entrada → capa oculta  (hidden_size × input_size).
-        b1:          Sesgos de la capa oculta     (hidden_size,).
-        W2:          Pesos capa oculta → salida   (output_size × hidden_size).
-        b2:          Sesgos de la capa de salida  (output_size,).
-        training_history: Historial del último entrenamiento federado.
+    Todos los parámetros internos son np.ndarray.
     """
 
     def __init__(
@@ -64,101 +29,56 @@ class DiegoNeuronalNetwork:
         output_size: int = 10,
         random_seed: int | None = None,
     ):
-        """
-        Inicializa la red con pesos Xavier y sesgos en cero.
-
-        :param input_size: Tamaño de la capa de entrada
-        :type input_size: int
-
-        :param hidden_size: Tamaño de la capa oculta
-        :type hidden_size: int
-
-        :param output_size: Tamaño de la capa de salida
-        :type output_size: int
-
-        :param random_seed: Semilla para reproducibilidad
-        :type random_seed: int | None
-        """
         self.input_size = input_size
         self.hidden_size = hidden_size
         self.output_size = output_size
 
-        # Establece la semilla si se proporciona
         if random_seed is not None:
-            random.seed(random_seed)
+            np.random.seed(random_seed)
 
-        # Inicialización de parámetros
         self.W1 = xavier_initialization(input_size, hidden_size)
         self.b1 = vector_zeros(hidden_size)
-
         self.W2 = xavier_initialization(hidden_size, output_size)
         self.b2 = vector_zeros(output_size)
 
-        # Historial de entrenamiento
         self.training_history: Dict[str, Any] = {}
 
     # ========================
     # GESTIÓN DE PARÁMETROS
     # ========================
 
-    def get_parameters(self) -> Dict[str, Any]:
-        """
-        Devuelve una copia profunda de los parámetros actuales.
-
-        :return: Diccionario con W1, b1, W2, b2
-        :rtype: Dict[str, Any]
-        """
+    def get_parameters(self) -> Dict[str, np.ndarray]:
+        """Devuelve una copia de los parámetros actuales."""
         return {
-            "W1": [row[:] for row in self.W1],
-            "b1": self.b1[:],
-            "W2": [row[:] for row in self.W2],
-            "b2": self.b2[:],
+            "W1": self.W1.copy(),
+            "b1": self.b1.copy(),
+            "W2": self.W2.copy(),
+            "b2": self.b2.copy(),
         }
 
-    def set_parameters(self, params: Dict[str, Any]) -> None:
-        """
-        Establece los parámetros de la red a partir de un diccionario.
-
-        :param params: Diccionario con W1, b1, W2, b2
-        :type params: Dict[str, Any]
-        """
-        self.W1 = [row[:] for row in params["W1"]]
-        self.b1 = params["b1"][:]
-        self.W2 = [row[:] for row in params["W2"]]
-        self.b2 = params["b2"][:]
+    def set_parameters(self, params: Dict[str, np.ndarray]) -> None:
+        """Establece los parámetros a partir de un diccionario."""
+        self.W1 = params["W1"].copy()
+        self.b1 = params["b1"].copy()
+        self.W2 = params["W2"].copy()
+        self.b2 = params["b2"].copy()
 
     # ========================
     # FORWARD PROPAGATION
     # ========================
 
-    def forward(self, x: List[float]) -> Tuple[List[float], Dict[str, Any]]:
+    def forward(self, x: np.ndarray) -> Tuple[np.ndarray, Dict[str, Any]]:
         """
-        Propagación hacia adelante para una sola entrada.
+        Forward para una sola entrada (vector 1-D).
 
-        Se usa en predict y evaluate. El bucle de entrenamiento (train_on_batch)
-        tiene el forward inlined para evitar el overhead del diccionario cache.
-
-        :param x: Vector de entrada de tamaño input_size
-        :type x: List[float]
-
-        :return: Tupla (probabilidades softmax, cache con valores intermedios)
-        :rtype: Tuple[List[float], Dict[str, Any]]
+        :param x: Vector de entrada (input_size,)
+        :return: (probabilidades softmax, cache)
         """
-        # Capa oculta: z1 = W1·x + b1
-        z1 = vector_add(matrix_vector_multiply(self.W1, x), self.b1)
-
-        # Activación sigmoide: a1 = σ(z1)
-        a1 = [sigmoid(z) for z in z1]
-
-        # Capa de salida: z2 = W2·a1 + b2
-        z2 = vector_add(matrix_vector_multiply(self.W2, a1), self.b2)
-
-        # Softmax para probabilidades
+        z1 = self.W1 @ x + self.b1
+        a1 = sigmoid(z1)
+        z2 = self.W2 @ a1 + self.b2
         output = softmax(z2)
-
-        # Guarda valores para backpropagation
-        cache = {"x": x[:], "a1": a1, "output": output}
-
+        cache = {"x": x.copy(), "a1": a1, "output": output}
         return output, cache
 
     # ========================
@@ -167,240 +87,128 @@ class DiegoNeuronalNetwork:
 
     def train_on_batch(
         self,
-        X: List[List[float]],
-        Y: List[int],
+        X: np.ndarray,
+        Y: np.ndarray,
         learning_rate: float,
         verbose: bool = False,
     ) -> Tuple[float, float]:
         """
-        Entrena la red sobre un batch completo usando gradiente descendente.
+        Entrena sobre un batch completo usando gradiente descendente vectorizado.
 
-        Realiza el forward y backward inline para cada ejemplo, acumulando
-        gradientes in-place (sin crear matrices intermedias). Al final aplica
-        una única actualización con el gradiente promedio del batch.
+        En lugar de iterar ejemplo por ejemplo, procesa todo el batch con
+        operaciones matriciales de NumPy (mucho más rápido).
 
-        :param X: Lista de imágenes de entrada
-        :type X: List[List[float]]
-
-        :param Y: Lista de etiquetas correspondientes
-        :type Y: List[int]
-
+        :param X: Imágenes (N, 784)
+        :param Y: Etiquetas (N,)
         :param learning_rate: Tasa de aprendizaje
-        :type learning_rate: float
-
-        :param verbose: Si True, reporta el progreso cada 1000 ejemplos
-        :type verbose: bool
-
-        :return: Tupla (loss promedio, accuracy en porcentaje)
-        :rtype: Tuple[float, float]
+        :return: (loss promedio, accuracy %)
         """
         n = len(X)
 
-        # np.zeros crea arrays contiguos en memoria C.
-        # accumulate_outer_inplace y accumulate_vector_inplace de math_utils_numpy
-        # usan np.add(..., out=acc) directamente sobre ellos, sin conversión.
-        dW1_acc = np.zeros((self.hidden_size, self.input_size), dtype=np.float64)
-        db1_acc = np.zeros(self.hidden_size, dtype=np.float64)
-        dW2_acc = np.zeros((self.output_size, self.hidden_size), dtype=np.float64)
-        db2_acc = np.zeros(self.output_size, dtype=np.float64)
+        # --- Forward vectorizado (todo el batch a la vez) ---
+        # X tiene forma (N, 784), necesitamos (784, N) para la multiplicación
+        X_T = X.T  # (784, N)
 
-        correct = 0
-        total_loss = 0.0
+        Z1 = self.W1 @ X_T + self.b1[:, np.newaxis]  # (hidden, N)
+        A1 = sigmoid(Z1)                               # (hidden, N)
 
-        for i, (xi, yi) in enumerate(zip(X, Y)):
-            # Forward Propagation
-            z1 = vector_add(matrix_vector_multiply(self.W1, xi), self.b1)
-            a1 = [sigmoid(z) for z in z1]
-            z2 = vector_add(matrix_vector_multiply(self.W2, a1), self.b2)
-            output = softmax(z2)
+        Z2 = self.W2 @ A1 + self.b2[:, np.newaxis]    # (output, N)
 
-            # Métricas
-            if argmax(output) == yi:
-                correct += 1
-            total_loss += -math.log(max(output[yi], 1e-15))
+        # Softmax por columna (cada columna es un ejemplo)
+        Z2_stable = Z2 - np.max(Z2, axis=0, keepdims=True)
+        exp_Z2 = np.exp(Z2_stable)
+        A2 = exp_Z2 / np.sum(exp_Z2, axis=0, keepdims=True)  # (output, N)
 
-            # Backward Propagation
-            # Aplica One-hot encoding para la etiqueta
-            y_onehot = compute_one_hot(yi, self.output_size)
+        # --- Métricas ---
+        predictions = np.argmax(A2, axis=0)  # (N,)
+        correct = np.sum(predictions == Y)
+        # Cross-entropy loss
+        log_probs = np.log(np.clip(A2, 1e-15, 1.0))
+        total_loss = -np.sum(log_probs[Y, np.arange(n)])
 
-            # δ2 = output − y_onehot  (derivada combinada cross-entropy + softmax)
-            delta2 = vector_subtract(output, y_onehot)
+        # --- Backward vectorizado ---
+        # One-hot de todas las etiquetas: (output, N)
+        Y_onehot = np.zeros((self.output_size, n))
+        Y_onehot[Y, np.arange(n)] = 1.0
 
-            # Gradiente de la capa oculta
-            # δ1 = (W2ᵀ · δ2) ⊙ σ'(a1)
-            W2_T = matrix_transpose(self.W2)
-            delta1 = [
-                d * sigmoid_derivative_from_activation(a)
-                for d, a in zip(matrix_vector_multiply(W2_T, delta2), a1)
-            ]
+        # δ2 = A2 - Y_onehot, forma (output, N)
+        delta2 = A2 - Y_onehot
 
-            # Acumulación in-place:
-            # accumulate_outer_inplace fusiona outer_product + matrix_add en un
-            # solo pase, eliminando dos allocations de lista por ejemplo.
-            accumulate_outer_inplace(dW2_acc, delta2, a1)
-            accumulate_outer_inplace(dW1_acc, delta1, xi)
-            accumulate_vector_inplace(db2_acc, delta2)
-            accumulate_vector_inplace(db1_acc, delta1)
+        # Gradientes capa 2
+        dW2 = (1.0 / n) * (delta2 @ A1.T)          # (output, hidden)
+        db2 = (1.0 / n) * np.sum(delta2, axis=1)    # (output,)
 
-            if verbose and (i + 1) % 1000 == 0:
-                print(f"    Procesados {i + 1}/{n} ejemplos...")
+        # δ1 = (W2^T · δ2) ⊙ σ'(A1), forma (hidden, N)
+        delta1 = (self.W2.T @ delta2) * sigmoid_derivative_from_activation(A1)
 
-        # Actualización con factor único lr/n
-        self._update_parameters(dW1_acc, db1_acc, dW2_acc, db2_acc, learning_rate, n)
+        # Gradientes capa 1
+        dW1 = (1.0 / n) * (delta1 @ X_T.T)          # (hidden, input)
+        db1 = (1.0 / n) * np.sum(delta1, axis=1)     # (hidden,)
+
+        # --- Actualización ---
+        self.W1 -= learning_rate * dW1
+        self.b1 -= learning_rate * db1
+        self.W2 -= learning_rate * dW2
+        self.b2 -= learning_rate * db2
 
         return total_loss / n, 100.0 * correct / n
 
-    def _update_parameters(
-        self,
-        dW1_acc: Any,
-        db1_acc: Any,
-        dW2_acc: Any,
-        db2_acc: Any,
-        learning_rate: float,
-        n: int,
-    ) -> None:
-        """
-        Actualiza los parámetros in-place con el gradiente promediado.
-
-        Aplica ``lr / n`` como factor único para evitar crear una matriz
-        intermedia escalada antes de restar.
-
-        Sería algo tipo: θ <- θ - (lr / n) * ∇θ
-
-        :param dW1_acc: Gradientes acumulados de W1 (sin escalar)
-        :type dW1_acc: List[List[float]]
-
-        :param db1_acc: Gradientes acumulados de b1 (sin escalar)
-        :type db1_acc: List[float]
-
-        :param dW2_acc: Gradientes acumulados de W2 (sin escalar)
-        :type dW2_acc: List[List[float]]
-
-        :param db2_acc: Gradientes acumulados de b2 (sin escalar)
-        :type db2_acc: List[float]
-
-        :param learning_rate: Tasa de aprendizaje
-        :type learning_rate: float
-
-        :param n: Número de ejemplos del batch (para promediar los gradientes)
-        :type n: int
-        """
-        factor = learning_rate / n
-
-        # Actualización vectorizada: sin bucles Python, opera en C
-        W1_np = np.asarray(self.W1)
-        W1_np -= factor * np.asarray(dW1_acc)
-        self.W1 = W1_np.tolist()
-
-        b1_np = np.asarray(self.b1)
-        b1_np -= factor * np.asarray(db1_acc)
-        self.b1 = b1_np.tolist()
-
-        W2_np = np.asarray(self.W2)
-        W2_np -= factor * np.asarray(dW2_acc)
-        self.W2 = W2_np.tolist()
-
-        b2_np = np.asarray(self.b2)
-        b2_np -= factor * np.asarray(db2_acc)
-        self.b2 = b2_np.tolist()
-
     def train_federated(
         self,
-        partitions: List[Tuple[List[List[float]], List[int]]],
+        partitions: List[Tuple[np.ndarray, np.ndarray]],
         epochs: int,
         learning_rate: float,
         verbose: bool = True,
         on_epoch_end: Callable | None = None,
     ) -> Dict[str, Any]:
         """
-        Entrena la red usando el algoritmo de Diego.
+        Entrena usando el algoritmo de Diego (entrenamiento federado).
 
         Por cada época:
+        1. Guarda parámetros globales.
+        2. Entrena cada partición independientemente.
+        3. Promedia parámetros de todas las particiones.
 
-        1. Guarda los parámetros globales actuales.
-        2. Para cada partición: restaura los parámetros globales y entrena
-           de forma independiente con train_on_batch.
-        3. Promedia los parámetros de todas las particiones.
-        4. Establece el promedio como nuevos parámetros globales.
-
-        :param partitions: Lista de tuplas (X_partition, Y_partition)
-        :type partitions: List[Tuple[List[List[float]], List[int]]]
-
-        :param epochs: Número de épocas
-        :type epochs: int
-
-        :param learning_rate: Tasa de aprendizaje
-        :type learning_rate: float
-
-        :param verbose: Si True, muestra progreso detallado por época y partición
-        :type verbose: bool
-
-        :param on_epoch_end: Callback invocado al finalizar cada época con la firma
-                             ``on_epoch_end(epoch, total_epochs, accuracy, loss)``.
-        :type on_epoch_end: Callable | None
-        :return: Historial con las claves:
-
-                 - ``accuracies``: precisión global por época (List[float])
-                 - ``losses``: pérdida global por época (List[float])
-                 - ``partition_accuracies``: precisión por partición y época
-                   (List[List[float]]), forma [época][partición]
-        :rtype: Dict[str, Any]
+        :return: Historial con accuracies, losses, partition_accuracies
         """
         num_partitions = len(partitions)
-
-        # Listas acumuladoras: formato esperado por experiment_runner y statistics_engine
         accuracies: List[float] = []
         losses: List[float] = []
-
-        # partition_accuracies[epoca] = [acc_part0, acc_part1, ...]
         partition_accuracies: List[List[float]] = []
 
         if verbose:
             print("=" * 70)
-            print("ENTRENAMIENTO FEDERADO")
+            print("ENTRENAMIENTO CON ALGORITMO DE DIEGO")
             print("=" * 70)
             print(f"Particiones   : {num_partitions}")
             print(f"Épocas        : {epochs}")
             print(f"Learning rate : {learning_rate}")
-            print(
-                f"Arquitectura  : {self.input_size} → {self.hidden_size} → {self.output_size}"
-            )
+            print(f"Arquitectura  : {self.input_size} → {self.hidden_size} → {self.output_size}")
             print("=" * 70)
 
         for epoch in range(epochs):
             if verbose:
                 print(f"\n--- Época {epoch + 1}/{epochs} ---")
 
-            # Guarda parámetros globales al inicio de esta época
             global_params = self.get_parameters()
-
             partition_params = []
             partition_metrics = []
 
-            # Entrena en cada partición de forma independiente
             for p_idx, (X_part, Y_part) in enumerate(partitions):
-                # Cada partición parte de los mismos parámetros globales
                 self.set_parameters(global_params)
                 loss, accuracy = self.train_on_batch(X_part, Y_part, learning_rate)
-
                 partition_params.append(self.get_parameters())
                 partition_metrics.append(accuracy)
 
                 if verbose:
-                    print(
-                        f"  Partición {p_idx + 1}: loss={loss:.4f}  acc={accuracy:.2f}%"
-                    )
+                    print(f"  Partición {p_idx + 1}: loss={loss:.4f}  acc={accuracy:.2f}%")
 
-            # Promedia parámetros de todas las particiones
+            # Promedia parámetros
             self.set_parameters(average_network_parameters(partition_params))
 
-            # Evalúa el modelo global sobre todos los datos combinados
-            all_X: List[List[float]] = []
-            all_Y: List[int] = []
-            for X_part, Y_part in partitions:
-                all_X.extend(X_part)
-                all_Y.extend(Y_part)
-
+            # Evalúa globalmente
+            all_X = np.vstack([X for X, _ in partitions])
+            all_Y = np.concatenate([Y for _, Y in partitions])
             global_accuracy, global_loss = self.evaluate(all_X, all_Y)
 
             accuracies.append(global_accuracy)
@@ -409,68 +217,50 @@ class DiegoNeuronalNetwork:
 
             if verbose:
                 print(f"  Global → loss={global_loss:.4f}  acc={global_accuracy:.2f}%")
-                print("-" * 50)
 
             if on_epoch_end is not None:
                 on_epoch_end(epoch + 1, epochs, global_accuracy, global_loss)
 
-        history: Dict[str, Any] = {
+        history = {
             "accuracies": accuracies,
             "losses": losses,
             "partition_accuracies": partition_accuracies,
         }
         self.training_history = history
-
-        if verbose:
-            print("\n" + "=" * 70)
-            print("ENTRENAMIENTO COMPLETADO")
-            print("=" * 70)
-
         return history
 
     # ========================
     # INFERENCIA Y EVALUACIÓN
     # ========================
 
-    def predict(self, x: List[float]) -> int:
-        """
-        Predice la clase de una sola imagen.
-
-        :param x: Imagen aplanada de tamaño input_size
-        :type x: List[float]
-
-        :return: Clase predicha (0-9)
-        :rtype: int
-        """
+    def predict(self, x: np.ndarray) -> int:
+        """Predice la clase de una sola imagen."""
         output, _ = self.forward(x)
         return argmax(output)
 
-    def evaluate(self, X: List[List[float]], Y: List[int]) -> Tuple[float, float]:
+    def evaluate(self, X: np.ndarray, Y: np.ndarray) -> Tuple[float, float]:
         """
-        Evalúa la red sobre un conjunto de datos.
+        Evalúa la red sobre un conjunto de datos (vectorizado).
 
-        :param X: Lista de imágenes
-        :type X: List[List[float]]
-
-        :param Y: Lista de etiquetas verdaderas
-        :type Y: List[int]
-
-        :return: Tupla (accuracy en porcentaje, loss promedio)
-        :rtype: Tuple[float, float]
+        :param X: Imágenes (N, 784)
+        :param Y: Etiquetas (N,)
+        :return: (accuracy %, loss promedio)
         """
-        correct = 0
-        total_loss = 0.0
         n = len(X)
+        X_T = X.T
 
-        for xi, yi in zip(X, Y):
-            output, _ = self.forward(xi)
-            if argmax(output) == yi:
-                correct += 1
+        Z1 = self.W1 @ X_T + self.b1[:, np.newaxis]
+        A1 = sigmoid(Z1)
+        Z2 = self.W2 @ A1 + self.b2[:, np.newaxis]
 
-            # Estamos evaluando loss = -log(p)
-            # Si p = 0, entonces log(0) = - ∞
-            # Llegado ese caso, reemplazamos 0 por 1e-15
-            # Eso es Clipping Numéricos (estabilidad numérica)
-            total_loss += -math.log(max(output[yi], 1e-15))
+        Z2_stable = Z2 - np.max(Z2, axis=0, keepdims=True)
+        exp_Z2 = np.exp(Z2_stable)
+        A2 = exp_Z2 / np.sum(exp_Z2, axis=0, keepdims=True)
+
+        predictions = np.argmax(A2, axis=0)
+        correct = np.sum(predictions == Y)
+
+        log_probs = np.log(np.clip(A2, 1e-15, 1.0))
+        total_loss = -np.sum(log_probs[Y, np.arange(n)])
 
         return 100.0 * correct / n, total_loss / n
