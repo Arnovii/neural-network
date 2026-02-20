@@ -1,4 +1,5 @@
 """
+Analytics/statistics_engine.py
 Funciones matemáticas puras para el análisis estadístico de experimentos.
 
 Opera sobre los historiales producidos por experiment_runner y
