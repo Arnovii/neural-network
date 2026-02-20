@@ -1,4 +1,5 @@
 """
+Networks/nn_diego.py
 Red neuronal para clasificación de MNIST con entrenamiento federado.
 
 Arquitectura: 784 (entrada) → oculta (sigmoide) → 10 (salida, softmax).
