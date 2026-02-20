@@ -27,7 +27,7 @@ from Analytics.chart_generator import (
     prepare_accuracy_chart_data,
     prepare_comparison_chart_data,
     prepare_convergence_data,
-    prepare_distribution_data,
+    prepare_experiment_rsd_data,
     prepare_partition_comparison_data,
 )
 
@@ -232,13 +232,15 @@ def run_interactive_mode() -> None:
             ctrl_container.grid_propagate(False)
 
             canvas = tk.Canvas(ctrl_container, width=260, highlightthickness=0)
-            scrollbar = ttk.Scrollbar(ctrl_container, orient="vertical", command=canvas.yview)
+            scrollbar = ttk.Scrollbar(
+                ctrl_container, orient="vertical", command=canvas.yview
+            )
 
             scrollable_frame = ttk.Frame(canvas, padding="10")
 
             scrollable_frame.bind(
                 "<Configure>",
-                lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+                lambda e: canvas.configure(scrollregion=canvas.bbox("all")),
             )
 
             canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
@@ -822,41 +824,85 @@ def run_interactive_mode() -> None:
 
             self._add_cursor(part_lines, _fmt_part)
 
-            # Panel 3 — Distribución de precisión final
-            dist = prepare_distribution_data(histories)
-            bin_centers = [
-                (dist["bins"][i] + dist["bins"][i + 1]) / 2
-                for i in range(len(dist["bins"]) - 1)
-            ]
-            width = (
-                (dist["bins"][1] - dist["bins"][0]) * 0.9
-                if len(dist["bins"]) > 1
-                else 1.0
-            )
-            bars = ax3.bar(
-                bin_centers,
-                dist["counts"],
-                width=width,
-                color=color,
-                alpha=0.7,
-                edgecolor="black",
-            )
-            ax3.axvline(
-                dist["mean"], color="red", linestyle="--", linewidth=2, label="Promedio"
-            )
-            ax3.set(xlabel=dist["xlabel"], ylabel=dist["ylabel"], title=dist["title"])
-            ax3.legend()
-            ax3.grid(True, alpha=0.3)
+            # Panel 3 — Precisión por experimento con RSD
+            rsd_data = prepare_experiment_rsd_data(histories)
 
-            def _fmt_dist(sel):
-                sel.annotation.set_text(
-                    f"Rango: {sel.target[0]:.1f}%\nFrecuencia: {sel.target[1]:.0f}"
-                )
+            # Barras coloreadas según calidad de cada experimento
+            bar_colors = [
+                "#4CAF50" if y >= 90 else "#FF9800" if y >= 80 else "#F44336"
+                for y in rsd_data["y"]
+            ]
+            bars = ax3.bar(
+                rsd_data["x"],
+                rsd_data["y"],
+                color=bar_colors,
+                alpha=0.8,
+                edgecolor="black",
+                zorder=3,
+            )
+
+            # Línea del promedio
+            ax3.axhline(
+                rsd_data["mean"],
+                color="red",
+                linestyle="--",
+                linewidth=2,
+                label=f"Promedio: {rsd_data['mean']:.2f}%",
+                zorder=4,
+            )
+
+            # Bandas ±1σ
+            ax3.axhline(
+                rsd_data["upper"],
+                color="orange",
+                linestyle=":",
+                linewidth=1.5,
+                label=f"±1σ ({rsd_data['std']:.2f}%)",
+                zorder=4,
+            )
+            ax3.axhline(
+                rsd_data["lower"],
+                color="orange",
+                linestyle=":",
+                linewidth=1.5,
+                zorder=4,
+            )
+            ax3.fill_between(
+                [rsd_data["x"][0] - 0.5, rsd_data["x"][-1] + 0.5],
+                rsd_data["lower"],
+                rsd_data["upper"],
+                alpha=0.1,
+                color="orange",
+                zorder=1,
+            )
+
+            ax3.set_xticks(rsd_data["x"])
+            ax3.set(
+                xlabel=rsd_data["xlabel"],
+                ylabel=rsd_data["ylabel"],
+                title=rsd_data["title"],
+            )
+            ax3.legend(loc="lower right", fontsize=8)
+            ax3.grid(True, alpha=0.3, axis="y")
+
+            # Tooltip: muestra experimento, precisión y distancia al promedio
+            rsd_snapshot = rsd_data  # captura para el closure
+
+            def _fmt_rsd(sel):
+                idx = int(round(sel.target[0])) - 1
+                if 0 <= idx < len(rsd_snapshot["y"]):
+                    val = rsd_snapshot["y"][idx]
+                    diff = val - rsd_snapshot["mean"]
+                    sel.annotation.set_text(
+                        f"Experimento: {idx + 1}\n"
+                        f"Precisión: {val:.2f}%\n"
+                        f"vs Promedio: {diff:+.2f}%"
+                    )
                 sel.annotation.get_bbox_patch().set(
                     facecolor="#fff3e0", alpha=0.95, edgecolor="#888"
                 )
 
-            self._add_cursor(bars, _fmt_dist)
+            self._add_cursor(bars, _fmt_rsd)
 
             # Panel 4 — Mejora por época
             conv = prepare_convergence_data(histories)

@@ -12,6 +12,9 @@ from Utils.mnist_loader import load_mnist_train, load_mnist_test
 from Utils.data_partitioner import partition_mnist_data_simple
 from Networks.nn_diego import DiegoNeuronalNetwork
 
+# ================================================================
+# EJECUCIÓN DE UN ÚNICO EXPERIMENTO
+# ================================================================
 
 def run_single_experiment(
     num_partitions: int = 2,
@@ -23,22 +26,64 @@ def run_single_experiment(
     verbose: bool = False,
     on_progress: Callable | None = None,
 ) -> Dict[str, Any]:
-    """Ejecuta un único experimento de Algoritmo de Diego."""
+    """
+    Ejecuta un único experimento del Algoritmo de Diego.
 
+    Flujo del experimento:
+        1. Fijar semilla (si se proporciona).
+        2. Cargar subconjunto de MNIST.
+        3. Crear particiones estratificadas.
+        4. Inicializar red neuronal.
+        5. Entrenar en modo federado.
+        6. Evaluar en conjunto de prueba.
+        7. Retornar métricas y metadatos.
+
+    :param num_partitions: Número de particiones del dataset.
+    :type num_partitions: int
+
+    :param num_epochs: Número de épocas de entrenamiento.
+    :type num_epochs: int
+
+    :param hidden_neurons: Número de neuronas en capa oculta.
+    :type hidden_neurons: int
+
+    :param learning_rate: Tasa de aprendizaje.
+    :type learning_rate: float
+
+    :param n_train: Tamaño del subconjunto de entrenamiento.
+    :type n_train: int
+
+    :param random_seed: Semilla para reproducibilidad.
+    :type random_seed: int | None
+
+    :param verbose: Activa impresión en consola.
+    :type verbose: bool
+
+    :param on_progress: Callback opcional para UI.
+    :type on_progress: Callable | None
+
+    :return: Diccionario con historial, métricas y metadatos.
+    :rtype: Dict[str, Any]
+    """
+
+    # Función interna de notificación (CLI / UI)
     def _notify(msg: str) -> None:
         if on_progress is not None:
             on_progress(msg)
         if verbose:
             print(msg)
 
+    # Reproducibilidad
     if random_seed is not None:
         np.random.seed(random_seed)
 
+    # Carga de datos
     _notify("[Cargando datos MNIST...]")
     X_train, Y_train = load_mnist_train(
         n_train=n_train, download_if_missing=True, verbose=False
     )
 
+    # Particionado federado
     _notify(f"[Creando {num_partitions} particiones estratificadas...]")
     partitions = partition_mnist_data_simple(
         num_partitions=num_partitions,
@@ -47,6 +92,7 @@ def run_single_experiment(
         random_seed=random_seed,
     )
 
+    # Inicializa la red
     _notify(f"[Inicializando red: 784 → {hidden_neurons} → 10]")
     network = DiegoNeuronalNetwork(
         input_size=784,
@@ -55,11 +101,12 @@ def run_single_experiment(
         random_seed=random_seed,
     )
 
+    # Entrenamiento
     start_time = time.time()
 
     def _on_epoch_end(epoch: int, total: int, accuracy: float, loss: float) -> None:
         _notify(
-            f"[Época {epoch}/{total} — Precisión: {accuracy:.2f}%  Loss: {loss:.4f}]"
+            f"[Época {epoch}/{total}] — Precisión: {accuracy:.2f}%  Loss: {loss:.4f}]"
         )
 
     history = network.train_federated(
@@ -72,11 +119,15 @@ def run_single_experiment(
 
     elapsed = time.time() - start_time
 
+    # Evaluación final
     _notify("[Evaluando en conjunto de prueba...]")
     X_test, Y_test = load_mnist_test(verbose=False)
+
+    # Se evalúa sobre subconjunto fijo para consistencia temporal
     test_accuracy, test_loss = network.evaluate(X_test[:1000], Y_test[:1000])
     _notify(f"[Precisión en test: {test_accuracy:.2f}%]")
 
+    # Retorno estructurado
     return {
         "accuracies": history["accuracies"],
         "losses": history["losses"],
@@ -88,6 +139,9 @@ def run_single_experiment(
         "final_accuracy": history["accuracies"][-1] if history["accuracies"] else 0.0,
     }
 
+# ================================================================
+# EJECUCIÓN DE MÚLTIPLES EXPERIMENTOS
+# ================================================================
 
 def run_multiple_experiments(
     num_partitions: int = 2,
@@ -99,7 +153,18 @@ def run_multiple_experiments(
     verbose: bool = True,
     on_progress: Callable | None = None,
 ) -> Dict[str, Any]:
-    """Ejecuta múltiples experimentos con distintas semillas."""
+    """
+    Ejecuta múltiples experimentos con distintas semillas aleatorias.
+
+    Objetivo:
+        Medir estabilidad, variabilidad y robustez del modelo.
+
+    Cada experimento usa una semilla distinta generada
+    aleatoriamente.
+
+    :return: Diccionario agregando resultados y métricas globales.
+    :rtype: Dict[str, Any]
+    """
 
     def _notify(msg: str) -> None:
         if on_progress is not None:
@@ -118,6 +183,7 @@ def run_multiple_experiments(
     all_histories = []
     test_accuracies = []
 
+    # Bucle principal experimental
     for exp_idx in range(num_experiments):
         _notify(f"EXPERIMENTO {exp_idx + 1}/{num_experiments}")
         seed = np.random.randint(0, 1_000_000)
@@ -137,6 +203,7 @@ def run_multiple_experiments(
         test_accuracies.append(result["test_accuracy"])
         _notify(f"  ✓ Completado — Precisión final: {result['final_accuracy']:.2f}%")
 
+    # Estadísticas agregadas
     final_accs = np.array([h["final_accuracy"] for h in all_histories])
     test_accs = np.array(test_accuracies)
 
@@ -162,12 +229,34 @@ def run_multiple_experiments(
         "test_accuracies": test_accs.tolist(),
     }
 
+# ================================================================
+# COMPARACIÓN DE CONFIGURACIONES
+# ================================================================
 
 def compare_configurations(
     configurations: List[Dict[str, Any]],
     verbose: bool = True,
 ) -> List[Dict[str, Any]]:
-    """Compara múltiples configuraciones de hiperparámetros."""
+    """
+    Compara múltiples configuraciones de hiperparámetros.
+
+    Cada configuración debe ser un diccionario compatible con
+    `run_multiple_experiments`.
+
+    Uso típico:
+        - Comparar distintos learning rates
+        - Comparar número de particiones
+        - Comparar tamaño de capa oculta
+
+    :param configurations: Lista de diccionarios de configuración.
+    :type configurations: List[Dict[str, Any]]
+
+    :param verbose: Activa impresión en consola.
+    :type verbose: bool
+
+    :return: Lista de resultados agregados.
+    :rtype: List[Dict[str, Any]]
+    """
     results = []
     for idx, config in enumerate(configurations):
         if verbose:
