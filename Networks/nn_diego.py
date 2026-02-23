@@ -1,6 +1,7 @@
 """
 Networks/nn_diego.py
-Red neuronal para clasificación de MNIST con entrenamiento federado.
+Red neuronal para clasificación de MNIST con entrenamiento con algoritmo
+de Diego.
 Arquitectura: 784 (entrada) → oculta (sigmoide) → 10 (salida, softmax).
 Implementación nativa con NumPy (operaciones matriciales vectorizadas).
 """
@@ -37,7 +38,7 @@ class DiegoNeuronalNetwork:
         b1:          Sesgos de la capa oculta     (hidden_size,).
         W2:          Pesos capa oculta → salida   (output_size × hidden_size).
         b2:          Sesgos de la capa de salida  (output_size,).
-        training_history: Historial del último entrenamiento federado.
+        training_history: Historial del último entrenamiento.
     """
 
     def __init__(
@@ -257,7 +258,7 @@ class DiegoNeuronalNetwork:
 
         return total_loss / n, 100.0 * correct / n
 
-    def train_federated(
+    def train_diego(
         self,
         partitions: List[Tuple[np.ndarray, np.ndarray]],
         epochs: int,
@@ -266,7 +267,7 @@ class DiegoNeuronalNetwork:
         on_epoch_end: Callable | None = None,
     ) -> Dict[str, Any]:
         """
-        Entrena usando el algoritmo de Diego (entrenamiento federado).
+        Entrena usando el algoritmo de Diego.
 
         Por cada época:
         1. Guarda parámetros globales.

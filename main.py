@@ -166,7 +166,7 @@ def run_interactive_mode() -> None:
                 self.tip_window.destroy()
                 self.tip_window = None
 
-    class FederatedLearningApp:
+    class DiegoLearningApp:
         # Valores de color para los widgets
         COLORS = [
             "#2196F3",
@@ -1093,7 +1093,7 @@ def run_interactive_mode() -> None:
 
     # Crea y ejecuta aplicación
     root = tk.Tk()
-    FederatedLearningApp(root)
+    DiegoLearningApp(root)
     root.mainloop()
 
 

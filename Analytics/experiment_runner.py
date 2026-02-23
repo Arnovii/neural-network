@@ -36,7 +36,7 @@ def run_single_experiment(
         2. Cargar subconjunto de MNIST.
         3. Crear particiones estratificadas.
         4. Inicializar red neuronal.
-        5. Entrenar en modo federado.
+        5. Entrena con el algoritmo de Diego.
         6. Evaluar en conjunto de prueba.
         7. Retornar métricas y metadatos.
 
@@ -85,7 +85,7 @@ def run_single_experiment(
         n_train=n_train, download_if_missing=True, verbose=False
     )
 
-    # Particionado federado
+    # Particionado de datos de entrenamiento
     _notify(f"[Creando {num_partitions} particiones estratificadas...]")
     partitions = partition_mnist_data_simple(
         num_partitions=num_partitions,
@@ -113,8 +113,8 @@ def run_single_experiment(
         )
 
     # Entrena la red con las particiones
-    _notify(f"[Inicializando entrenamiento...]")
-    history = network.train_federated(
+    _notify("[Inicializando entrenamiento...]")
+    history = network.train_diego(
         partitions=partitions,
         epochs=num_epochs,
         learning_rate=learning_rate,

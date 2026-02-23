@@ -1,11 +1,11 @@
-# NN_practica - Red Neuronal Federada para MNIST
+# NN_practica - Red Neuronal con Algoritmo de Diego para MNIST
 
 Proyecto de redes neuronales con implementación del algoritmo propuesto por Diego (promediado de parámetros por época) para el dataset MNIST.
 
 ## Estructura del Proyecto
 NN_practica/  
 ├── Analytics/ # Análisis estadístico y visualización  
-├── Networks/ # Red neuronal federada  
+├── Networks/ # Red neuronal  
 ├── Utils/ # Utilidades matemáticas y carga de datos  
 ├── Data/ # Datos MNIST (descargados automáticamente)  
 ├── results/ # Resultados de experimentos  
