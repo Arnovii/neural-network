@@ -17,7 +17,7 @@ Arquitectura:
 Método de optimización:
     Gradiente descendente completo (batch gradient descent, NO estocástico)
 =============================================================================
-"""
+""" 
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -31,11 +31,13 @@ import matplotlib.pyplot as plt
 NEURONAS_ENTRADA = 784     # 28x28 píxeles por imagen
 NEURONAS_OCULTA = 30       # Neuronas en la capa oculta
 NEURONAS_SALIDA = 10       # Un dígito del 0 al 9
-LEARNING_RATE = 0.1        # Tasa de aprendizaje (α)
-EPOCAS = 20                # Cuántas veces recorremos todos los datos
+LEARNING_RATE = 0.5        # Tasa de aprendizaje (α)
+EPOCAS = 10                # Cuántas veces recorremos todos los datos
 NUM_PARTICIONES = 2        # Número de particiones para el Algoritmo de Arnovi
                            # Cambia este valor: 1 = sin particiones (red normal)
                            #                    2, 3, 4... = con Algoritmo de Arnovi
+NUM_REPETICIONES = 10  # Cuántas veces ejecutamos todo el proceso
+
 
 
 # =====================================================================
@@ -345,7 +347,7 @@ def forward_propagation(X, parametros):
 
 def calcular_costo(A2, Y_one_hot):
     """
-    Calcula la pérdida de entropía cruzada (    ).
+    Calcula la pérdida de entropía cruzada (cross-entropy loss).
     
     L = -(1/m) · Σ Σ y_ij · log(a2_ij)
     
@@ -602,50 +604,48 @@ def algoritmo_de_arnovi(lista_parametros):
 
 
 # =====================================================================
-# PASO 11: PROGRAMA PRINCIPAL
+# PASO 11: UNA EJECUCIÓN COMPLETA (entrenar + evaluar)
 # =====================================================================
+# Separamos la lógica de "una ejecución completa" en su propia función
+# para poder llamarla múltiples veces en el ciclo de 10 repeticiones.
+#
+# ¿Por qué recibe X_train, Y_train, X_test, Y_test como parámetros?
+#   Porque cargar MNIST tarda varios segundos. Si lo cargamos UNA vez
+#   y lo pasamos a cada ejecución, ahorramos mucho tiempo en las 10 reps.
 
-def main():
-    print("=" * 60)
-    print("RED NEURONAL DESDE CERO - ALGORITMO DE ARNOVI")
-    print("=" * 60)
-    print(f"Arquitectura: {NEURONAS_ENTRADA} → {NEURONAS_OCULTA} → {NEURONAS_SALIDA}")
-    print(f"Learning rate: {LEARNING_RATE}")
-    print(f"Épocas: {EPOCAS}")
-    print(f"Particiones: {NUM_PARTICIONES}")
-    print("=" * 60)
+def ejecutar_una_vez(X_train, Y_train, X_test, Y_test, numero_ejecucion):
+    """
+    Ejecuta un ciclo completo: particionar → entrenar → Arnovi → evaluar.
     
-    # ---- Paso 1: Cargar datos ----
-    print("\n[1] Cargando dataset MNIST...")
-    X_train, Y_train, X_test, Y_test = cargar_mnist()
-    print(f"    Entrenamiento: {X_train.shape[1]} imágenes")
-    print(f"    Prueba: {X_test.shape[1]} imágenes")
+    Cada ejecución tiene inicialización y mezcla de datos DIFERENTES
+    (porque no fijamos semilla), lo que produce resultados distintos.
     
-    # ---- Paso 2: Crear particiones ----
-    print(f"\n[2] Creando {NUM_PARTICIONES} particiones...")
+    Parámetros:
+        X_train, Y_train: datos de entrenamiento
+        X_test, Y_test:   datos de prueba
+        numero_ejecucion: int - para identificar la ejecución en los logs
+    
+    Retorna:
+        precision_test:         float - precisión final en test
+        todos_historiales_precision: list - historiales de cada partición
+        todos_historiales_costo:     list - historiales de costo
+    """
+    print(f"\n{'#'*60}")
+    print(f"# EJECUCIÓN {numero_ejecucion}")
+    print(f"{'#'*60}")
+    
+    # ---- Crear particiones (mezcla aleatoria diferente cada vez) ----
     particiones = crear_particiones(X_train, Y_train, NUM_PARTICIONES)
     
-    # ---- Paso 3: Inicialización compartida ----
-    # Todas las particiones parten de los MISMOS parámetros iniciales.
-    # Razón: así la única diferencia entre cada mini-red es los datos que vio,
-    # lo que hace el promediado final más coherente y facilita el análisis.
-    print(f"\n[3] Inicializando parámetros (compartidos entre particiones)...")
+    # ---- Inicialización (parámetros aleatorios diferentes cada vez) ----
     parametros_iniciales = inicializar_parametros()
-    print(f"    W1: {parametros_iniciales['W1'].shape}")
-    print(f"    b1: {parametros_iniciales['b1'].shape}")
-    print(f"    W2: {parametros_iniciales['W2'].shape}")
-    print(f"    b2: {parametros_iniciales['b2'].shape}")
     
-    # ---- Paso 4: Entrenar cada partición ----
-    print(f"\n[4] Entrenando {NUM_PARTICIONES} mini-redes neuronales...")
-    
+    # ---- Entrenar cada partición ----
     lista_parametros_entrenados = []
     todos_historiales_precision = []
     todos_historiales_costo = []
     
     for i, (Xi, Yi) in enumerate(particiones):
-        # Cada partición recibe una COPIA de los parámetros iniciales
-        # (usamos .copy() para que no se modifiquen los originales)
         params_copia = {k: v.copy() for k, v in parametros_iniciales.items()}
         
         params_entrenados, hist_precision, hist_costo = entrenar_particion(
@@ -656,76 +656,199 @@ def main():
         todos_historiales_precision.append(hist_precision)
         todos_historiales_costo.append(hist_costo)
     
-    # ---- Paso 5: Algoritmo de Arnovi (si hay más de una partición) ----
+    # ---- Algoritmo de Arnovi ----
     if NUM_PARTICIONES > 1:
         parametros_finales = algoritmo_de_arnovi(lista_parametros_entrenados)
     else:
         parametros_finales = lista_parametros_entrenados[0]
-        print("\n  (Solo 1 partición: no se aplica Algoritmo de Arnovi)")
     
-    # ---- Paso 6: Evaluación final con datos de TEST ----
+    # ---- Evaluación en test ----
+    precision_test = calcular_precision(X_test, Y_test, parametros_finales)
+    print(f"\n  Ejecución {numero_ejecucion} → Precisión test: {precision_test * 100:.2f}%")
+    
+    return precision_test, todos_historiales_precision, todos_historiales_costo
+
+
+# =====================================================================
+# PASO 12: PROGRAMA PRINCIPAL CON 10 REPETICIONES + ESTADÍSTICAS
+# =====================================================================
+# 
+# ¿POR QUÉ 10 REPETICIONES?
+#   Una sola ejecución puede dar un resultado "afortunado" o "desafortunado"
+#   dependiendo de la inicialización aleatoria y la mezcla de datos.
+#   Al ejecutar 10 veces y promediar, obtenemos una estimación CONFIABLE
+#   del rendimiento real del método.
+#
+# ¿QUÉ ES LA DESVIACIÓN ESTÁNDAR RELATIVA (RSD)?
+#   También llamada "coeficiente de variación" (CV).
+#   
+#   RSD = (desviación_estándar / promedio) × 100%
+#
+#   Mide qué tan DISPERSOS están los resultados respecto al promedio,
+#   expresado como porcentaje.
+#
+#   Ejemplo:
+#     Si las 10 precisiones son: [90%, 91%, 89%, 90%, 92%, 88%, 91%, 90%, 89%, 90%]
+#     Promedio = 90%
+#     Desviación estándar ≈ 1.05%
+#     RSD = (1.05 / 90) × 100 = 1.17%
+#     → Los resultados varían muy poco (buena estabilidad).
+#
+#   Si RSD < 5%, se considera que el método es ESTABLE.
+#   Si RSD > 10%, hay mucha variabilidad → el método es sensible a
+#   la inicialización o a la partición de datos.
+
+
+def main():
+    print("=" * 60)
+    print("RED NEURONAL DESDE CERO - ALGORITMO DE ARNOVI")
+    print("=" * 60)
+    print(f"Arquitectura: {NEURONAS_ENTRADA} → {NEURONAS_OCULTA} → {NEURONAS_SALIDA}")
+    print(f"Learning rate: {LEARNING_RATE}")
+    print(f"Épocas: {EPOCAS}")
+    print(f"Particiones: {NUM_PARTICIONES}")
+    print(f"Repeticiones: {NUM_REPETICIONES}")
+    print("=" * 60)
+    
+    # ---- Paso 1: Cargar datos UNA sola vez ----
+    print("\n[1] Cargando dataset MNIST...")
+    X_train, Y_train, X_test, Y_test = cargar_mnist()
+    print(f"    Entrenamiento: {X_train.shape[1]} imágenes")
+    print(f"    Prueba: {X_test.shape[1]} imágenes")
+    
+    # ---- Paso 2: Ejecutar 10 veces y recolectar resultados ----
+    print(f"\n[2] Ejecutando {NUM_REPETICIONES} repeticiones completas...")
+    
+    todas_las_precisiones = []  # Guardamos la precisión test de cada ejecución
+    ultimo_historial_precision = None  # Guardamos el último para graficar
+    ultimo_historial_costo = None
+    
+    for rep in range(1, NUM_REPETICIONES + 1):
+        precision, hist_prec, hist_costo = ejecutar_una_vez(
+            X_train, Y_train, X_test, Y_test, rep
+        )
+        todas_las_precisiones.append(precision)
+        ultimo_historial_precision = hist_prec
+        ultimo_historial_costo = hist_costo
+    
+    # ---- Paso 3: Cálculo de estadísticas ----
+    # Convertimos a array de NumPy para usar las funciones estadísticas
+    precisiones = np.array(todas_las_precisiones)
+    
+    # Promedio (media aritmética)
+    # promedio = (x1 + x2 + ... + xn) / n
+    promedio = np.mean(precisiones)
+    
+    # Desviación estándar (mide la dispersión de los datos)
+    # std = sqrt( (1/n) × Σ(xi - promedio)² )
+    # ddof=0 significa que dividimos entre n (desviación estándar poblacional).
+    # ddof=1 dividiría entre (n-1) (muestral). Con n=10, la diferencia es mínima.
+    desviacion_estandar = np.std(precisiones, ddof=0)
+    
+    # Desviación estándar relativa (RSD)
+    # RSD = (desviación_estándar / promedio) × 100
+    # Si el promedio fuera 0 (imposible aquí pero por seguridad), evitamos dividir entre 0
+    if promedio > 0:
+        rsd = (desviacion_estandar / promedio) * 100
+    else:
+        rsd = 0.0
+    
+    # ---- Paso 4: Mostrar resultados ----
     print(f"\n{'='*60}")
-    print("EVALUACIÓN FINAL CON DATOS DE TEST (10,000 imágenes)")
+    print(f"RESULTADOS DE {NUM_REPETICIONES} REPETICIONES")
+    print(f"{'='*60}")
+    print(f"\n  Precisiones individuales en test:")
+    for i, prec in enumerate(todas_las_precisiones):
+        print(f"    Ejecución {i+1:2d}: {prec * 100:.2f}%")
+    
+    print(f"\n  {'─'*40}")
+    print(f"  Promedio:                    {promedio * 100:.2f}%")
+    print(f"  Desviación estándar:         {desviacion_estandar * 100:.2f}%")
+    print(f"  Desviación estándar relativa (RSD): {rsd:.2f}%")
+    print(f"  Mínimo:                      {np.min(precisiones) * 100:.2f}%")
+    print(f"  Máximo:                      {np.max(precisiones) * 100:.2f}%")
+    print(f"  Rango:                       {(np.max(precisiones) - np.min(precisiones)) * 100:.2f}%")
+    print(f"  {'─'*40}")
+    
+    # Interpretación de la RSD
+    if rsd < 2:
+        interpretacion = "MUY ESTABLE - variabilidad mínima entre ejecuciones"
+    elif rsd < 5:
+        interpretacion = "ESTABLE - variabilidad aceptable"
+    elif rsd < 10:
+        interpretacion = "MODERADO - variabilidad notable"
+    else:
+        interpretacion = "INESTABLE - alta variabilidad, considerar más épocas"
+    print(f"  Interpretación RSD: {interpretacion}")
     print(f"{'='*60}")
     
-    precision_test = calcular_precision(X_test, Y_test, parametros_finales)
-    print(f"  Precisión final en test: {precision_test * 100:.2f}%")
+    # ---- Paso 5: Gráficas ----
+    print(f"\n[5] Generando gráficas...")
     
-    # También evaluamos cada partición individual en test (para comparar)
-    if NUM_PARTICIONES > 1:
-        print(f"\n  Comparación - Precisión en test por partición individual:")
-        for i, params in enumerate(lista_parametros_entrenados):
-            prec = calcular_precision(X_test, Y_test, params)
-            print(f"    Partición {i+1}: {prec * 100:.2f}%")
-        print(f"    Algoritmo de Arnovi (promedio): {precision_test * 100:.2f}%")
+    fig, axes = plt.subplots(1, 3, figsize=(18, 5))
     
-    # ---- Paso 7: Gráfica de precisión por época ----
-    print(f"\n[7] Generando gráfica de precisión...")
+    # Gráfica 1: Precisión por época (última ejecución como ejemplo)
+    for i, hist in enumerate(ultimo_historial_precision):
+        axes[0].plot(range(1, EPOCAS + 1), [p * 100 for p in hist], 
+                     marker='o', label=f'Partición {i+1}')
+    axes[0].set_xlabel('Época')
+    axes[0].set_ylabel('Precisión (%)')
+    axes[0].set_title(f'Precisión por Época (Última ejecución)')
+    axes[0].legend()
+    axes[0].grid(True, alpha=0.3)
+    axes[0].set_ylim(0, 100)
     
-    plt.figure(figsize=(12, 5))
+    # Gráfica 2: Costo por época (última ejecución como ejemplo)
+    for i, hist in enumerate(ultimo_historial_costo):
+        axes[1].plot(range(1, EPOCAS + 1), hist, 
+                     marker='o', label=f'Partición {i+1}')
+    axes[1].set_xlabel('Época')
+    axes[1].set_ylabel('Costo (Cross-Entropy)')
+    axes[1].set_title(f'Costo por Época (Última ejecución)')
+    axes[1].legend()
+    axes[1].grid(True, alpha=0.3)
     
-    # Subgráfica 1: Precisión por época
-    plt.subplot(1, 2, 1)
-    for i, hist in enumerate(todos_historiales_precision):
-        plt.plot(range(1, EPOCAS + 1), [p * 100 for p in hist], 
-                 marker='o', label=f'Partición {i+1}')
-    plt.xlabel('Época')
-    plt.ylabel('Precisión (%)')
-    plt.title('Precisión por Época (Entrenamiento)')
-    plt.legend()
-    plt.grid(True, alpha=0.3)
-    plt.ylim(0, 100)
+    # Gráfica 3: Precisión test por ejecución (las 10 repeticiones)
+    ejecuciones = range(1, NUM_REPETICIONES + 1)
+    precisiones_pct = [p * 100 for p in todas_las_precisiones]
+    axes[2].bar(ejecuciones, precisiones_pct, color='#2196F3', alpha=0.7, edgecolor='black')
+    axes[2].axhline(y=promedio * 100, color='red', linestyle='--', linewidth=2, 
+                    label=f'Promedio: {promedio * 100:.2f}%')
+    axes[2].axhline(y=(promedio + desviacion_estandar) * 100, color='orange', 
+                    linestyle=':', linewidth=1, label=f'±1 Desv. Est.')
+    axes[2].axhline(y=(promedio - desviacion_estandar) * 100, color='orange', 
+                    linestyle=':', linewidth=1)
+    axes[2].set_xlabel('Ejecución')
+    axes[2].set_ylabel('Precisión Test (%)')
+    axes[2].set_title(f'Precisión por Ejecución (RSD: {rsd:.2f}%)')
+    axes[2].set_xticks(list(ejecuciones))
+    axes[2].legend()
+    axes[2].grid(True, alpha=0.3, axis='y')
     
-    # Subgráfica 2: Costo por época
-    plt.subplot(1, 2, 2)
-    for i, hist in enumerate(todos_historiales_costo):
-        plt.plot(range(1, EPOCAS + 1), hist, 
-                 marker='o', label=f'Partición {i+1}')
-    plt.xlabel('Época')
-    plt.ylabel('Costo (Cross-Entropy)')
-    plt.title('Costo por Época (Entrenamiento)')
-    plt.legend()
-    plt.grid(True, alpha=0.3)
-    
-    plt.suptitle(f'Algoritmo de Arnovi - {NUM_PARTICIONES} particiones | '
-                 f'Precisión test final: {precision_test * 100:.2f}%', 
-                 fontsize=13, fontweight='bold')
+    fig.suptitle(
+        f'Algoritmo de Arnovi — {NUM_PARTICIONES} particiones, '
+        f'LR={LEARNING_RATE}, {EPOCAS} épocas, {NUM_REPETICIONES} repeticiones\n'
+        f'Promedio: {promedio * 100:.2f}% ± {desviacion_estandar * 100:.2f}% '
+        f'(RSD: {rsd:.2f}%)',
+        fontsize=13, fontweight='bold'
+    )
     plt.tight_layout()
     plt.savefig('grafica_entrenamiento.png', dpi=150, bbox_inches='tight')
     plt.close()
     print(f"  Gráfica guardada como 'grafica_entrenamiento.png'")
     
-    # ---- Resumen final ----
+    # ---- Resumen final compacto ----
     print(f"\n{'='*60}")
     print("RESUMEN FINAL")
     print(f"{'='*60}")
-    print(f"  Particiones entrenadas: {NUM_PARTICIONES}")
-    print(f"  Imágenes por partición: {X_train.shape[1] // NUM_PARTICIONES}")
-    print(f"  Épocas por partición: {EPOCAS}")
-    print(f"  Learning rate: {LEARNING_RATE}")
-    if NUM_PARTICIONES > 1:
-        print(f"  Método de combinación: Algoritmo de Arnovi (promedio de parámetros)")
-    print(f"  PRECISIÓN FINAL EN TEST: {precision_test * 100:.2f}%")
+    print(f"  Particiones:     {NUM_PARTICIONES}")
+    print(f"  Imágenes/part.:  {X_train.shape[1] // NUM_PARTICIONES}")
+    print(f"  Épocas:          {EPOCAS}")
+    print(f"  Learning rate:   {LEARNING_RATE}")
+    print(f"  Repeticiones:    {NUM_REPETICIONES}")
+    print(f"  PROMEDIO TEST:   {promedio * 100:.2f}%")
+    print(f"  DESV. ESTÁNDAR:  {desviacion_estandar * 100:.2f}%")
+    print(f"  RSD:             {rsd:.2f}%")
     print(f"{'='*60}")
 
 

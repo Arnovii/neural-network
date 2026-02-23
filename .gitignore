@@ -4,3 +4,4 @@
 .venv
 *.png
 /datos_mnist
+/venv
