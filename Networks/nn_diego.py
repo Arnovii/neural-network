@@ -107,17 +107,29 @@ class DiegoNeuronalNetwork:
         """
         Forward para una sola entrada (vector 1-D).
 
+        Recibe una sola imagen y retorna su predicción.
+
         :param x: Vector de entrada (input_size,)
         :type x: np.ndarray
 
         :return: (probabilidades softmax, cache intermedio)
         :rtype: Tuple[np.ndarray, Dict[str, Any]]
         """
+        # Capa oculta: z1 = W1·x + b1
         z1 = self.W1 @ x + self.b1
+
+        # Activación sigmoide: a1 = σ(z1)
         a1 = sigmoid(z1)
+
+        # Capa de salida: z2 = W2·a1 + b2
         z2 = self.W2 @ a1 + self.b2
+
+        # Softmax para probabilidades
         output = softmax(z2)
+
+        # Guarda valores para backpropagation
         cache = {"x": x.copy(), "a1": a1, "output": output}
+
         return output, cache
 
     # ========================
@@ -129,10 +141,11 @@ class DiegoNeuronalNetwork:
         X: np.ndarray,
         Y: np.ndarray,
         learning_rate: float,
-        verbose: bool = False,
     ) -> Tuple[float, float]:
         """
         Entrena sobre un batch completo usando gradiente descendente vectorizado.
+
+        A diferencia de ``forward()``, este método entrena con MUCHAS imágenes a la vez.
 
         En lugar de iterar ejemplo por ejemplo, procesa todo el batch con
         operaciones matriciales de NumPy (mucho más rápido).
@@ -152,30 +165,49 @@ class DiegoNeuronalNetwork:
         :return: (loss promedio, accuracy %)
         :rtype: Tuple[float, float]
         """
+        # Número de muestras
         n = len(X)
 
-        # --- Forward vectorizado (todo el batch a la vez) ---
-        # X tiene forma (N, 784), necesitamos (784, N) para la multiplicación
-        X_T = X.T  # (784, N)
+        # Forward vectorizado (usa todas las imágenes al mismo tiempo)
+        # Si A tiene forma (m, n) y B tiene forma (p, q), la multiplicación es posible solo si n = p.
+        # self.W1 es (hidden_size, 784) y X tiene forma (N, 784). Aquí: 784 (columnas de W1) ≠ N (filas de X)
+        # Para poder multiplicarlos, X debe (784, N). Así que se le aplica la traspuesta
+        X_T = X.T
 
-        Z1 = self.W1 @ X_T + self.b1[:, np.newaxis]  # (hidden, N)
-        A1 = sigmoid(Z1)  # (hidden, N)
+
+        # Multiplica los pesos por cada entrada: self.W1 @ X_T -> (hidden_size, N),
+        # self.b1 tiene forma (hidden_size,), una dimensión por debajo de self.W1 @ X_T
+        # np.newaxis agrega una dimensión extra, convirtiendo (hidden_size,) en (hidden_size, 1)
+        Z1 = self.W1 @ X_T + self.b1[:, np.newaxis]  # (hidden_size, N)
+        A1 = sigmoid(Z1)  # (hidden_size, N)
 
         Z2 = self.W2 @ A1 + self.b2[:, np.newaxis]  # (output, N)
 
-        # Softmax por columna (cada columna es un ejemplo)
+        # Resta el máximo para evitar errores numéricos
+        # Para cada columna (cada imagen), obtiene el valor máximo
+        # keepdims=True garantiza que el resultado siga siendo una matriz 2D
+        # NumPy necesita que las dimensiones sean compatibles para restar
         Z2_stable = Z2 - np.max(Z2, axis=0, keepdims=True)
         exp_Z2 = np.exp(Z2_stable)
+
+        # Aplica softmax adaptado a una matriz 2-D
+        # El softmax() de math_utils está diseño para un vector de 1-D
         A2 = exp_Z2 / np.sum(exp_Z2, axis=0, keepdims=True)  # (output, N)
 
-        # --- Métricas ---
+        # Escoge la clase más probable
         predictions = np.argmax(A2, axis=0)  # (N,)
+
+        # Cuenta cuántas predicciones fueron correctas
         correct = np.sum(predictions == Y)
-        # Cross-entropy loss
+        
+        # Calcula el error usando "cross-entropy"
         log_probs = np.log(np.clip(A2, 1e-15, 1.0))
+
+        # log_probs[Y, np.arange(n)] significa:
+        # Para cada muestra, toma el logaritmo de la probabilidad de su clase correcta
         total_loss = -np.sum(log_probs[Y, np.arange(n)])
 
-        # --- Backward vectorizado ---
+        # Backward vectorizado
         # One-hot de todas las etiquetas: (output, N)
         Y_onehot = np.zeros((self.output_size, n))
         Y_onehot[Y, np.arange(n)] = 1.0
@@ -184,7 +216,14 @@ class DiegoNeuronalNetwork:
         delta2 = A2 - Y_onehot
 
         # Gradientes capa 2
+        # Cuando entrenas con varias imágenes a la vez, el gradiente que calculas es la suma de los errores de todas las imágenes
+        # Pero en aprendizaje automático normalmente usamos el promedio del error, no la suma
+        # Si no divides por n, el tamaño del paso dependería del tamaño del batch
+        # Dividir por n hace que el aprendizaje sea estable e independiente del tamaño del batch (es simplemente calcular el promedio)
         dW2 = (1.0 / n) * (delta2 @ A1.T)  # (output, hidden)
+
+        # np.sum(delta2, axis=1) hace que para cada fila (cada clase), suma los errores de todas las imágenes
+        # Básicamente, suma de los errores de cada neurona en todas las muestras
         db2 = (1.0 / n) * np.sum(delta2, axis=1)  # (output,)
 
         # δ1 = (W2^T · δ2) ⊙ σ'(A1), forma (hidden, N)
@@ -194,7 +233,7 @@ class DiegoNeuronalNetwork:
         dW1 = (1.0 / n) * (delta1 @ X_T.T)  # (hidden, input)
         db1 = (1.0 / n) * np.sum(delta1, axis=1)  # (hidden,)
 
-        # --- Actualización ---
+        # Actualiza por parámetros
         self.W1 -= learning_rate * dW1
         self.b1 -= learning_rate * db1
         self.W2 -= learning_rate * dW2
@@ -262,8 +301,13 @@ class DiegoNeuronalNetwork:
             partition_metrics = []
 
             for p_idx, (X_part, Y_part) in enumerate(partitions):
+
+                # Cada partición empieza desde los mismos pesos globales
                 self.set_parameters(global_params)
+
+                # Entrena localmente
                 loss, accuracy = self.train_on_batch(X_part, Y_part, learning_rate)
+
                 partition_params.append(self.get_parameters())
                 partition_metrics.append(accuracy)
 
@@ -272,12 +316,19 @@ class DiegoNeuronalNetwork:
                         f"  Partición {p_idx + 1}: loss={loss:.4f}  acc={accuracy:.2f}%"
                     )
 
-            # Promedia parámetros
+            # Actualiza los parámetros según el promedio de todos los modelos
             self.set_parameters(average_network_parameters(partition_params))
 
-            # Evalúa globalmente
+            # Apila verticalmente los X (imágenes de (N, 784)) de todas las particiones
             all_X = np.vstack([X for X, _ in partitions])
+
+            # Apila verticalmente las Y (etiquetas de (N,)) de todas las particiones
             all_Y = np.concatenate([Y for _, Y in partitions])
+
+            # Evalúa el modelo global usando TODOS los datos juntos
+            # Esto sirve para monitorear el entrenamiento, revisando si el modelo está mejorando en cada época
+            # Es básicamente revisar el modelo en su conjunto, en vez de partición por partición
+            # NO es lo mismo que usar los datos de test, es solo una validación para debugging
             global_accuracy, global_loss = self.evaluate(all_X, all_Y)
 
             accuracies.append(global_accuracy)
@@ -306,8 +357,11 @@ class DiegoNeuronalNetwork:
         """
         Predice la clase de una sola imagen.
 
+        Hace forward propagation y devuelve la clase más probable.
+
         :param x: Imagen (input_size,)
         :type x: np.ndarray
+
         :return: Clase predicha
         :rtype: int
         """
@@ -320,8 +374,10 @@ class DiegoNeuronalNetwork:
 
         :param X: Imágenes (N, 784)
         :type X: np.ndarray
+
         :param Y: Etiquetas (N,)
         :type Y: np.ndarray
+
         :return: (accuracy %, loss promedio)
         :rtype: Tuple[float, float]
         """

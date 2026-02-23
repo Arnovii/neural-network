@@ -213,6 +213,7 @@ def run_interactive_mode() -> None:
             # Lista para mantener referencias a los cursores de mplcursors
             self._active_cursors: list = []
 
+            # Construye la ventana
             self._create_ui()
 
         # ====================
@@ -220,17 +221,23 @@ def run_interactive_mode() -> None:
         # ====================
 
         def _create_ui(self) -> None:
+            # tk.IntVar es la variable asociada al slider. s la variable asociada al slider.
+            # Se ejecuta cada vez que el slider se mueve.
             def _snap_int(var: tk.IntVar):
                 """Fuerza valores enteros en los sliders de tkinter."""
                 return lambda v: var.set(int(round(float(v))))
 
             # Panel izquierdo: controles
+            # Crea un frame principal que contendrá todo el panel izquierdo
             ctrl_container = ttk.Frame(self.root, width=260)
+
+            # Configura las propiedades del panel, como su margen y que sólo se estire verticalmente
             ctrl_container.grid(row=0, column=0, sticky="ns", padx=5, pady=5)
 
             # Evita que el grid lo estire horizontalmente
             ctrl_container.grid_propagate(False)
 
+            # Permite que el panel sea desplazable verticalmente
             canvas = tk.Canvas(ctrl_container, width=260, highlightthickness=0)
             scrollbar = ttk.Scrollbar(
                 ctrl_container, orient="vertical", command=canvas.yview
@@ -269,6 +276,7 @@ def run_interactive_mode() -> None:
                 ).pack(fill=tk.X, pady=5)
                 ttk.Label(parent, textvariable=var).pack()
 
+            # Crea variables ligadas con cada uno de los sliders
             self.partitions_var = tk.IntVar(value=2)
             self.epochs_var = tk.IntVar(value=5)
             self.experiments_var = tk.IntVar(value=5)
@@ -330,18 +338,25 @@ def run_interactive_mode() -> None:
             ToolTip(btn_save, "Guarda los resultados actuales en JSON")
 
             # Panel derecho: gráficos
+            # Crea una figura de Matplotlib con una cuadrícula de 2x2 subplots
+            # Esto significa que habrá 4 gráficos independientes dentro de la misma figura
             self.fig, self.axes = plt.subplots(2, 2, figsize=(10, 8), dpi=100)
             self.fig.suptitle(
                 "Análisis de Algoritmo de Diego", fontsize=14, fontweight="bold"
             )
 
+            # Crea un frame que contendrá la figura
             plot_frame = ttk.Frame(self.root)
             plot_frame.grid(row=0, column=1, sticky="nsew", padx=5, pady=5)
 
+            # Convierte la figura de MatplotLib en un widget de Tkinter
             self.canvas = FigureCanvasTkAgg(self.fig, master=plot_frame)
             self.canvas.draw()
+
+            # Hace que la figura ocupe todo el espacio del frame
             self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
 
+            # Crea la barra de estado en la parte inferior
             self.status_var = tk.StringVar(value="Listo")
             status_bar = ttk.Label(
                 self.root, textvariable=self.status_var, relief=tk.SUNKEN, anchor=tk.W
@@ -362,15 +377,25 @@ def run_interactive_mode() -> None:
             :param artists: Lista de artistas (líneas, barras) de matplotlib
             :param fmt_func: Función opcional para formatear el texto del tooltip
             """
+            # Si no hay líneas, no hace nada, para evitar errores
             if not artists:
                 return
+            
+            # Si mplcursors falla, silenciosamente ignora el error
             try:
+
+                # Si hover=True, el tooltip aparece solo al pasar el mouse
                 cursor = mplcursors.cursor(artists, hover=True)
 
+                # Conecta un callback al evento "add"
+                # El evento "add" ocurre cuando se crea una anotación nueva
+                # Al ejecutar fmt_func(sel), se permite personalizar completamente el texto
                 if fmt_func:
                     cursor.connect("add", fmt_func)
                 else:
-
+                    
+                    # Es equivalente a cursor.connect("add", on_add)
+                    # Configuración por defecto del tooltip
                     @cursor.connect("add")
                     def on_add(sel):
                         sel.annotation.set_text(
@@ -380,17 +405,22 @@ def run_interactive_mode() -> None:
                             facecolor="#ffffcc", alpha=0.95, edgecolor="#888888"
                         )
 
+                # Al guardar la referencia a cursor, evita que este sea recolectado por el garbage collector
+                # Permite eliminarlos
                 self._active_cursors.append(cursor)
             except Exception:
                 pass  # mplcursors puede fallar con ciertos artistas
 
         def _clear_cursors(self):
             """Elimina todos los cursores interactivos activos."""
+            # Recorre todos los cursores creados
             for c in self._active_cursors:
                 try:
                     c.remove()
                 except Exception:
                     pass
+
+            # Vacía completamente el registro, dejando el sistema límpio
             self._active_cursors.clear()
 
         # ==============================================================================
@@ -420,11 +450,17 @@ def run_interactive_mode() -> None:
             :return: Diccionario con los widgets de la ventana
             :rtype: dict
             """
+            # Crea ventana secundaria sobre la principal
             win = tk.Toplevel(self.root)
             win.title("Ejecutando experimentos...")
             win.geometry("520x320")
             win.resizable(False, False)
+
+            # Hace que la ventana sea modal
+            # Bloquea interacciones con la ventana principal
             win.grab_set()
+
+            # Desactiva el botón de cerrar
             win.protocol("WM_DELETE_WINDOW", lambda: None)
 
             # Título
@@ -433,6 +469,7 @@ def run_interactive_mode() -> None:
             ).pack(pady=(18, 4))
 
             # Experimento actual
+            # Se actualizará en tiempo real con el experimento que se esté ejecutando
             exp_label_var = tk.StringVar(value="Inicializando...")
             ttk.Label(win, textvariable=exp_label_var, font=("Helvetica", 10)).pack(
                 pady=2
@@ -446,7 +483,7 @@ def run_interactive_mode() -> None:
                 win,
                 orient=tk.HORIZONTAL,
                 length=470,
-                mode="determinate",
+                mode="determinate", # Muestra progreso en proporción a un máximo
                 maximum=num_experiments,
             )
             exp_bar.pack(padx=24, pady=4)
@@ -466,6 +503,9 @@ def run_interactive_mode() -> None:
             ttk.Label(win, text="Último estado:").pack(
                 anchor=tk.W, padx=24, pady=(8, 0)
             )
+
+            # Último mensaje recibido del entrenamiento
+            # Funciona igual que el mensaje de experimento actual
             msg_var = tk.StringVar(value="—")
             ttk.Label(
                 win,
@@ -476,6 +516,8 @@ def run_interactive_mode() -> None:
                 justify=tk.LEFT,
             ).pack(anchor=tk.W, padx=24)
 
+            # Diccionario con referencias a todos los widgets que
+            # necesitan actualización dinámica desde el hilo de entrenamiento
             return {
                 "window": win,
                 "exp_label_var": exp_label_var,
@@ -502,7 +544,7 @@ def run_interactive_mode() -> None:
                 ``('done',  result)`` → entrenamiento terminado
                 ``('error', exc)``    → error en el hilo secundario
 
-            :param q: Cola compartida entre hilos, usada para enviar mensajes de progreso
+            :param q: Cola compartida entre hilos, usada para enviar mensajes de progreso como tuplas (tipo_mensaje, payload)
             :type q: queue.Queue[tuple[str, Any]]
 
             :param widgets: Diccionario con los widgets de la ventana de progreso
@@ -521,6 +563,8 @@ def run_interactive_mode() -> None:
 
             try:
                 while True:
+
+                    # q.get_nowait() intenta obtener un mensaje sin bloquear el hilo principal
                     msg_type, payload = q.get_nowait()
                     if msg_type == "exp":
                         widgets["exp_label_var"].set(
@@ -532,17 +576,17 @@ def run_interactive_mode() -> None:
                         widgets["epoch_bar"]["value"] = payload
                     elif msg_type == "msg":
                         widgets["msg_var"].set(payload)
-                    elif msg_type == "done":
+                    elif msg_type == "done": # El entrenamiento ha terminado
                         widgets["exp_bar"]["value"] = num_experiments
                         widgets["epoch_bar"]["value"] = num_epochs
-                        widgets["window"].destroy()
-                        on_done(payload)
+                        widgets["window"].destroy() # Cierra la ventana
+                        on_done(payload) # Llama al callback _on_done con los resultados
                         return
-                    elif msg_type == "error":
-                        widgets["window"].destroy()
-                        raise payload
+                    elif msg_type == "error": # Ocurrió una excepción en el hilo secundario
+                        widgets["window"].destroy() # Cierra la ventana
+                        raise payload # Propaga la excepción al hilo principal
             except queue_module.Empty:
-                pass  # No hay mensajes nuevos; seguimos esperando
+                pass  # No hay mensajes nuevos; sigue esperando
             except Exception as e:
                 widgets["window"].destroy()
                 messagebox.showerror("Error", f"Error ejecutando experimento:\n{e}")
@@ -550,6 +594,8 @@ def run_interactive_mode() -> None:
                 return
 
             # Reprograma el siguiente ciclo de polling cada 100ms
+            # Vuelve a ejecutar esta misma función cada 100 ms
+            # Crea un polling continuo sin bloquear la interfaz
             self.root.after(
                 100,
                 lambda: self._poll_queue(
@@ -581,7 +627,7 @@ def run_interactive_mode() -> None:
 
         def _run_experiment(self) -> None:
             """
-            Lanza un experimento en un hilo secundario.
+            Lanza un experimento en un hilo secundario para no bloquear la UI.
 
             El hilo de entrenamiento nunca toca widgets; solo escribe en la
             cola. El hilo principal lee la cola cada 100 ms mediante
@@ -591,6 +637,7 @@ def run_interactive_mode() -> None:
             import threading
 
             try:
+                # Recolecta parámetros
                 params = self._collect_params()
             except ValueError as e:
                 messagebox.showerror("Error de parámetros", str(e))
@@ -615,19 +662,26 @@ def run_interactive_mode() -> None:
                 """
                 Hilo secundario de entrenamiento.
 
-                Solo escribe en la cola — nunca accede a widgets de tkinter.
-                """
-                current_exp = [0]
+                Nunca accede a widgets de tkinter. Solo escribe en la cola ``q``
+                mensajes de progreso ("msg", "exp", "epoch"), de finalización
+                ("done") o errores ("error").
 
+                Solo escribe en la cola, nunca accede a widgets de tkinter.
+                """
+                current_exp = [0] # Experimento actual
+
+                # Detecta mensajes del entrenamiento y los convierte en mensajes para la cola
                 def on_progress(msg):
+
+                    # Envía el mensaje genérico a la cola
                     q.put(("msg", msg))
 
                     # Detecta inicio de nuevo experimento: "EXPERIMENTO X/Y"
                     if msg.startswith("EXPERIMENTO"):
                         try:
                             n = int(msg.split()[1].split("/")[0])
-                            current_exp[0] = n
-                            q.put(("exp", n))
+                            current_exp[0] = n # Actualiza el experimento actual
+                            q.put(("exp", n)) # Envía a la cola para que actualice la barra de progreso
                         except (IndexError, ValueError):
                             pass
                     # Detecta fin de época: "[Época X/Y — Precisión: ...]"
@@ -640,8 +694,11 @@ def run_interactive_mode() -> None:
 
                 try:
                     results = run_multiple_experiments(
-                        **params, on_progress=on_progress
+                        **params, # Pasa todos los parametros recoletados de la UI
+                        on_progress=on_progress # Envía el callback
                     )
+
+                    # Notifica al hilo principal que el experimento terminó correctamente
                     q.put(("done", results))
                 except Exception as e:
                     q.put(("error", e))
@@ -650,15 +707,27 @@ def run_interactive_mode() -> None:
             # CALLBACK AL COMPLETAR
             # ========================
 
+            # Función interna que se ejecuta cuando el hilo de entrenamiento termina correctamente
             def _on_done(results):
+
+                # Aquí results es el diccionario devuelto por run_multiple_experiments()
                 self.current_results = results
+
+                # Guarda los parámetros con los que se ejecutó el experimento
                 self.current_params = params
+
                 self._plot_results(results, params)
+
+                # Cambia el texto de la barra de estado inferior
                 self.status_var.set(
                     f"Completado — Precisión final: {results['final_mean_accuracy']:.2f}%"
                 )
-
+            
+            # Crea el hilo secundario y lo arranca inmediatamente
+            # Un hilo daemon es un hilo secundario dependiente del hilo principal
             threading.Thread(target=_training_thread, daemon=True).start()
+
+            # Llamado inicial a _poll_queue
             self.root.after(
                 100,
                 lambda: self._poll_queue(
@@ -667,6 +736,7 @@ def run_interactive_mode() -> None:
             )
 
         def _compare_configurations(self):
+            # Si self.current_results está vacío, significa que el usuario aún no ha ejecutado nada
             if not self.current_results:
                 messagebox.showwarning("Advertencia", "Primero ejecuta un experimento")
                 return
@@ -675,10 +745,13 @@ def run_interactive_mode() -> None:
             self.previous_results.append(
                 {"results": self.current_results, "params": self.current_params}
             )
+
+            # Se usa para dibujar la nueva configuración con un color diferente
             self.color_index += 1
 
-            # Marca que al terminar se debe ejecutar _plot_comparison
+            # Bandera que indica "No dibujes el próximo experimento normal, sino que haz una comparación"
             self._pending_comparison = True
+
             self._run_experiment()
 
         def _clear_plots(self):
@@ -686,17 +759,29 @@ def run_interactive_mode() -> None:
             self._clear_cursors()
             for ax in self.axes.flatten():
                 ax.clear()
+            
+            # Elimina toda la memoria de configuraciones anteriores
             self.previous_results = []
+
+            # Asegura que el próximo experimento use el primer color de la lista
             self.color_index = 0
+
+            # Fuerza a Matplotlib a actualizar la interfaz y actualiza la ventana
             self.canvas.draw()
+
             self.status_var.set("Gráficos limpiados")
 
         def _save_results(self):
             """Guarda los resultados del experimento actual en un archivo JSON."""
+
+            # Si self.current_results está vacío, entonces no se ha ejecutado ningún experimento
             if not self.current_results:
                 messagebox.showwarning("Advertencia", "No hay resultados para guardar")
                 return
+            
+            # Crea la carpeta Results si no existe
             os.makedirs("Results", exist_ok=True)
+
             filename = f"Results/experiment_{self.current_results['timestamp']}.json"
             with open(filename, "w") as f:
                 json.dump(
@@ -720,6 +805,9 @@ def run_interactive_mode() -> None:
             self.status_var.set(f"Guardado: {filename}")
 
         def _current_color(self):
+            """Retorna el color que debe usarse para el experimento actual"""
+
+            # Se usa % para que cuando se acaben los colores, vuelva al inicio
             return self.COLORS[self.color_index % len(self.COLORS)]
 
         # ================
@@ -938,6 +1026,7 @@ def run_interactive_mode() -> None:
             if not self.previous_results:
                 return
 
+            # .flatten() convierte la matriz plt.subplots(2,2) en lista
             ax1 = self.axes.flatten()[0]
             ax1.clear()
             self._clear_cursors()
@@ -958,27 +1047,39 @@ def run_interactive_mode() -> None:
                 )
 
             comp = prepare_comparison_chart_data(all_results, labels)
+
+            # Se usa para detectar cuál es la última configuración (actual)
             n_configs = len(comp["configurations"])
             comp_lines = []
 
+            # Itera sobre cada configuración
             for i, cfg in enumerate(comp["configurations"]):
+
+                # La última configuración es la actual
                 is_current = i == n_configs - 1
                 (ln,) = ax1.plot(
-                    cfg["x"],
-                    cfg["y"],
+                    cfg["x"], # Épocas
+                    cfg["y"], # Precisión
                     "o-",
                     color=self.COLORS[i % len(self.COLORS)],
+
+                    # Configuramos que la línea actual es más gruesa
                     linewidth=3 if is_current else 2,
+
+                    # La línea actual es discontinua y las anteriores sólidas
                     linestyle="--" if is_current else "-",
                     markersize=5,
                     label=f"{cfg['label']} ({cfg['final_accuracy']:.1f}%)",
                 )
+
+                # Necesario para añadir tooltips interactivos después
                 comp_lines.append(ln)
 
             ax1.set(xlabel=comp["xlabel"], ylabel=comp["ylabel"], title=comp["title"])
             ax1.legend(loc="lower right")
             ax1.grid(True, alpha=0.3)
 
+            # Cuando el cursor pasa sobre un punto
             def _fmt_comp(sel):
                 sel.annotation.set_text(
                     f"Época: {sel.target[0]:.0f}\nPrecisión: {sel.target[1]:.2f}%"
@@ -987,6 +1088,7 @@ def run_interactive_mode() -> None:
                     facecolor="#ffffcc", alpha=0.95, edgecolor="#888"
                 )
 
+            # Asocia el tooltip a todas las líneas
             self._add_cursor(comp_lines, _fmt_comp)
 
             self.canvas.draw()
@@ -1028,3 +1130,206 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+"""
+EXPLICACIÓN SOBRE EL USO DE HILOS PARA LA UI
+
+El problema principal es que Tkinter no es thread-safe, es decir, no se
+pueden modificar widgets desde otro hilo.
+
+
+1. El problema es que la GUI se congela
+
+Tkinter funciona con un hilo principal que:
+* Dibuja la interfaz
+* Escucha eventos (clics, sliders, etc.)
+* Redibuja la pantalla
+
+Ese hilo corre algo llamado event loop:
+
+* root.mainloop()
+
+Si haces directamente con el botón:
+
+* results = run_multiple_experiments(...)
+
+Y el entrenamiento tarda 30 segundos, entonces:
+
+* Durante esos 30 segundos el hilo principal está ocupado
+* No puede redibujar
+* No puede responder
+* La ventana parece "congelada"
+
+
+2. ¿Qué hace tu código para evitar eso?
+
+Cuando presionas "Ejecutar Experimento", se llama:
+
+* self._run_experiment()
+
+Dentro de ese método ocurre esto:
+
+2.1 Paso 1 — Se crea una cola:
+
+* q = queue.Queue()
+
+Esa cola es un canal seguro de comunicación entre hilos.
+* El hilo de entrenamiento escribe en la cola
+* El hilo principal lee la cola
+
+Esto es clave porque Tkinter NO es thread-safe.
+
+2.2 Paso 2 — Se crea un hilo secundario:
+
+* threading.Thread(target=_training_thread, daemon=True).start()
+
+Esto significa:
+
+* El entrenamiento corre en un hilo aparte
+* El hilo principal queda libre
+* La GUI no se bloquea
+
+
+3. ¿Qué hace exactamente el hilo secundario?
+
+Dentro está esta función:
+
+* def _training_thread():
+
+Ese hilo hace:
+
+* results = run_multiple_experiments(...)
+
+Pero NO toca la GUI.
+En vez de eso, manda mensajes a la cola:
+
+* q.put(("msg", texto))
+* q.put(("epoch", epoch))
+* q.put(("exp", n))
+* q.put(("done", results))
+
+Es decir, el significado del mensaje es:
+
+* "msg"	Actualiza texto de estado
+* "epoch"	Avanza barra de época
+* "exp"	Avanza barra de experimento
+* "done"	Terminó todo
+* "error"	Hubo error
+
+
+4. ¿Quién lee la cola?
+
+El hilo principal.
+Esto lo hace este método:
+
+* self._poll_queue(...)
+
+Y se programa así:
+
+* self.root.after(100, ...)
+
+¿Qué es root.after(100, ...)?
+Le dice a Tkinter:
+
+*  "En 100 milisegundos, ejecuta esta función."
+
+Eso crea un ciclo de polling:
+
+* cada 100 ms: revisar si hay mensajes en la cola
+
+
+5. Flujo completo del sistema
+
+Voy a dibujártelo mentalmente:
+
+┌────────────────────────┐
+│   HILO PRINCIPAL       │
+│   (Tkinter GUI)        │
+│                        │
+│  - Dibuja interfaz     │
+│  - Lee cola cada 100ms │
+│  - Actualiza barras    │
+└───────────▲────────────┘
+            │
+            │ queue.Queue()
+            │
+┌───────────┴──────────────┐
+│   HILO SECUNDARIO        │
+│   (Entrenamiento)        │
+│                          │
+│ run_multiple_experiments |
+│                          │
+│ q.put("epoch", n)        │
+│ q.put("msg", texto)      │
+│ q.put("done", result)    │
+└──────────────────────────┘
+
+
+6. ¿Por qué esto evita que se congele?
+
+Porque ahora:
+
+* El entrenamiento corre en otro hilo
+* El hilo principal nunca se bloquea
+* Solo hace microtareas cada 100ms
+
+Entonces la GUI siempre responde.
+
+
+7. Parte clave: el callback on_progress
+
+En experiment_runner.py tienes esto:
+
+def _notify(msg: str):
+    if on_progress is not None:
+        on_progress(msg)
+
+Ese on_progress viene desde la GUI.
+
+En _training_thread() tú defines:
+
+def on_progress(msg):
+    q.put(("msg", msg))
+
+Es decir:
+
+* experiment_runner → llama on_progress
+* on_progress → mete mensaje en cola
+* cola → la lee el hilo principal
+
+Es un sistema completamente desacoplado.
+
+
+8. Lo más importante que debes entender
+
+Hay tres reglas fundamentales aquí:
+
+* Regla 1: Tkinter solo puede ser modificado por el hilo principal.
+
+* Regla 2: El entrenamiento pesado nunca debe correr en el hilo principal.
+
+* Regla 3: La comunicación entre hilos debe hacerse con una cola.
+
+
+9. ¿Qué pasaría si quitaras los hilos?
+
+Si cambiaras esto:
+
+* threading.Thread(...).start()
+
+Por:
+
+* _training_thread()
+
+La ventana se congelaría completamente.
+
+
+10. Conceptualmente lo que construiste es:
+
+Se puede resumir en:
+
+* El hilo secundario PRODUCE eventos
+
+* El hilo principal CONSUME eventos
+"""

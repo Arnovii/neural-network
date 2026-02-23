@@ -1,5 +1,6 @@
 """
 Analytics/experiment_runner.py
+
 Orquestador de experimentos de Algoritmo de Diego.
 """
 
@@ -15,6 +16,7 @@ from Networks.nn_diego import DiegoNeuronalNetwork
 # ================================================================
 # EJECUCIÓN DE UN ÚNICO EXPERIMENTO
 # ================================================================
+
 
 def run_single_experiment(
     num_partitions: int = 2,
@@ -66,7 +68,7 @@ def run_single_experiment(
     :rtype: Dict[str, Any]
     """
 
-    # Función interna de notificación (CLI / UI)
+    # Función interna de notificación: imprime en consola o pasa a UI
     def _notify(msg: str) -> None:
         if on_progress is not None:
             on_progress(msg)
@@ -101,14 +103,17 @@ def run_single_experiment(
         random_seed=random_seed,
     )
 
-    # Entrenamiento
+    # Marca el inicio para medir duración del entrenamiento
     start_time = time.time()
 
+    # Callback que se llama al final de cada época, para mostrar métricas.
     def _on_epoch_end(epoch: int, total: int, accuracy: float, loss: float) -> None:
         _notify(
             f"[Época {epoch}/{total}] — Precisión: {accuracy:.2f}%  Loss: {loss:.4f}]"
         )
 
+    # Entrena la red con las particiones
+    _notify(f"[Inicializando entrenamiento...]")
     history = network.train_federated(
         partitions=partitions,
         epochs=num_epochs,
@@ -117,6 +122,7 @@ def run_single_experiment(
         on_epoch_end=_on_epoch_end,
     )
 
+    # Calcula cuánto tardó el entrenamiento.
     elapsed = time.time() - start_time
 
     # Evaluación final
@@ -139,9 +145,11 @@ def run_single_experiment(
         "final_accuracy": history["accuracies"][-1] if history["accuracies"] else 0.0,
     }
 
+
 # ================================================================
 # EJECUCIÓN DE MÚLTIPLES EXPERIMENTOS
 # ================================================================
+
 
 def run_multiple_experiments(
     num_partitions: int = 2,
@@ -172,6 +180,7 @@ def run_multiple_experiments(
         if verbose:
             print(msg)
 
+    # Encabezado informativo
     _notify("=" * 70)
     _notify(f"EJECUTANDO {num_experiments} EXPERIMENTOS")
     _notify(
@@ -183,11 +192,14 @@ def run_multiple_experiments(
     all_histories = []
     test_accuracies = []
 
-    # Bucle principal experimental
+    # Ejecuta cada experimento independiente
     for exp_idx in range(num_experiments):
         _notify(f"EXPERIMENTO {exp_idx + 1}/{num_experiments}")
+
+        # Genera una semilla distinta en cada experimento
         seed = np.random.randint(0, 1_000_000)
 
+        # Ejecuta un único experimento
         result = run_single_experiment(
             num_partitions=num_partitions,
             num_epochs=num_epochs,
@@ -229,9 +241,11 @@ def run_multiple_experiments(
         "test_accuracies": test_accs.tolist(),
     }
 
+
 # ================================================================
 # COMPARACIÓN DE CONFIGURACIONES
 # ================================================================
+
 
 def compare_configurations(
     configurations: List[Dict[str, Any]],
