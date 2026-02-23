@@ -380,10 +380,9 @@ def run_interactive_mode() -> None:
             # Si no hay líneas, no hace nada, para evitar errores
             if not artists:
                 return
-            
+
             # Si mplcursors falla, silenciosamente ignora el error
             try:
-
                 # Si hover=True, el tooltip aparece solo al pasar el mouse
                 cursor = mplcursors.cursor(artists, hover=True)
 
@@ -393,7 +392,6 @@ def run_interactive_mode() -> None:
                 if fmt_func:
                     cursor.connect("add", fmt_func)
                 else:
-                    
                     # Es equivalente a cursor.connect("add", on_add)
                     # Configuración por defecto del tooltip
                     @cursor.connect("add")
@@ -483,7 +481,7 @@ def run_interactive_mode() -> None:
                 win,
                 orient=tk.HORIZONTAL,
                 length=470,
-                mode="determinate", # Muestra progreso en proporción a un máximo
+                mode="determinate",  # Muestra progreso en proporción a un máximo
                 maximum=num_experiments,
             )
             exp_bar.pack(padx=24, pady=4)
@@ -563,7 +561,6 @@ def run_interactive_mode() -> None:
 
             try:
                 while True:
-
                     # q.get_nowait() intenta obtener un mensaje sin bloquear el hilo principal
                     msg_type, payload = q.get_nowait()
                     if msg_type == "exp":
@@ -576,15 +573,19 @@ def run_interactive_mode() -> None:
                         widgets["epoch_bar"]["value"] = payload
                     elif msg_type == "msg":
                         widgets["msg_var"].set(payload)
-                    elif msg_type == "done": # El entrenamiento ha terminado
+                    elif msg_type == "done":  # El entrenamiento ha terminado
                         widgets["exp_bar"]["value"] = num_experiments
                         widgets["epoch_bar"]["value"] = num_epochs
-                        widgets["window"].destroy() # Cierra la ventana
-                        on_done(payload) # Llama al callback _on_done con los resultados
+                        widgets["window"].destroy()  # Cierra la ventana
+                        on_done(
+                            payload
+                        )  # Llama al callback _on_done con los resultados
                         return
-                    elif msg_type == "error": # Ocurrió una excepción en el hilo secundario
-                        widgets["window"].destroy() # Cierra la ventana
-                        raise payload # Propaga la excepción al hilo principal
+                    elif (
+                        msg_type == "error"
+                    ):  # Ocurrió una excepción en el hilo secundario
+                        widgets["window"].destroy()  # Cierra la ventana
+                        raise payload  # Propaga la excepción al hilo principal
             except queue_module.Empty:
                 pass  # No hay mensajes nuevos; sigue esperando
             except Exception as e:
@@ -668,11 +669,10 @@ def run_interactive_mode() -> None:
 
                 Solo escribe en la cola, nunca accede a widgets de tkinter.
                 """
-                current_exp = [0] # Experimento actual
+                current_exp = [0]  # Experimento actual
 
                 # Detecta mensajes del entrenamiento y los convierte en mensajes para la cola
                 def on_progress(msg):
-
                     # Envía el mensaje genérico a la cola
                     q.put(("msg", msg))
 
@@ -680,8 +680,10 @@ def run_interactive_mode() -> None:
                     if msg.startswith("EXPERIMENTO"):
                         try:
                             n = int(msg.split()[1].split("/")[0])
-                            current_exp[0] = n # Actualiza el experimento actual
-                            q.put(("exp", n)) # Envía a la cola para que actualice la barra de progreso
+                            current_exp[0] = n  # Actualiza el experimento actual
+                            q.put(
+                                ("exp", n)
+                            )  # Envía a la cola para que actualice la barra de progreso
                         except (IndexError, ValueError):
                             pass
                     # Detecta fin de época: "[Época X/Y — Precisión: ...]"
@@ -694,8 +696,8 @@ def run_interactive_mode() -> None:
 
                 try:
                     results = run_multiple_experiments(
-                        **params, # Pasa todos los parametros recoletados de la UI
-                        on_progress=on_progress # Envía el callback
+                        **params,  # Pasa todos los parametros recoletados de la UI
+                        on_progress=on_progress,  # Envía el callback
                     )
 
                     # Notifica al hilo principal que el experimento terminó correctamente
@@ -709,7 +711,6 @@ def run_interactive_mode() -> None:
 
             # Función interna que se ejecuta cuando el hilo de entrenamiento termina correctamente
             def _on_done(results):
-
                 # Aquí results es el diccionario devuelto por run_multiple_experiments()
                 self.current_results = results
 
@@ -722,7 +723,7 @@ def run_interactive_mode() -> None:
                 self.status_var.set(
                     f"Completado — Precisión final: {results['final_mean_accuracy']:.2f}%"
                 )
-            
+
             # Crea el hilo secundario y lo arranca inmediatamente
             # Un hilo daemon es un hilo secundario dependiente del hilo principal
             threading.Thread(target=_training_thread, daemon=True).start()
@@ -759,7 +760,7 @@ def run_interactive_mode() -> None:
             self._clear_cursors()
             for ax in self.axes.flatten():
                 ax.clear()
-            
+
             # Elimina toda la memoria de configuraciones anteriores
             self.previous_results = []
 
@@ -778,7 +779,7 @@ def run_interactive_mode() -> None:
             if not self.current_results:
                 messagebox.showwarning("Advertencia", "No hay resultados para guardar")
                 return
-            
+
             # Crea la carpeta Results si no existe
             os.makedirs("Results", exist_ok=True)
 
@@ -1054,18 +1055,15 @@ def run_interactive_mode() -> None:
 
             # Itera sobre cada configuración
             for i, cfg in enumerate(comp["configurations"]):
-
                 # La última configuración es la actual
                 is_current = i == n_configs - 1
                 (ln,) = ax1.plot(
-                    cfg["x"], # Épocas
-                    cfg["y"], # Precisión
+                    cfg["x"],  # Épocas
+                    cfg["y"],  # Precisión
                     "o-",
                     color=self.COLORS[i % len(self.COLORS)],
-
                     # Configuramos que la línea actual es más gruesa
                     linewidth=3 if is_current else 2,
-
                     # La línea actual es discontinua y las anteriores sólidas
                     linestyle="--" if is_current else "-",
                     markersize=5,

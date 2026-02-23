@@ -339,31 +339,6 @@ def prepare_comparison_chart_data(
     return data
 
 
-# ================================================================
-# EXPORTACIÓN
-# ================================================================
-
-
-def export_to_csv(histories: List[Dict[str, Any]], filename: str) -> None:
-    """
-    Exporta historiales de precisión a un archivo CSV.
-
-    Formato generado:
-        experiment,epoch,accuracy
-
-    :param histories: Lista de historiales.
-    :type histories: List[Dict[str, Any]]
-
-    :param filename: Ruta del archivo destino.
-    :type filename: str
-    """
-    with open(filename, "w") as f:
-        f.write("experiment,epoch,accuracy\n")
-        for exp_idx, h in enumerate(histories):
-            for epoch, acc in enumerate(h["accuracies"]):
-                f.write(f"{exp_idx + 1},{epoch + 1},{acc:.4f}\n")
-
-
 """
 NOTAS DE ESTADÍSTICA:
 

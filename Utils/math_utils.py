@@ -58,61 +58,40 @@ def sigmoid_derivative_from_activation(a: np.ndarray) -> np.ndarray:
 
 def softmax(z: np.ndarray) -> np.ndarray:
     """
-    Función softmax:
-    Convierte un vector de valores arbitrarios (logits)
-    en probabilidades que suman exactamente 1.
+    Función softmax con estabilización numérica.
 
-    :param z: Array 1-D de logits
+    Funciona tanto con un vector 1-D (un solo ejemplo) como con una
+    matriz 2-D de forma ``(clases, N)`` donde N es el tamaño del batch.
+
+    - Vector 1-D ``(clases,)``: reduce sobre el único eje.
+    - Matriz 2-D ``(clases, N)``: reduce por columna (``axis=0``), de
+      modo que cada columna (cada ejemplo) produce sus propias
+      probabilidades independientes.
+
+    En ambos casos se resta el máximo antes de exponenciar para evitar
+    desbordamiento numérico. El resultado tiene la misma forma que la entrada.
+
+    :param z: Logits. Array de forma ``(clases,)`` o ``(clases, N)``
     :type z: np.ndarray
 
-    :return: Array 1-D de probabilidades
+    :return: Probabilidades con la misma forma que ``z``
     :rtype: np.ndarray
     """
-    # np.max obtiene el valor máximo del arreglo
-    # Restarlo mejora estabilidad numérica
-    z_stable = z - np.max(z)
+    # Define el eje según el número de dimensiones de z
+    axis = 0 if z.ndim > 1 else None
 
+    # keepdims=True preserva las dimensiones originales para que la resta
+    # y la división sean compatibles tanto en 1-D como en 2-D
+    z_stable = z - np.max(z, axis=axis, keepdims=True)
     exp_z = np.exp(z_stable)
 
     # np.sum suma todos los elementos del arreglo
-    return exp_z / np.sum(exp_z)
+    return exp_z / np.sum(exp_z, axis=axis, keepdims=True)
 
 
 # =============================
 # ÁLGEBRA LINEAL — VECTORES
 # =============================
-
-
-def vector_add(v1: np.ndarray, v2: np.ndarray) -> np.ndarray:
-    """
-    Suma elemento a elemento de dos vectores.
-
-    :param v1: Primer vector
-    :type v1: np.ndarray
-
-    :param v2: Segundo vector
-    :type v2: np.ndarray
-
-    :return: Vector suma
-    :rtype: np.ndarray
-    """
-    return v1 + v2
-
-
-def vector_subtract(v1: np.ndarray, v2: np.ndarray) -> np.ndarray:
-    """
-    Resta elemento a elemento: v1 − v2.
-
-    :param v1: Vector minuendo
-    :type v1: np.ndarray
-
-    :param v2: Vector sustraendo
-    :type v2: np.ndarray
-
-    :return: Vector resultado
-    :rtype: np.ndarray
-    """
-    return v1 - v2
 
 
 def vector_zeros(size: int) -> np.ndarray:
@@ -126,83 +105,6 @@ def vector_zeros(size: int) -> np.ndarray:
     :rtype: np.ndarray
     """
     return np.zeros(size)
-
-
-# =============================
-# ÁLGEBRA LINEAL — MATRICES
-# =============================
-
-
-def matrix_vector_multiply(matrix: np.ndarray, vector: np.ndarray) -> np.ndarray:
-    """
-    Multiplicación matriz × vector.
-
-    :param matrix: Matriz 2-D
-    :type matrix: np.ndarray
-
-    :param vector: Vector compatible
-    :type vector: np.ndarray
-
-    :return: Vector resultado
-    :rtype: np.ndarray
-    """
-    # El operador @ hace multiplicación matricial
-    return matrix @ vector
-
-
-def matrix_transpose(matrix: np.ndarray) -> np.ndarray:
-    """
-    Transpone una matriz.
-
-    Transponer significa intercambiar filas por columnas.
-
-    :param matrix: Matriz original
-    :type matrix: np.ndarray
-
-    :return: Matriz transpuesta
-    :rtype: np.ndarray
-    """
-    # .T es el atributo de NumPy para transponer
-    return matrix.T
-
-
-def outer_product(v_col: np.ndarray, v_row: np.ndarray) -> np.ndarray:
-    """
-    Producto externo de dos vectores.
-
-    Si:
-        v_col tiene tamaño (m)
-        v_row tiene tamaño (n)
-
-    El resultado es una matriz de tamaño (m x n).
-
-    :param v_col: Vector columna
-    :type v_col: np.ndarray
-
-    :param v_row: Vector fila
-    :type v_row: np.ndarray
-
-    :return: Matriz resultado
-    :rtype: np.ndarray
-    """
-    # np.outer calcula el producto externo
-    return np.outer(v_col, v_row)
-
-
-def matrix_add(A: np.ndarray, B: np.ndarray) -> np.ndarray:
-    """
-    Suma elemento a elemento de dos matrices.
-
-    :param A: Primera matriz
-    :type A: np.ndarray
-
-    :param B: Segunda matriz
-    :type B: np.ndarray
-
-    :return: Matriz suma
-    :rtype: np.ndarray
-    """
-    return A + B
 
 
 # ==============================
@@ -264,80 +166,3 @@ def average_network_parameters(parameters_list: List[Dict[str, Any]]) -> Dict[st
         # np.mean calcula el promedio a lo largo del eje 0
         averaged[key] = np.mean(stacked, axis=0)
     return averaged
-
-
-def accumulate_outer_inplace(
-    acc: np.ndarray, v_col: np.ndarray, v_row: np.ndarray
-) -> None:
-    """
-    Acumula el producto externo v_col ⊗ v_row directamente sobre acc.
-
-    :param acc: Matriz acumuladora
-    :type acc: np.ndarray
-
-    :param v_col: Vector columna
-    :type v_col: np.ndarray
-
-    :param v_row: Vector fila
-    :type v_row: np.ndarray
-    """
-    acc += np.outer(v_col, v_row)
-
-
-def accumulate_vector_inplace(acc: np.ndarray, v: np.ndarray) -> None:
-    """
-    Acumula v sobre acc in-place.
-
-    :param acc: Vector acumulador
-    :type acc: np.ndarray
-
-    :param v: Vector a acumular
-    :type v: np.ndarray
-    """
-    acc += v
-
-
-# ======================
-# UTILIDADES GENERALES
-# ======================
-
-
-def argmax(vector: np.ndarray) -> int:
-    """
-    Devuelve el índice del valor máximo.
-
-    :param vector: Vector de entrada
-    :type vector: np.ndarray
-
-    :return: Índice del máximo
-    :rtype: int
-    """
-    # np.argmax devuelve el índice del máximo
-    return int(np.argmax(vector))
-
-
-def compute_one_hot(label: int, num_classes: int) -> np.ndarray:
-    """
-    Crea un vector one-hot.
-
-    Un vector one-hot es un vector lleno de ceros
-    excepto en la posición correspondiente a la clase,
-    donde se coloca un 1.
-
-    :param label: Índice de la clase (0 a num_classes−1)
-    :type label: int
-
-    :param num_classes: Número total de clases
-    :type num_classes: int
-
-    :return: Vector con 1.0 en la posición label
-    :rtype: np.ndarray
-    """
-    if label < 0 or label >= num_classes:
-        raise ValueError(f"Etiqueta {label} fuera del rango [0, {num_classes}]")
-
-    one_hot = np.zeros(num_classes)
-
-    # Se coloca un 1.0 en la posición de la clase
-    one_hot[label] = 1.0
-    return one_hot

@@ -10,7 +10,6 @@ from typing import Any, Callable, Dict, List, Tuple
 
 # Importa utilidades matemáticas
 from Utils.math_utils import (
-    argmax,
     average_network_parameters,
     sigmoid,
     sigmoid_derivative_from_activation,
@@ -108,6 +107,8 @@ class DiegoNeuronalNetwork:
         Forward para una sola entrada (vector 1-D).
 
         Recibe una sola imagen y retorna su predicción.
+        Delega el cálculo a ``_forward_batch`` enviando el vector
+        como batch de tamaño 1 y extrae los vectores resultantes.
 
         :param x: Vector de entrada (input_size,)
         :type x: np.ndarray
@@ -115,22 +116,55 @@ class DiegoNeuronalNetwork:
         :return: (probabilidades softmax, cache intermedio)
         :rtype: Tuple[np.ndarray, Dict[str, Any]]
         """
+        # x.reshape(1, -1) convierte el vector (784,) a una matriz (1, 784)
+        # Esto se hace ya que la red trabaja con batches (muchas imágenes a la vez)
+        a1, output = self._forward_batch(x.reshape(1, -1))
+
+        # a1 y output tienen forma (hidden, 1) y (output, 1); así que se aplanan a 1-D
+        a1 = a1[:, 0]
+        output = output[:, 0]
+
+        # Guarda: imagen original, activaciones ocultas, salida final
+        cache = {"x": x.copy(), "a1": a1, "output": output}
+        return output, cache
+
+    def _forward_batch(self, X: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Forward vectorizado sobre un batch de N ejemplos.
+
+        Centraliza la lógica de propagación hacia adelante que comparten
+        ``train_on_batch`` y ``evaluate``. Ambos métodos la invocan y
+        consumen directamente sus salidas, sin recalcular nada.
+
+        :param X: Imágenes de forma ``(N, input_size)``
+        :type X: np.ndarray
+
+        :return: Tupla ``(A1, A2)`` donde:\n
+                 - ``A1``: activaciones ocultas, forma ``(hidden_size, N)``
+                 - ``A2``: probabilidades softmax, forma ``(output_size, N)``
+        :rtype: Tuple[np.ndarray, np.ndarray]
+        """
+
+        # Si A tiene forma (m, n) y B tiene forma (p, q), la multiplicación es posible solo si n = p.
+        # self.W1 es (hidden_size, 784) y X tiene forma (N, 784). Aquí: 784 (columnas de W1) ≠ N (filas de X)
+        # Para poder multiplicarlos, X debe (784, N). Así que se le aplica la traspuesta
+        X_T = X.T  # (input, N)
+
+        # Multiplica los pesos por cada entrada: self.W1 @ X_T -> (hidden_size, N),
+        # self.b1 tiene forma (hidden_size,), una dimensión por debajo de self.W1 @ X_T
+        # np.newaxis agrega una dimensión extra, convirtiendo (hidden_size,) en (hidden_size, 1)
         # Capa oculta: z1 = W1·x + b1
-        z1 = self.W1 @ x + self.b1
+        Z1 = self.W1 @ X_T + self.b1[:, np.newaxis]  # (hidden, N)
 
         # Activación sigmoide: a1 = σ(z1)
-        a1 = sigmoid(z1)
+        A1 = sigmoid(Z1)  # (hidden, N)
 
         # Capa de salida: z2 = W2·a1 + b2
-        z2 = self.W2 @ a1 + self.b2
+        Z2 = self.W2 @ A1 + self.b2[:, np.newaxis]  # (output, N)
 
-        # Softmax para probabilidades
-        output = softmax(z2)
-
-        # Guarda valores para backpropagation
-        cache = {"x": x.copy(), "a1": a1, "output": output}
-
-        return output, cache
+        # Aplica softmax adaptado a una matriz 2-D
+        A2 = softmax(Z2)  # (output, N)
+        return A1, A2
 
     # ========================
     # ENTRENAMIENTO
@@ -168,38 +202,20 @@ class DiegoNeuronalNetwork:
         # Número de muestras
         n = len(X)
 
-        # Forward vectorizado (usa todas las imágenes al mismo tiempo)
-        # Si A tiene forma (m, n) y B tiene forma (p, q), la multiplicación es posible solo si n = p.
-        # self.W1 es (hidden_size, 784) y X tiene forma (N, 784). Aquí: 784 (columnas de W1) ≠ N (filas de X)
-        # Para poder multiplicarlos, X debe (784, N). Así que se le aplica la traspuesta
+        # Forward vectorizado: delega en _forward_batch para no duplicar código
+        # A1: activaciones ocultas (hidden_size, N), necesarias para el backward
+        # A2: probabilidades softmax (output_size, N)
+        A1, A2 = self._forward_batch(X)
+
+        # X_T se necesita en el backward (dW1 = delta1 @ X_T.T)
         X_T = X.T
-
-
-        # Multiplica los pesos por cada entrada: self.W1 @ X_T -> (hidden_size, N),
-        # self.b1 tiene forma (hidden_size,), una dimensión por debajo de self.W1 @ X_T
-        # np.newaxis agrega una dimensión extra, convirtiendo (hidden_size,) en (hidden_size, 1)
-        Z1 = self.W1 @ X_T + self.b1[:, np.newaxis]  # (hidden_size, N)
-        A1 = sigmoid(Z1)  # (hidden_size, N)
-
-        Z2 = self.W2 @ A1 + self.b2[:, np.newaxis]  # (output, N)
-
-        # Resta el máximo para evitar errores numéricos
-        # Para cada columna (cada imagen), obtiene el valor máximo
-        # keepdims=True garantiza que el resultado siga siendo una matriz 2D
-        # NumPy necesita que las dimensiones sean compatibles para restar
-        Z2_stable = Z2 - np.max(Z2, axis=0, keepdims=True)
-        exp_Z2 = np.exp(Z2_stable)
-
-        # Aplica softmax adaptado a una matriz 2-D
-        # El softmax() de math_utils está diseño para un vector de 1-D
-        A2 = exp_Z2 / np.sum(exp_Z2, axis=0, keepdims=True)  # (output, N)
 
         # Escoge la clase más probable
         predictions = np.argmax(A2, axis=0)  # (N,)
 
         # Cuenta cuántas predicciones fueron correctas
         correct = np.sum(predictions == Y)
-        
+
         # Calcula el error usando "cross-entropy"
         log_probs = np.log(np.clip(A2, 1e-15, 1.0))
 
@@ -301,7 +317,6 @@ class DiegoNeuronalNetwork:
             partition_metrics = []
 
             for p_idx, (X_part, Y_part) in enumerate(partitions):
-
                 # Cada partición empieza desde los mismos pesos globales
                 self.set_parameters(global_params)
 
@@ -366,11 +381,14 @@ class DiegoNeuronalNetwork:
         :rtype: int
         """
         output, _ = self.forward(x)
-        return argmax(output)
+        return int(np.argmax(output))
 
     def evaluate(self, X: np.ndarray, Y: np.ndarray) -> Tuple[float, float]:
         """
         Evalúa la red sobre un conjunto de datos (vectorizado).
+
+        Delega el forward a ``_forward_batch`` para no duplicar código
+        con ``train_on_batch``.
 
         :param X: Imágenes (N, 784)
         :type X: np.ndarray
@@ -382,15 +400,7 @@ class DiegoNeuronalNetwork:
         :rtype: Tuple[float, float]
         """
         n = len(X)
-        X_T = X.T
-
-        Z1 = self.W1 @ X_T + self.b1[:, np.newaxis]
-        A1 = sigmoid(Z1)
-        Z2 = self.W2 @ A1 + self.b2[:, np.newaxis]
-
-        Z2_stable = Z2 - np.max(Z2, axis=0, keepdims=True)
-        exp_Z2 = np.exp(Z2_stable)
-        A2 = exp_Z2 / np.sum(exp_Z2, axis=0, keepdims=True)
+        _, A2 = self._forward_batch(X)  # solo necesita A2; A1 se descarta
 
         predictions = np.argmax(A2, axis=0)
         correct = np.sum(predictions == Y)
