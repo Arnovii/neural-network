@@ -263,16 +263,22 @@ class DiegoNeuronalNetwork:
         partitions: List[Tuple[np.ndarray, np.ndarray]],
         epochs: int,
         learning_rate: float,
+        X_test: np.ndarray | None = None,
+        Y_test: np.ndarray | None = None,
         verbose: bool = True,
         on_epoch_end: Callable | None = None,
     ) -> Dict[str, Any]:
         """
-        Entrena usando el algoritmo de Diego.
+        Entrena usando el algoritmo de Diego (entrenamiento federado).
 
         Por cada época:
         1. Guarda parámetros globales.
         2. Entrena cada partición independientemente.
         3. Promedia parámetros de todas las particiones.
+        4. Evalúa el modelo global sobre el conjunto de prueba (si se
+           proporcionó) para medir la capacidad de generalización,
+           o sobre todos los datos de entrenamiento combinados en caso
+           contrario.
 
         :param partitions: Lista de particiones (X_part, Y_part)
         :type partitions: List[Tuple[np.ndarray, np.ndarray]]
@@ -282,6 +288,15 @@ class DiegoNeuronalNetwork:
 
         :param learning_rate: Tasa de aprendizaje
         :type learning_rate: float
+
+        :param X_test: Imágenes del conjunto de prueba, forma (N, 784).
+                       Si se proporciona junto con Y_test, la evaluación
+                       por época usa estos datos en lugar de los de
+                       entrenamiento, midiendo generalización real.
+        :type X_test: np.ndarray | None
+
+        :param Y_test: Etiquetas del conjunto de prueba, forma (N,).
+        :type Y_test: np.ndarray | None
 
         :param verbose: Si True muestra progreso
         :type verbose: bool
@@ -297,6 +312,19 @@ class DiegoNeuronalNetwork:
         losses: List[float] = []
         partition_accuracies: List[List[float]] = []
 
+        # Determina los datos de evaluación global una sola vez,
+        # fuera del bucle de épocas para no recalcular en cada iteración
+        use_test = X_test is not None and Y_test is not None
+        if use_test:
+            X_eval, Y_eval = X_test, Y_test
+        else:
+            X_eval = np.vstack([X for X, _ in partitions])
+            Y_eval = np.concatenate([Y for _, Y in partitions])
+
+        # Type assertions to ensure X_eval and Y_eval are not None
+        assert X_eval is not None
+        assert Y_eval is not None
+
         if verbose:
             print("=" * 70)
             print("ENTRENAMIENTO CON ALGORITMO DE DIEGO")
@@ -304,6 +332,7 @@ class DiegoNeuronalNetwork:
             print(f"Particiones   : {num_partitions}")
             print(f"Épocas        : {epochs}")
             print(f"Learning rate : {learning_rate}")
+            print(f"Evaluación    : {'test' if use_test else 'entrenamiento'}")
             print(
                 f"Arquitectura  : {self.input_size} → {self.hidden_size} → {self.output_size}"
             )
@@ -318,6 +347,7 @@ class DiegoNeuronalNetwork:
             partition_metrics = []
 
             for p_idx, (X_part, Y_part) in enumerate(partitions):
+
                 # Cada partición empieza desde los mismos pesos globales
                 self.set_parameters(global_params)
 
@@ -335,17 +365,10 @@ class DiegoNeuronalNetwork:
             # Actualiza los parámetros según el promedio de todos los modelos
             self.set_parameters(average_network_parameters(partition_params))
 
-            # Apila verticalmente los X (imágenes de (N, 784)) de todas las particiones
-            all_X = np.vstack([X for X, _ in partitions])
-
-            # Apila verticalmente las Y (etiquetas de (N,)) de todas las particiones
-            all_Y = np.concatenate([Y for _, Y in partitions])
-
-            # Evalúa el modelo global usando TODOS los datos juntos
-            # Esto sirve para monitorear el entrenamiento, revisando si el modelo está mejorando en cada época
-            # Es básicamente revisar el modelo en su conjunto, en vez de partición por partición
-            # NO es lo mismo que usar los datos de test, es solo una validación para debugging
-            global_accuracy, global_loss = self.evaluate(all_X, all_Y)
+            # Evalúa el modelo global sobre X_eval/Y_eval.
+            # Si se proporcionaron datos de test, mide generalización real.
+            # Si no, evalúa sobre los datos de entrenamiento combinados.
+            global_accuracy, global_loss = self.evaluate(X_eval, Y_eval)
 
             accuracies.append(global_accuracy)
             losses.append(global_loss)
@@ -401,7 +424,7 @@ class DiegoNeuronalNetwork:
         :rtype: Tuple[float, float]
         """
         n = len(X)
-        _, A2 = self._forward_batch(X)  # solo necesita A2; A1 se descarta
+        _, A2 = self._forward_batch(X)  # Solo necesita A2; A1 se descarta
 
         predictions = np.argmax(A2, axis=0)
         correct = np.sum(predictions == Y)

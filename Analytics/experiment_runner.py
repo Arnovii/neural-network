@@ -106,6 +106,12 @@ def run_single_experiment(
     # Marca el inicio para medir duración del entrenamiento
     start_time = time.time()
 
+    # Carga los datos de test antes del entrenamiento para pasarlos
+    # a train_diego, que evaluará sobre ellos al final de cada época.
+    # Así history["accuracies"] refleja generalización real, no training accuracy.
+    _notify("[Cargando datos de prueba...]")
+    X_test, Y_test = load_mnist_test(verbose=False)
+
     # Callback que se llama al final de cada época, para mostrar métricas.
     def _on_epoch_end(epoch: int, total: int, accuracy: float, loss: float) -> None:
         _notify(
@@ -113,11 +119,13 @@ def run_single_experiment(
         )
 
     # Entrena la red con las particiones
-    _notify("[Inicializando entrenamiento...]")
+    _notify(f"[Inicializando entrenamiento...]")
     history = network.train_diego(
         partitions=partitions,
         epochs=num_epochs,
         learning_rate=learning_rate,
+        X_test=X_test,
+        Y_test=Y_test,
         verbose=verbose,
         on_epoch_end=_on_epoch_end,
     )
@@ -125,12 +133,10 @@ def run_single_experiment(
     # Calcula cuánto tardó el entrenamiento.
     elapsed = time.time() - start_time
 
-    # Evaluación final
-    _notify("[Evaluando en conjunto de prueba...]")
-    X_test, Y_test = load_mnist_test(verbose=False)
-
-    # Se evalúa sobre subconjunto fijo para consistencia temporal
-    test_accuracy, test_loss = network.evaluate(X_test[:1000], Y_test[:1000])
+    # La precisión final en test es el último valor de la serie por época,
+    # ya registrada en history["accuracies"] por train_diego
+    test_accuracy = history["accuracies"][-1] if history["accuracies"] else 0.0
+    test_loss     = history["losses"][-1]     if history["losses"]     else 0.0
     _notify(f"[Precisión en test: {test_accuracy:.2f}%]")
 
     # Retorno estructurado
@@ -142,7 +148,7 @@ def run_single_experiment(
         "test_loss": test_loss,
         "training_time": elapsed,
         "random_seed": random_seed,
-        "final_accuracy": history["accuracies"][-1] if history["accuracies"] else 0.0,
+        "final_accuracy": test_accuracy,
     }
 
 
