@@ -274,7 +274,22 @@ def run_interactive_mode() -> None:
                     length=200,
                     command=_snap_int(var),
                 ).pack(fill=tk.X, pady=5)
-                ttk.Label(parent, textvariable=var).pack()
+
+                # Al confirmar (Enter o pérdida de foco) el valor se valida,
+                # se clipea al rango [lo, hi] y se escribe en var, lo que
+                # mueve el slider automáticamente al ser la misma variable.
+                entry = ttk.Entry(parent, textvariable=var, width=6, justify="center")
+                entry.pack(pady=(0, 4))
+
+                def _commit(event=None):
+                    try:
+                        val = int(round(float(var.get())))
+                    except (ValueError, tk.TclError):
+                        val = lo
+                    var.set(max(lo, min(hi, val)))
+
+                entry.bind("<Return>",   _commit)
+                entry.bind("<FocusOut>", _commit)
 
             # Crea variables ligadas con cada uno de los sliders
             self.partitions_var = tk.IntVar(value=2)
@@ -283,16 +298,16 @@ def run_interactive_mode() -> None:
             self.hidden_var = tk.IntVar(value=30)
 
             # Número de particiones
-            _add_slider(ctrl, "Particiones:", self.partitions_var, 1, 10)
+            _add_slider(ctrl, "Particiones (1 - 10):", self.partitions_var, 1, 10)
 
             # Número de experimentos
-            _add_slider(ctrl, "Épocas:", self.epochs_var, 1, 50)
+            _add_slider(ctrl, "Épocas (50 - 1.000):", self.epochs_var, 50, 1000)
 
             # Neuronas de la capa oculta
-            _add_slider(ctrl, "Experimentos:", self.experiments_var, 1, 20)
+            _add_slider(ctrl, "Experimentos (1 - 20):", self.experiments_var, 1, 20)
 
             # Tasa de aprendizaje
-            _add_slider(ctrl, "Neuronas ocultas:", self.hidden_var, 10, 100)
+            _add_slider(ctrl, "Neuronas ocultas (10 - 100):", self.hidden_var, 10, 100)
 
             ttk.Label(ctrl, text="Tasa de aprendizaje:").pack(anchor=tk.W, pady=(10, 0))
             self.lr_var = tk.StringVar(value="1.0")
@@ -383,6 +398,7 @@ def run_interactive_mode() -> None:
 
             # Si mplcursors falla, silenciosamente ignora el error
             try:
+
                 # Si hover=True, el tooltip aparece solo al pasar el mouse
                 cursor = mplcursors.cursor(artists, hover=True)
 
@@ -392,6 +408,7 @@ def run_interactive_mode() -> None:
                 if fmt_func:
                     cursor.connect("add", fmt_func)
                 else:
+                    
                     # Es equivalente a cursor.connect("add", on_add)
                     # Configuración por defecto del tooltip
                     @cursor.connect("add")
@@ -581,11 +598,9 @@ def run_interactive_mode() -> None:
                             payload
                         )  # Llama al callback _on_done con los resultados
                         return
-                    elif (
-                        msg_type == "error"
-                    ):  # Ocurrió una excepción en el hilo secundario
-                        widgets["window"].destroy()  # Cierra la ventana
-                        raise payload  # Propaga la excepción al hilo principal
+                    elif msg_type == "error": # Ocurrió una excepción en el hilo secundario
+                        widgets["window"].destroy() # Cierra la ventana
+                        raise payload # Propaga la excepción al hilo principal
             except queue_module.Empty:
                 pass  # No hay mensajes nuevos; sigue esperando
             except Exception as e:
@@ -673,6 +688,7 @@ def run_interactive_mode() -> None:
 
                 # Detecta mensajes del entrenamiento y los convierte en mensajes para la cola
                 def on_progress(msg):
+
                     # Envía el mensaje genérico a la cola
                     q.put(("msg", msg))
 
@@ -680,10 +696,8 @@ def run_interactive_mode() -> None:
                     if msg.startswith("EXPERIMENTO"):
                         try:
                             n = int(msg.split()[1].split("/")[0])
-                            current_exp[0] = n  # Actualiza el experimento actual
-                            q.put(
-                                ("exp", n)
-                            )  # Envía a la cola para que actualice la barra de progreso
+                            current_exp[0] = n # Actualiza el experimento actual
+                            q.put(("exp", n)) # Envía a la cola para que actualice la barra de progreso
                         except (IndexError, ValueError):
                             pass
                     # Detecta fin de época: "[Época X/Y — Precisión: ...]"
@@ -711,6 +725,7 @@ def run_interactive_mode() -> None:
 
             # Función interna que se ejecuta cuando el hilo de entrenamiento termina correctamente
             def _on_done(results):
+
                 # Aquí results es el diccionario devuelto por run_multiple_experiments()
                 self.current_results = results
 
@@ -723,7 +738,7 @@ def run_interactive_mode() -> None:
                 self.status_var.set(
                     f"Completado — Precisión final: {results['final_mean_accuracy']:.2f}%"
                 )
-
+            
             # Crea el hilo secundario y lo arranca inmediatamente
             # Un hilo daemon es un hilo secundario dependiente del hilo principal
             threading.Thread(target=_training_thread, daemon=True).start()
@@ -760,7 +775,7 @@ def run_interactive_mode() -> None:
             self._clear_cursors()
             for ax in self.axes.flatten():
                 ax.clear()
-
+            
             # Elimina toda la memoria de configuraciones anteriores
             self.previous_results = []
 
@@ -779,7 +794,7 @@ def run_interactive_mode() -> None:
             if not self.current_results:
                 messagebox.showwarning("Advertencia", "No hay resultados para guardar")
                 return
-
+            
             # Crea la carpeta Results si no existe
             os.makedirs("Results", exist_ok=True)
 
@@ -930,23 +945,23 @@ def run_interactive_mode() -> None:
                 zorder=3,
             )
 
-            # Línea del promedio
+            # Línea del promedio. Muestra μ ± σ para leer accuracy y dispersión juntos
             ax3.axhline(
                 rsd_data["mean"],
                 color="red",
                 linestyle="--",
                 linewidth=2,
-                label=f"Promedio: {rsd_data['mean']:.2f}%",
+                label=f"Promedio: {rsd_data['mean']:.2f}% ± {rsd_data['std']:.2f}% (σ)",
                 zorder=4,
             )
 
-            # Bandas ±1σ
+            # Bandas ±1σ. Muestra RSD e interpretación cualitativa
             ax3.axhline(
                 rsd_data["upper"],
                 color="orange",
                 linestyle=":",
                 linewidth=1.5,
-                label=f"±1σ ({rsd_data['std']:.2f}%)",
+                label=f"RSD: {rsd_data['rsd']:.2f}%  ({rsd_data['interpretation']})",
                 zorder=4,
             )
             ax3.axhline(
@@ -969,7 +984,11 @@ def run_interactive_mode() -> None:
             ax3.set(
                 xlabel=rsd_data["xlabel"],
                 ylabel=rsd_data["ylabel"],
-                title=rsd_data["title"],
+                title=(
+                    f"Precisión por Experimento: "
+                    f"{rsd_data['mean']:.2f}% ± {rsd_data['std']:.2f}%"
+                    f"  (RSD: {rsd_data['rsd']:.2f}%)"
+                ),
             )
             ax3.legend(loc="lower right", fontsize=8)
             ax3.grid(True, alpha=0.3, axis="y")
@@ -1055,15 +1074,18 @@ def run_interactive_mode() -> None:
 
             # Itera sobre cada configuración
             for i, cfg in enumerate(comp["configurations"]):
+
                 # La última configuración es la actual
                 is_current = i == n_configs - 1
                 (ln,) = ax1.plot(
-                    cfg["x"],  # Épocas
-                    cfg["y"],  # Precisión
+                    cfg["x"], # Épocas
+                    cfg["y"], # Precisión
                     "o-",
                     color=self.COLORS[i % len(self.COLORS)],
+
                     # Configuramos que la línea actual es más gruesa
                     linewidth=3 if is_current else 2,
+
                     # La línea actual es discontinua y las anteriores sólidas
                     linestyle="--" if is_current else "-",
                     markersize=5,
