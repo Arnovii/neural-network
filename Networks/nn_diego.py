@@ -347,7 +347,6 @@ class DiegoNeuronalNetwork:
             partition_metrics = []
 
             for p_idx, (X_part, Y_part) in enumerate(partitions):
-
                 # Cada partición empieza desde los mismos pesos globales
                 self.set_parameters(global_params)
 

@@ -210,14 +210,14 @@ def run_interactive_mode() -> None:
         # Valores de color para los widgets
         COLORS = [
             "#2196F3",
-            "#4CAF50", 
-            "#FF9800", 
-            "#9C27B0", 
+            "#4CAF50",
+            "#FF9800",
+            "#9C27B0",
             "#F44336",
-            "#00BCD4", 
-            "#FFEB3B", 
-            "#795548", 
-            "#607D8B", 
+            "#00BCD4",
+            "#FFEB3B",
+            "#795548",
+            "#607D8B",
             "#E91E63",
         ]
 
@@ -236,9 +236,9 @@ def run_interactive_mode() -> None:
 
             # Ajusta tamaño de ventana al espacio utilizable respetando la barra de tareas
             self.root.state("zoomed")
-            
-            self.root.columnconfigure(0, weight=0) # Panel izquierdo fijo
-            self.root.columnconfigure(1, weight=1) # Panel derecho expandible
+
+            self.root.columnconfigure(0, weight=0)  # Panel izquierdo fijo
+            self.root.columnconfigure(1, weight=1)  # Panel derecho expandible
             self.root.rowconfigure(0, weight=1)
 
             # Datos de ejecuciones previas para comparación
@@ -272,10 +272,12 @@ def run_interactive_mode() -> None:
                 Registra y devuelve un validatecommand que acepta solo
                 dígitos con un máximo de max_digits caracteres.
                 """
+
                 def _validate(new_value):
                     return new_value == "" or (
                         len(new_value) <= max_digits and new_value.isdigit()
                     )
+
                 return (parent.register(_validate), "%P")
 
             def _add_slider(parent, label, var, lo, hi):
@@ -290,7 +292,8 @@ def run_interactive_mode() -> None:
                 ttk.Label(parent, text=label).pack(anchor=tk.W, pady=(10, 0))
                 ttk.Scale(
                     parent,
-                    from_=lo, to=hi,
+                    from_=lo,
+                    to=hi,
                     orient=tk.HORIZONTAL,
                     variable=var,
                     length=200,
@@ -319,7 +322,7 @@ def run_interactive_mode() -> None:
                         val = lo
                     var.set(max(lo, min(hi, val)))
 
-                entry.bind("<Return>",   _commit)
+                entry.bind("<Return>", _commit)
                 entry.bind("<FocusOut>", _commit)
 
             def _add_integer_input(parent, label, var, lo, hi, max_digits=6):
@@ -343,7 +346,7 @@ def run_interactive_mode() -> None:
                         val = lo
                     var.set(max(lo, min(hi, val)))
 
-                entry.bind("<Return>",   _commit)
+                entry.bind("<Return>", _commit)
                 entry.bind("<FocusOut>", _commit)
 
             def _add_float_input(parent, label, var, lo, hi, max_chars=8):
@@ -351,13 +354,10 @@ def run_interactive_mode() -> None:
                 ttk.Label(parent, text=label).pack(anchor=tk.W, pady=(10, 0))
 
                 def _validate(new_value):
-                    return (
-                        new_value == ""
-                        or (
-                            len(new_value) <= max_chars
-                            and new_value.count(".") <= 1
-                            and all(c in "0123456789." for c in new_value)
-                        )
+                    return new_value == "" or (
+                        len(new_value) <= max_chars
+                        and new_value.count(".") <= 1
+                        and all(c in "0123456789." for c in new_value)
                     )
 
                 vcmd = (parent.register(_validate), "%P")
@@ -378,7 +378,7 @@ def run_interactive_mode() -> None:
                         val = lo
                     var.set(max(lo, min(hi, val)))
 
-                entry.bind("<Return>",   _commit)
+                entry.bind("<Return>", _commit)
                 entry.bind("<FocusOut>", _commit)
 
             # Panel izquierdo: controles
@@ -399,9 +399,7 @@ def run_interactive_mode() -> None:
             scrollable_frame = ttk.Frame(panel_canvas, padding="10")
             scrollable_frame.bind(
                 "<Configure>",
-                lambda e: panel_canvas.configure(
-                    scrollregion=panel_canvas.bbox("all")
-                ),
+                lambda e: panel_canvas.configure(scrollregion=panel_canvas.bbox("all")),
             )
             panel_canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
             panel_canvas.configure(yscrollcommand=scrollbar.set)
@@ -414,7 +412,7 @@ def run_interactive_mode() -> None:
             )
 
             # Variables ligadas a los controles
-            self.partitions_var  = tk.IntVar(value=2)
+            self.partitions_var = tk.IntVar(value=2)
             self.epochs_var = tk.IntVar(value=50)
             self.experiments_var = tk.IntVar(value=5)
             self.hidden_var = tk.IntVar(value=30)
@@ -426,15 +424,33 @@ def run_interactive_mode() -> None:
             _add_slider(ctrl, "Experimentos (1 - 20):", self.experiments_var, 1, 20)
             _add_slider(ctrl, "Neuronas ocultas (10 - 100):", self.hidden_var, 10, 100)
             _add_float_input(ctrl, "Tasa de aprendizaje:", self.lr_var, 0.0001, 10.0)
-            _add_integer_input(ctrl, "Ejemplos de entrenamiento:", self.n_train_var, 100, 60000)
+            _add_integer_input(
+                ctrl, "Ejemplos de entrenamiento:", self.n_train_var, 100, 60000
+            )
 
             ttk.Separator(ctrl, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=20)
 
             buttons = [
-                ("Ejecutar Experimento",    self._run_experiment,        "Ejecuta el algoritmo con los parámetros actuales"),
-                ("Comparar Configuraciones", self._compare_configurations, "Ejecuta un nuevo experimento y lo superpone\ncon los resultados actuales."),
-                ("Limpiar Gráficos",        self._clear_plots,            "Borra todas las gráficas actuales"),
-                ("Guardar Resultados",      self._save_results,           "Guarda los resultados actuales en JSON"),
+                (
+                    "Ejecutar Experimento",
+                    self._run_experiment,
+                    "Ejecuta el algoritmo con los parámetros actuales",
+                ),
+                (
+                    "Comparar Configuraciones",
+                    self._compare_configurations,
+                    "Ejecuta un nuevo experimento y lo superpone\ncon los resultados actuales.",
+                ),
+                (
+                    "Limpiar Gráficos",
+                    self._clear_plots,
+                    "Borra todas las gráficas actuales",
+                ),
+                (
+                    "Guardar Resultados",
+                    self._save_results,
+                    "Guarda los resultados actuales en JSON",
+                ),
             ]
             for text, cmd, tip in buttons:
                 btn = ttk.Button(ctrl, text=text, command=cmd)
@@ -463,8 +479,10 @@ def run_interactive_mode() -> None:
             # Crea la barra de estado en la parte inferior
             self.status_var = tk.StringVar(value="Listo")
             ttk.Label(
-                self.root, textvariable=self.status_var,
-                relief=tk.SUNKEN, anchor=tk.W,
+                self.root,
+                textvariable=self.status_var,
+                relief=tk.SUNKEN,
+                anchor=tk.W,
             ).grid(row=1, column=0, columnspan=2, sticky="ew")
 
         # ========================
@@ -485,10 +503,9 @@ def run_interactive_mode() -> None:
             # Si no hay líneas, no hace nada, para evitar errores
             if not artists:
                 return
-            
+
             # Si mplcursors falla, silenciosamente ignora el error
             try:
-
                 # Si hover=True, el tooltip aparece solo al pasar el mouse
                 cursor = mplcursors.cursor(artists, hover=True)
 
@@ -498,7 +515,6 @@ def run_interactive_mode() -> None:
                 if fmt_func:
                     cursor.connect("add", fmt_func)
                 else:
-
                     # Es equivalente a cursor.connect("add", on_add)
                     # Configuración por defecto del tooltip
                     @cursor.connect("add")
@@ -509,7 +525,7 @@ def run_interactive_mode() -> None:
                         sel.annotation.get_bbox_patch().set(
                             facecolor="#ffffcc", alpha=0.95, edgecolor="#888888"
                         )
-                
+
                 # Al guardar la referencia a cursor, evita que este sea recolectado por el garbage collector
                 # Permite eliminarlos
                 self._active_cursors.append(cursor)
@@ -524,7 +540,7 @@ def run_interactive_mode() -> None:
                     c.remove()
                 except Exception:
                     pass
-            
+
             # Vacía completamente el registro, dejando el sistema límpio
             self._active_cursors.clear()
 
@@ -576,44 +592,59 @@ def run_interactive_mode() -> None:
             # Experimento actual
             # Se actualizará en tiempo real con el experimento que se esté ejecutando
             exp_label_var = tk.StringVar(value="Inicializando...")
-            ttk.Label(win, textvariable=exp_label_var, font=("Helvetica", 10)).pack(pady=2)
+            ttk.Label(win, textvariable=exp_label_var, font=("Helvetica", 10)).pack(
+                pady=2
+            )
 
             # Barra de progreso general (experimentos)
-            ttk.Label(win, text="Progreso general:").pack(anchor=tk.W, padx=24, pady=(10, 0))
+            ttk.Label(win, text="Progreso general:").pack(
+                anchor=tk.W, padx=24, pady=(10, 0)
+            )
             exp_bar = ttk.Progressbar(
-                win, orient=tk.HORIZONTAL, length=470,
-                mode="determinate", maximum=num_experiments,
+                win,
+                orient=tk.HORIZONTAL,
+                length=470,
+                mode="determinate",
+                maximum=num_experiments,
             )
             exp_bar.pack(padx=24, pady=4)
 
             # Barra de épocas del experimento actual
             ttk.Label(win, text="Época actual:").pack(anchor=tk.W, padx=24, pady=(8, 0))
             epoch_bar = ttk.Progressbar(
-                win, orient=tk.HORIZONTAL, length=470,
-                mode="determinate", maximum=num_epochs,
+                win,
+                orient=tk.HORIZONTAL,
+                length=470,
+                mode="determinate",
+                maximum=num_epochs,
             )
             epoch_bar.pack(padx=24, pady=4)
 
             # Último mensaje recibido
-            ttk.Label(win, text="Último estado:").pack(anchor=tk.W, padx=24, pady=(8, 0))
+            ttk.Label(win, text="Último estado:").pack(
+                anchor=tk.W, padx=24, pady=(8, 0)
+            )
 
             # Último mensaje recibido del entrenamiento
             # Funciona igual que el mensaje de experimento actual
             msg_var = tk.StringVar(value="—")
             ttk.Label(
-                win, textvariable=msg_var,
-                font=("Helvetica", 9), foreground="#555555",
-                wraplength=470, justify=tk.LEFT,
+                win,
+                textvariable=msg_var,
+                font=("Helvetica", 9),
+                foreground="#555555",
+                wraplength=470,
+                justify=tk.LEFT,
             ).pack(anchor=tk.W, padx=24)
-            
+
             # Diccionario con referencias a todos los widgets que
             # necesitan actualización dinámica desde el hilo de entrenamiento
             return {
-                "window":        win,
+                "window": win,
                 "exp_label_var": exp_label_var,
-                "exp_bar":       exp_bar,
-                "epoch_bar":     epoch_bar,
-                "msg_var":       msg_var,
+                "exp_bar": exp_bar,
+                "epoch_bar": epoch_bar,
+                "msg_var": msg_var,
             }
 
         def _poll_queue(
@@ -650,23 +681,27 @@ def run_interactive_mode() -> None:
                         widgets["exp_label_var"].set(
                             f"Experimento {payload} de {num_experiments}"
                         )
-                        widgets["exp_bar"]["value"]   = payload - 1
+                        widgets["exp_bar"]["value"] = payload - 1
                         widgets["epoch_bar"]["value"] = 0
                     elif msg_type == "epoch":
                         widgets["epoch_bar"]["value"] = payload
                     elif msg_type == "msg":
                         widgets["msg_var"].set(payload)
                     elif msg_type == "done":
-                        widgets["exp_bar"]["value"]   = num_experiments
+                        widgets["exp_bar"]["value"] = num_experiments
                         widgets["epoch_bar"]["value"] = num_epochs
                         widgets["window"].destroy()
-                        on_done(payload) # Llama al callback _on_done con los resultados
+                        on_done(
+                            payload
+                        )  # Llama al callback _on_done con los resultados
                         return
-                    elif msg_type == "error": # Ocurrió una excepción en el hilo secundario
-                        widgets["window"].destroy() # Cierra la ventana
-                        raise payload # Propaga la excepción al hilo principal
+                    elif (
+                        msg_type == "error"
+                    ):  # Ocurrió una excepción en el hilo secundario
+                        widgets["window"].destroy()  # Cierra la ventana
+                        raise payload  # Propaga la excepción al hilo principal
             except queue.Empty:
-                pass # No hay mensajes nuevos; sigue esperando
+                pass  # No hay mensajes nuevos; sigue esperando
             except Exception as e:
                 widgets["window"].destroy()
                 messagebox.showerror("Error", f"Error ejecutando experimento:\n{e}")
@@ -678,7 +713,9 @@ def run_interactive_mode() -> None:
             # Crea un polling continuo sin bloquear la interfaz
             self.root.after(
                 100,
-                lambda: self._poll_queue(q, widgets, num_experiments, num_epochs, on_done),
+                lambda: self._poll_queue(
+                    q, widgets, num_experiments, num_epochs, on_done
+                ),
             )
 
         # ====================
@@ -695,12 +732,12 @@ def run_interactive_mode() -> None:
             """
             return {
                 "num_partitions": self.partitions_var.get(),
-                "num_epochs":     self.epochs_var.get(),
+                "num_epochs": self.epochs_var.get(),
                 "num_experiments": self.experiments_var.get(),
                 "hidden_neurons": self.hidden_var.get(),
-                "learning_rate":  float(self.lr_var.get()),
-                "n_train":        int(self.n_train_var.get()),
-                "verbose":        False,
+                "learning_rate": float(self.lr_var.get()),
+                "n_train": int(self.n_train_var.get()),
+                "verbose": False,
             }
 
         def _run_experiment(self) -> None:
@@ -720,7 +757,7 @@ def run_interactive_mode() -> None:
 
             q = queue.Queue()
             num_experiments = params["num_experiments"]
-            num_epochs      = params["num_epochs"]
+            num_epochs = params["num_epochs"]
 
             # Crea la ventana de progreso antes de lanzar el hilo
             widgets = self._create_progress_window(num_experiments, num_epochs)
@@ -741,9 +778,9 @@ def run_interactive_mode() -> None:
                 mensajes de progreso ("msg", "exp", "epoch"), finalización
                 ("done") o error ("error").
                 """
+
                 # Detecta mensajes del entrenamiento y los convierte en mensajes para la cola
                 def on_progress(msg):
-
                     # Envía el mensaje genérico a la cola
                     q.put(("msg", msg))
 
@@ -764,8 +801,8 @@ def run_interactive_mode() -> None:
 
                 try:
                     results = run_multiple_experiments(
-                        **params, # Pasa todos los parametros recoletados de la UI
-                        on_progress=on_progress # Envía el callback
+                        **params,  # Pasa todos los parametros recoletados de la UI
+                        on_progress=on_progress,  # Envía el callback
                     )
                     # Notifica al hilo principal que el experimento terminó correctamente
                     q.put(("done", results))
@@ -778,13 +815,12 @@ def run_interactive_mode() -> None:
 
             # Función interna que se ejecuta cuando el hilo de entrenamiento termina correctamente
             def _on_done(results):
-
                 # Aquí results es el diccionario devuelto por run_multiple_experiments()
                 self.current_results = results
 
                 # Guarda los parámetros con los que se ejecutó el experimento
-                self.current_params  = params
-                
+                self.current_params = params
+
                 self._plot_results(results, params)
 
                 # Cambia el texto de la barra de estado inferior
@@ -799,7 +835,9 @@ def run_interactive_mode() -> None:
             # Llamado inicial a _poll_queue
             self.root.after(
                 100,
-                lambda: self._poll_queue(q, widgets, num_experiments, num_epochs, _on_done),
+                lambda: self._poll_queue(
+                    q, widgets, num_experiments, num_epochs, _on_done
+                ),
             )
 
         def _compare_configurations(self):
@@ -808,7 +846,7 @@ def run_interactive_mode() -> None:
             if not self.current_results:
                 messagebox.showwarning("Advertencia", "Primero ejecuta un experimento")
                 return
-            
+
             # Guarda configuración actual antes de ejecutar la nueva
             self.previous_results.append(
                 {"results": self.current_results, "params": self.current_params}
@@ -819,7 +857,7 @@ def run_interactive_mode() -> None:
 
             # Bandera que indica "No dibujes el próximo experimento normal, sino que haz una comparación"
             self._pending_comparison = True
-            
+
             self._run_experiment()
 
         def _clear_plots(self):
@@ -827,7 +865,7 @@ def run_interactive_mode() -> None:
             self._clear_cursors()
             for ax in self.axes.flatten():
                 ax.clear()
-            
+
             # Elimina toda la memoria de configuraciones anteriores
             self.previous_results = []
 
@@ -836,7 +874,7 @@ def run_interactive_mode() -> None:
 
             # Fuerza a Matplotlib a actualizar la interfaz y actualiza la ventana
             self.canvas.draw()
-            
+
             self.status_var.set("Gráficos limpiados")
 
         def _save_results(self):
@@ -845,7 +883,7 @@ def run_interactive_mode() -> None:
             if not self.current_results:
                 messagebox.showwarning("Advertencia", "No hay resultados para guardar")
                 return
-            
+
             # Crea la carpeta Results si no existe
             os.makedirs("Results", exist_ok=True)
             filename = f"Results/experiment_{self.current_results['timestamp']}.json"
@@ -863,7 +901,9 @@ def run_interactive_mode() -> None:
                             )
                         },
                     },
-                    f, indent=2, default=str,
+                    f,
+                    indent=2,
+                    default=str,
                 )
             messagebox.showinfo("Éxito", f"Resultados guardados en:\n{filename}")
             self.status_var.set(f"Guardado: {filename}")
@@ -903,14 +943,20 @@ def run_interactive_mode() -> None:
             # Panel 1 — Curva de aprendizaje con banda ±1σ
             acc = prepare_accuracy_chart_data(histories)
             (line1,) = ax1.plot(
-                acc["x"], acc["y_mean"], "o-",
-                color=color, linewidth=2, markersize=5, label=label,
+                acc["x"],
+                acc["y_mean"],
+                "o-",
+                color=color,
+                linewidth=2,
+                markersize=5,
+                label=label,
             )
             ax1.fill_between(
                 acc["x"], acc["y_lower"], acc["y_upper"], alpha=0.2, color=color
             )
             ax1.set(
-                xlabel=acc["xlabel"], ylabel=acc["ylabel"],
+                xlabel=acc["xlabel"],
+                ylabel=acc["ylabel"],
                 title="Evolución del Promedio (±1σ)",
             )
             ax1.legend(loc="lower right")
@@ -936,8 +982,12 @@ def run_interactive_mode() -> None:
             if part:
                 for p in part["partitions"]:
                     (ln,) = ax2.plot(
-                        p["x"], p["y"], "o-",
-                        label=f"Partición {p['id']}", alpha=0.7, markersize=4,
+                        p["x"],
+                        p["y"],
+                        "o-",
+                        label=f"Partición {p['id']}",
+                        alpha=0.7,
+                        markersize=4,
                     )
                     part_lines.append(ln)
             ax2.set(
@@ -967,26 +1017,47 @@ def run_interactive_mode() -> None:
                 for y in rsd_data["y"]
             ]
             bars = ax3.bar(
-                rsd_data["x"], rsd_data["y"],
-                color=bar_colors, alpha=0.8, edgecolor="black", zorder=3,
+                rsd_data["x"],
+                rsd_data["y"],
+                color=bar_colors,
+                alpha=0.8,
+                edgecolor="black",
+                zorder=3,
             )
 
             # Línea del promedio. Muestra μ ± σ para leer accuracy y dispersión juntos
             ax3.axhline(
-                rsd_data["mean"], color="red", linestyle="--", linewidth=2, zorder=4,
+                rsd_data["mean"],
+                color="red",
+                linestyle="--",
+                linewidth=2,
+                zorder=4,
                 label=f"Promedio: {rsd_data['mean']:.2f}% ± {rsd_data['std']:.2f}% (σ)",
             )
 
             # Bandas ±1σ. Muestra RSD e interpretación cualitativa
             ax3.axhline(
-                rsd_data["upper"], color="orange", linestyle=":", linewidth=1.5, zorder=4,
+                rsd_data["upper"],
+                color="orange",
+                linestyle=":",
+                linewidth=1.5,
+                zorder=4,
                 label=f"RSD: {rsd_data['rsd']:.2f}%  ({rsd_data['interpretation']})",
             )
-            ax3.axhline(rsd_data["lower"], color="orange", linestyle=":", linewidth=1.5, zorder=4)
+            ax3.axhline(
+                rsd_data["lower"],
+                color="orange",
+                linestyle=":",
+                linewidth=1.5,
+                zorder=4,
+            )
             ax3.fill_between(
                 [rsd_data["x"][0] - 0.5, rsd_data["x"][-1] + 0.5],
-                rsd_data["lower"], rsd_data["upper"],
-                alpha=0.1, color="orange", zorder=1,
+                rsd_data["lower"],
+                rsd_data["upper"],
+                alpha=0.1,
+                color="orange",
+                zorder=1,
             )
             ax3.set_xticks(rsd_data["x"])
             ax3.set(
@@ -1004,7 +1075,7 @@ def run_interactive_mode() -> None:
             def _fmt_rsd(sel):
                 idx = int(round(sel.target[0])) - 1
                 if 0 <= idx < len(rsd_data["y"]):
-                    val  = rsd_data["y"][idx]
+                    val = rsd_data["y"][idx]
                     diff = val - rsd_data["mean"]
                     sel.annotation.set_text(
                         f"Experimento: {idx + 1}\n"
@@ -1074,23 +1145,20 @@ def run_interactive_mode() -> None:
             comp = prepare_comparison_chart_data(all_results, labels)
 
             # Se usa para detectar cuál es la última configuración (actual)
-            n_configs  = len(comp["configurations"])
+            n_configs = len(comp["configurations"])
             comp_lines = []
 
             # Itera sobre cada configuración
             for i, cfg in enumerate(comp["configurations"]):
-
                 # La última configuración es la actual
                 is_current = i == n_configs - 1
                 (ln,) = ax1.plot(
-                    cfg["x"], # Épocas
-                    cfg["y"], # Precisión
+                    cfg["x"],  # Épocas
+                    cfg["y"],  # Precisión
                     "o-",
                     color=self.COLORS[i % len(self.COLORS)],
-
                     # Configuramos que la línea actual es más gruesa
                     linewidth=3 if is_current else 2,
-
                     # La línea actual es discontinua y las anteriores sólidas
                     linestyle="--" if is_current else "-",
                     markersize=5,
@@ -1115,7 +1183,7 @@ def run_interactive_mode() -> None:
 
             # Asocia el tooltip a todas las líneas
             self._add_cursor(comp_lines, _fmt_comp)
-            
+
             self.canvas.draw()
 
     # Crea y ejecuta aplicación
@@ -1133,16 +1201,18 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="NN_practica — Análisis de Algoritmo de Diego para MNIST"
     )
-    parser.add_argument("--interactive", "-i", action="store_true", help="Interfaz gráfica")
+    parser.add_argument(
+        "--interactive", "-i", action="store_true", help="Interfaz gráfica"
+    )
     parser.add_argument("--partitions", "-p", type=int, default=2)
     parser.add_argument("--epochs", "-e", type=int, default=5)
     parser.add_argument("--experiments", "-x", type=int, default=5)
-    parser.add_argument("--hidden-neurons","-n", type=int, default=30)
+    parser.add_argument("--hidden-neurons", "-n", type=int, default=30)
     parser.add_argument("--learning-rate", "-l", type=float, default=1.0)
     parser.add_argument("--n-train", type=int, default=5000)
 
     args = parser.parse_args()
-    os.makedirs("Data",    exist_ok=True)
+    os.makedirs("Data", exist_ok=True)
     os.makedirs("Results", exist_ok=True)
 
     if args.interactive:

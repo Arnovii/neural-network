@@ -119,7 +119,7 @@ def run_single_experiment(
         )
 
     # Entrena la red con las particiones
-    _notify(f"[Inicializando entrenamiento...]")
+    _notify("[Inicializando entrenamiento...]")
     history = network.train_diego(
         partitions=partitions,
         epochs=num_epochs,
@@ -136,7 +136,7 @@ def run_single_experiment(
     # La precisión final en test es el último valor de la serie por época,
     # ya registrada en history["accuracies"] por train_diego
     test_accuracy = history["accuracies"][-1] if history["accuracies"] else 0.0
-    test_loss     = history["losses"][-1]     if history["losses"]     else 0.0
+    test_loss = history["losses"][-1] if history["losses"] else 0.0
     _notify(f"[Precisión en test: {test_accuracy:.2f}%]")
 
     # Retorno estructurado
