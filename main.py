@@ -135,6 +135,11 @@ def run_interactive_mode() -> None:
         print("Instala las dependencias con: pip install matplotlib mplcursors")
         sys.exit(1)
 
+    from Parallel.core_validator import get_physical_cores
+
+    # Límite de particiones = núcleos físicos de la CPU
+    max_partitions = get_physical_cores()
+
     class ToolTip:
         """
         Muestra un tooltip al pasar el cursor sobre un widget.
@@ -419,7 +424,13 @@ def run_interactive_mode() -> None:
             self.lr_var = tk.StringVar(value="1.0")
             self.n_train_var = tk.StringVar(value="5000")
 
-            _add_slider(ctrl, "Particiones (1 - 10):", self.partitions_var, 1, 10)
+            _add_slider(
+                ctrl,
+                f"Particiones (1 - {max_partitions} núcleos):",
+                self.partitions_var,
+                1,
+                max_partitions,
+            )
             _add_slider(ctrl, "Épocas (50 - 1.000):", self.epochs_var, 50, 1000)
             _add_slider(ctrl, "Experimentos (1 - 20):", self.experiments_var, 1, 20)
             _add_slider(ctrl, "Neuronas ocultas (10 - 100):", self.hidden_var, 10, 100)
@@ -1222,4 +1233,10 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    # Requerido en Windows para que multiprocessing funcione correctamente.
+    # El método 'spawn' re-importa el módulo __main__ en cada proceso hijo;
+    # freeze_support() evita que los hijos ejecuten main() accidentalmente.
+    import multiprocessing
+
+    multiprocessing.freeze_support()
     main()

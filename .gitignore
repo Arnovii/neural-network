@@ -11,3 +11,5 @@ Data/MNIST/raw
 
 # Resultados exportados
 Results/*
+
+venv/

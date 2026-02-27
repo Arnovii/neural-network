@@ -6,6 +6,7 @@ Arquitectura: 784 (entrada) → oculta (sigmoide) → 10 (salida, softmax).
 Implementación nativa con NumPy (operaciones matriciales vectorizadas).
 """
 
+import multiprocessing
 import numpy as np
 from typing import Any, Callable, Dict, List, Tuple
 
@@ -18,6 +19,9 @@ from Utils.math_utils import (
     xavier_initialization,
     vector_zeros,
 )
+
+# Worker para entrenamiento paralelo de particiones
+from Parallel.worker import train_partition_worker
 
 # =============
 # RED NEURONAL
@@ -327,9 +331,10 @@ class DiegoNeuronalNetwork:
 
         if verbose:
             print("=" * 70)
-            print("ENTRENAMIENTO CON ALGORITMO DE DIEGO")
+            print("ENTRENAMIENTO CON ALGORITMO DE DIEGO (MULTIPROCESSING)")
             print("=" * 70)
             print(f"Particiones   : {num_partitions}")
+            print(f"Procesos      : {num_partitions}")
             print(f"Épocas        : {epochs}")
             print(f"Learning rate : {learning_rate}")
             print(f"Evaluación    : {'test' if use_test else 'entrenamiento'}")
@@ -338,46 +343,75 @@ class DiegoNeuronalNetwork:
             )
             print("=" * 70)
 
-        for epoch in range(epochs):
-            if verbose:
-                print(f"\n--- Época {epoch + 1}/{epochs} ---")
+        # Crea el pool de procesos UNA SOLA VEZ envolviendo todo el bucle
+        # de épocas. Esto amortiza el costo de crear procesos del SO
+        # (especialmente costoso en Windows con el método 'spawn').
+        with multiprocessing.Pool(processes=num_partitions) as pool:
+            for epoch in range(epochs):
+                if verbose:
+                    print(f"\n--- Época {epoch + 1}/{epochs} ---")
 
-            global_params = self.get_parameters()
-            partition_params = []
-            partition_metrics = []
+                global_params = self.get_parameters()
 
-            for p_idx, (X_part, Y_part) in enumerate(partitions):
-                # Cada partición empieza desde los mismos pesos globales
-                self.set_parameters(global_params)
+                # Construye la lista de argumentos para cada worker.
+                # Cada tupla contiene todo lo que el proceso hijo necesita
+                # para entrenar su partición de forma independiente.
+                worker_args = [
+                    (
+                        X_part,
+                        Y_part,
+                        global_params,
+                        self.input_size,
+                        self.hidden_size,
+                        self.output_size,
+                        learning_rate,
+                        p_idx,
+                    )
+                    for p_idx, (X_part, Y_part) in enumerate(partitions)
+                ]
 
-                # Entrena localmente
-                loss, accuracy = self.train_on_batch(X_part, Y_part, learning_rate)
+                # Ejecuta el entrenamiento en paralelo.
+                # pool.map distribuye cada tupla de argumentos a un proceso
+                # del pool y bloquea hasta que todos terminan.
+                # Cada proceso crea su propia red, entrena sobre su partición
+                # y retorna los parámetros actualizados + métricas.
+                results = pool.map(train_partition_worker, worker_args)
 
-                partition_params.append(self.get_parameters())
-                partition_metrics.append(accuracy)
+                # Ordena resultados por índice de partición para mantener
+                # orden determinista (pool.map preserva orden, pero esto
+                # es una garantía explícita)
+                results.sort(key=lambda r: r[3])
+
+                # Recolecta parámetros y métricas de cada partición
+                partition_params = []
+                partition_metrics = []
+
+                for trained_params, loss, accuracy, p_idx in results:
+                    partition_params.append(trained_params)
+                    partition_metrics.append(accuracy)
+
+                    if verbose:
+                        print(
+                            f"  Partición {p_idx + 1}: loss={loss:.4f}  acc={accuracy:.2f}%"
+                        )
+
+                # Actualiza los parámetros según el promedio de todos los modelos
+                self.set_parameters(average_network_parameters(partition_params))
+
+                # Evalúa el modelo global sobre X_eval/Y_eval.
+                # Si se proporcionaron datos de test, mide generalización real.
+                # Si no, evalúa sobre los datos de entrenamiento combinados.
+                global_accuracy, global_loss = self.evaluate(X_eval, Y_eval)
+
+                accuracies.append(global_accuracy)
+                losses.append(global_loss)
+                partition_accuracies.append(partition_metrics)
 
                 if verbose:
-                    print(
-                        f"  Partición {p_idx + 1}: loss={loss:.4f}  acc={accuracy:.2f}%"
-                    )
+                    print(f"  Global → loss={global_loss:.4f}  acc={global_accuracy:.2f}%")
 
-            # Actualiza los parámetros según el promedio de todos los modelos
-            self.set_parameters(average_network_parameters(partition_params))
-
-            # Evalúa el modelo global sobre X_eval/Y_eval.
-            # Si se proporcionaron datos de test, mide generalización real.
-            # Si no, evalúa sobre los datos de entrenamiento combinados.
-            global_accuracy, global_loss = self.evaluate(X_eval, Y_eval)
-
-            accuracies.append(global_accuracy)
-            losses.append(global_loss)
-            partition_accuracies.append(partition_metrics)
-
-            if verbose:
-                print(f"  Global → loss={global_loss:.4f}  acc={global_accuracy:.2f}%")
-
-            if on_epoch_end is not None:
-                on_epoch_end(epoch + 1, epochs, global_accuracy, global_loss)
+                if on_epoch_end is not None:
+                    on_epoch_end(epoch + 1, epochs, global_accuracy, global_loss)
 
         history = {
             "accuracies": accuracies,

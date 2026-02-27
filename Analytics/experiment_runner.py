@@ -12,6 +12,7 @@ from typing import Any, Callable, Dict, List
 from Utils.mnist_loader import load_mnist_train, load_mnist_test
 from Utils.data_partitioner import partition_mnist_data_simple
 from Networks.nn_diego import DiegoNeuronalNetwork
+from Parallel.core_validator import validate_partition_count
 
 # ================================================================
 # EJECUCIÓN DE UN ÚNICO EXPERIMENTO
@@ -67,6 +68,10 @@ def run_single_experiment(
     :return: Diccionario con historial, métricas y metadatos.
     :rtype: Dict[str, Any]
     """
+
+    # Valida que las particiones no excedan los núcleos físicos de la CPU.
+    # Se valida aquí (antes de cargar datos) para fallar rápido.
+    validate_partition_count(num_partitions)
 
     # Función interna de notificación: imprime en consola o pasa a UI
     def _notify(msg: str) -> None:
