@@ -325,7 +325,7 @@ class DiegoNeuronalNetwork:
             X_eval = np.vstack([X for X, _ in partitions])
             Y_eval = np.concatenate([Y for _, Y in partitions])
 
-        # Type assertions to ensure X_eval and Y_eval are not None
+        # Escriba las afirmaciones para asegurarse de que X_eval e Y_eval no sean None
         assert X_eval is not None
         assert Y_eval is not None
 
@@ -408,7 +408,9 @@ class DiegoNeuronalNetwork:
                 partition_accuracies.append(partition_metrics)
 
                 if verbose:
-                    print(f"  Global → loss={global_loss:.4f}  acc={global_accuracy:.2f}%")
+                    print(
+                        f"  Global → loss={global_loss:.4f}  acc={global_accuracy:.2f}%"
+                    )
 
                 if on_epoch_end is not None:
                     on_epoch_end(epoch + 1, epochs, global_accuracy, global_loss)

@@ -51,7 +51,7 @@ def train_partition_worker(
     Crea una red neuronal nueva, establece los parámetros globales,
     entrena sobre la partición y retorna los parámetros actualizados.
 
-    :param args: Tupla con:
+    :param args: Tupla con:\n
         - X_part: Imágenes de la partición (N, 784)
         - Y_part: Etiquetas de la partición (N,)
         - global_params: Parámetros globales {W1, b1, W2, b2}
@@ -104,3 +104,59 @@ def train_partition_worker(
 
     # Retorna los parámetros actualizados y las métricas
     return (network.get_parameters(), loss, accuracy, partition_index)
+
+
+"""
+NOTAS SOBRE EL USO DE HILOS
+
+NumPy usa internamente bibliotecas como:
+    * MKL
+    * OpenBLAS
+    * OMP
+
+Estas pueden usar múltiples hilos por proceso.
+
+Por poner un ejemplo, si se tiene 8 procesos worker y
+cada uno usa 8 hilos internos,  terminas con 64 hilos
+compitiendo por CPU, lo que se traduce en un peor rendimiento.
+
+Cuando se habla de "Sobresubscripción de hilos", nos referinos
+a que hay más hilos que núcleos disponibles. Esto hace que el
+SO empiece a pausar hilos, reanudarlos y cambiar entre ellos
+constantemente; lo que reduce el rendimiento, consume más energía
+y hace que todo vaya más lento.
+
+Lo que hacemos para evitar ese problema, es decile explícitamente
+a cada una de esas librerías que se limiten a usar un único hilo.
+
+
+NOTAS SOBRE MULTIPROCESSING EN WINDOWS
+
+Cuando se usa multiprocessing, Python tiene que crear nuevos procesos.
+Existen distintas maneras de crear un proceso nuevo.
+
+En Python existen 3 métodos principales para crear procesos:
+    * fork
+    * spawn
+    * forkserver
+
+En Windows, solo existe Spawn.
+
+Spawn significa: crea un proceso nuevo desde cero. Es como si se
+abriera un nuevo Python completamente limpio, así que no se hereda
+la memoria del proceso padre. Esto significa que no se heredan los
+imports ya cargados, ni las variables globales, ni el estado
+interno.
+
+Un caso distinto sería el Linux, donde se usa Fork normalmente, eso
+significa: clonar el proceso actual. Ese método para crear procesos
+permita al proceso hijo ser una fotocopia exacta de la memoria del
+padre. Sin embargo, Windows no lo permite, y eso ya es cuestión del
+sistema operativo.
+
+La razón por la que se necesita este archivo a parte, es que si le
+asignamos a un proceso la ejecución del train_diego(), eso ocasionará
+un bucle de creación infinita de procesos. Es decir, el proceso padre
+crea un hijo, el hijo vuelve a ejecutar la función, esa función vuelve
+a crear un nuevo proceso, y así sucesivamente.
+"""

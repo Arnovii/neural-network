@@ -6,6 +6,7 @@ Proyecto de redes neuronales con implementación del algoritmo propuesto por Die
 NN_practica/  
 ├── Analytics/ # Análisis estadístico y visualización  
 ├── Networks/ # Red neuronal  
+├── Parallel/ # Uso de paralelismo  
 ├── Utils/ # Utilidades matemáticas y carga de datos  
 ├── Data/ # Datos MNIST (descargados automáticamente)  
 ├── results/ # Resultados de experimentos  
