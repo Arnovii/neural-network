@@ -339,6 +339,54 @@ def prepare_comparison_chart_data(
     return data
 
 
+def prepare_benchmark_data(benchmark_result: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Prepara datos para visualizar la comparación secuencial vs paralelo.
+
+    Extrae los tiempos por experimento de ambos modos y las métricas
+    comparativas calculadas por ``run_benchmark_comparison``.
+
+    Produce dos estructuras:
+        - ``"times"``: datos para un gráfico de barras con los tiempos
+          individuales de cada experimento en ambos modos.
+        - ``"summary"``: métricas de la comparación (speedup, eficiencia,
+          overhead, delta de precisión) para una tabla o anotaciones.
+
+    :param benchmark_result: Resultado de ``run_benchmark_comparison``.
+    :type benchmark_result: Dict[str, Any]
+
+    :return: Diccionario listo para renderizar en matplotlib.
+    :rtype: Dict[str, Any]
+    """
+    seq_bm = benchmark_result["sequential"]["benchmark"]
+    par_bm = benchmark_result["parallel"]["benchmark"]
+    comp = benchmark_result["comparison"]
+    n = len(seq_bm["times"])
+
+    return {
+        # Tiempos por experimento (eje X = índice del experimento)
+        "times": {
+            "x": list(range(1, n + 1)),
+            "seq": seq_bm["times"],
+            "par": par_bm["times"],
+            "seq_mean": seq_bm["mean_time"],
+            "par_mean": par_bm["mean_time"],
+            "title": "Tiempo por Experimento: Secuencial vs Paralelo",
+            "xlabel": "Experimento",
+            "ylabel": "Tiempo (s)",
+        },
+        # Métricas resumen para anotaciones
+        "summary": {
+            "speedup": comp["speedup"],
+            "efficiency_pct": comp["efficiency_pct"],
+            "overhead_sec": comp["overhead_sec"],
+            "seq_mean_accuracy": comp["seq_mean_accuracy"],
+            "par_mean_accuracy": comp["par_mean_accuracy"],
+            "accuracy_delta": comp["accuracy_delta"],
+        },
+    }
+
+
 """
 NOTAS DE ESTADÍSTICA:
 

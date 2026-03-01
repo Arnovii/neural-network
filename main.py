@@ -49,19 +49,25 @@ import os
 import queue
 import sys
 import threading
+import numpy as np
 
 # Asegura que los módulos locales se puedan importar
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from Analytics.experiment_runner import run_multiple_experiments
+from Analytics.experiment_runner import (
+    run_multiple_experiments,
+    run_benchmark_comparison,
+)
 from Analytics.statistics_engine import compute_epoch_statistics
 from Analytics.chart_generator import (
     prepare_accuracy_chart_data,
+    prepare_benchmark_data,
     prepare_comparison_chart_data,
     prepare_convergence_data,
     prepare_experiment_rsd_data,
     prepare_partition_comparison_data,
 )
+from Parallel.core_validator import get_physical_cores
 
 
 # ================
@@ -72,6 +78,9 @@ from Analytics.chart_generator import (
 def run_terminal_mode(args: argparse.Namespace) -> None:
     """
     Ejecuta experimentos y muestra resultados en consola.
+
+    Con ``--benchmark`` ejecuta ambos modos y muestra la comparación.
+    Con ``--parallel`` ejecuta solo el modo paralelo.
 
     :param args: Argumentos parseados por argparse
     :type args: argparse.Namespace
@@ -85,10 +94,12 @@ def run_terminal_mode(args: argparse.Namespace) -> None:
     print(f"Neuronas ocultas    : {args.hidden_neurons}")
     print(f"Tasa de aprendizaje : {args.learning_rate}")
     print(f"Ejemplos            : {args.n_train}")
+    print(
+        f"Modo                : {'BENCHMARK (ambos)' if args.benchmark else 'PARALELO' if args.parallel else 'SECUENCIAL'}"
+    )
     print("=" * 70)
 
-    # Ejecuta experimentos
-    results = run_multiple_experiments(
+    base_params = dict(
         num_partitions=args.partitions,
         num_epochs=args.epochs,
         num_experiments=args.experiments,
@@ -98,16 +109,51 @@ def run_terminal_mode(args: argparse.Namespace) -> None:
         verbose=True,
     )
 
-    # Calcula estadísticas
+    if args.benchmark:
+        # Ejecuta ambos modos y muestra comparativa
+        bm = run_benchmark_comparison(**base_params)
+        comp = bm["comparison"]
+        print("\n" + "=" * 70)
+        print("RESUMEN BENCHMARK")
+        print("=" * 70)
+        print(f"  Tiempo medio SECUENCIAL : {comp['seq_mean_time']:.2f}s")
+        print(f"  Tiempo medio PARALELO   : {comp['par_mean_time']:.2f}s")
+        print(f"  Speedup obtenido        : {comp['speedup']:.2f}×")
+        print(f"  Eficiencia por núcleo   : {comp['efficiency_pct']:.1f}%")
+        print(f"  Overhead de procesos    : {comp['overhead_sec']:.3f}s")
+        print(f"  Precisión SECUENCIAL    : {comp['seq_mean_accuracy']:.2f}%")
+        print(f"  Precisión PARALELO      : {comp['par_mean_accuracy']:.2f}%")
+        print(f"  Δ Precisión (par - seq) : {comp['accuracy_delta']:+.2f}%")
+        print("=" * 70)
+
+        if comp["speedup"] >= 1.2:
+            print("\n→ El modo PARALELO fue significativamente más rápido.")
+        elif comp["speedup"] >= 0.9:
+            print("\n→ Ambos modos tuvieron rendimiento similar.")
+        else:
+            print("\n→ El overhead de procesos superó el beneficio del paralelismo.")
+            print("  Considera usar más datos o más épocas para amortizar el overhead.")
+        return
+
+    results = run_multiple_experiments(**base_params, parallel=args.parallel)
+    bm_block = results["benchmark"]
     stats = compute_epoch_statistics(results["all_histories"])
 
     # Muestra resumen
     print("\n" + "=" * 70)
     print("RESUMEN")
     print("=" * 70)
+    print(f"Modo                     : {bm_block['mode']}")
     print(f"Precisión final promedio : {stats['mean'][-1]:.2f}%")
     print(f"Desviación estándar      : {stats['std'][-1]:.2f}%")
     print(f"Mejor precisión          : {max(stats['max']):.2f}%")
+    print(
+        f"Tiempo medio / exp.      : {bm_block['mean_time']:.2f}s ± {bm_block['std_time']:.2f}s"
+    )
+    print(f"Tiempo total             : {bm_block['total_time']:.2f}s")
+    print(
+        f"Throughput               : {bm_block['throughput_epochs_per_sec']:.1f} épocas/s"
+    )
 
     # Gráfico ASCII usando datos preparados por chart_generator
     acc_data = prepare_accuracy_chart_data(results["all_histories"])
@@ -134,11 +180,6 @@ def run_interactive_mode() -> None:
         print(f"Error: no se pueden cargar las librerías gráficas: {e}")
         print("Instala las dependencias con: pip install matplotlib mplcursors")
         sys.exit(1)
-
-    from Parallel.core_validator import get_physical_cores
-
-    # Límite de particiones = núcleos físicos de la CPU
-    max_partitions = get_physical_cores()
 
     class ToolTip:
         """
@@ -212,7 +253,6 @@ def run_interactive_mode() -> None:
                 self.tip_window = None
 
     class DiegoLearningApp:
-        # Valores de color para los widgets
         COLORS = [
             "#2196F3",
             "#4CAF50",
@@ -237,7 +277,7 @@ def run_interactive_mode() -> None:
             self.root = root
 
             # Establece el título
-            self.root.title("NN_practica — Análisis de Algoritmo de Diego")
+            self.root.title("Red Neuronal — Análisis de Algoritmo de Diego")
 
             # Ajusta tamaño de ventana al espacio utilizable respetando la barra de tareas
             self.root.state("zoomed")
@@ -423,13 +463,19 @@ def run_interactive_mode() -> None:
             self.hidden_var = tk.IntVar(value=30)
             self.lr_var = tk.StringVar(value="1.0")
             self.n_train_var = tk.StringVar(value="5000")
+            self.parallel_var = tk.BooleanVar(value=False)
+
+            # El límite de particiones en modo paralelo es el número de
+            # núcleos físicos. El slider lo refleja directamente para que
+            # el usuario nunca pueda configurar una combinación inválida.
+            max_parts = get_physical_cores()
 
             _add_slider(
                 ctrl,
-                f"Particiones (1 - {max_partitions} núcleos):",
+                f"Particiones (1 - {max_parts}):",
                 self.partitions_var,
                 1,
-                max_partitions,
+                max_parts,
             )
             _add_slider(ctrl, "Épocas (50 - 1.000):", self.epochs_var, 50, 1000)
             _add_slider(ctrl, "Experimentos (1 - 20):", self.experiments_var, 1, 20)
@@ -439,13 +485,36 @@ def run_interactive_mode() -> None:
                 ctrl, "Ejemplos de entrenamiento:", self.n_train_var, 100, 60000
             )
 
-            ttk.Separator(ctrl, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=20)
+            # Checkbox de modo paralelo.
+            # Al activarlo cada partición corre en un proceso independiente
+            # del SO. El slider ya está limitado a núcleos físicos, así que
+            # la regla de oro siempre se cumple desde la interfaz.
+            ttk.Separator(ctrl, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=(20, 8))
+            parallel_cb = ttk.Checkbutton(
+                ctrl,
+                text="Modo paralelo (1 proceso por partición)",
+                variable=self.parallel_var,
+            )
+            parallel_cb.pack(anchor=tk.W, pady=(0, 4))
+            ToolTip(
+                parallel_cb,
+                f"Entrena cada partición en un proceso del SO independiente.\n"
+                f"Núcleos físicos disponibles: {max_parts}.\n"
+                f"El slider de particiones ya está limitado a ese máximo.",
+            )
+
+            ttk.Separator(ctrl, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=(8, 20))
 
             buttons = [
                 (
                     "Ejecutar Experimento",
                     self._run_experiment,
                     "Ejecuta el algoritmo con los parámetros actuales",
+                ),
+                (
+                    "Benchmark Sec. vs Par.",
+                    self._run_benchmark,
+                    "Ejecuta ambos modos con los mismos parámetros\ny compara tiempos y precisión",
                 ),
                 (
                     "Comparar Configuraciones",
@@ -503,9 +572,6 @@ def run_interactive_mode() -> None:
         def _add_cursor(self, artists, fmt_func=None):
             """
             Agrega tooltips interactivos (mplcursors) a artistas de matplotlib.
-
-            Al pasar el mouse sobre un punto de datos, muestra una anotación
-            con el valor exacto.
 
             :param artists: Lista de artistas (líneas, barras) de matplotlib.
             :param fmt_func: Callback opcional para personalizar el texto.
@@ -568,10 +634,6 @@ def run_interactive_mode() -> None:
         ) -> dict:
             """
             Crea una ventana modal que muestra el progreso del entrenamiento.
-
-            La ventana no se congela porque el entrenamiento corre en un hilo
-            separado que solo escribe en una cola; este hilo principal lee la
-            cola cada 100 ms con root.after y actualiza los widgets.
 
             :param num_experiments: Total de experimentos a ejecutar.
             :type num_experiments: int
@@ -672,10 +734,10 @@ def run_interactive_mode() -> None:
             recibe el mensaje ``'done'`` o ``'error'``.
 
             Tipos de mensaje:
-                ``('exp',   n)``      → avanza barra de experimentos
+                ``('exp', n)``      → avanza barra de experimentos
                 ``('epoch', n)``      → avanza barra de épocas
-                ``('msg',   texto)``  → actualiza etiqueta de estado
-                ``('done',  result)`` → entrenamiento terminado
+                ``('msg', texto)``  → actualiza etiqueta de estado
+                ``('done', result)`` → entrenamiento terminado
                 ``('error', exc)``    → error en el hilo secundario
 
             :param q: Cola compartida con el hilo de entrenamiento.
@@ -748,16 +810,16 @@ def run_interactive_mode() -> None:
                 "hidden_neurons": self.hidden_var.get(),
                 "learning_rate": float(self.lr_var.get()),
                 "n_train": int(self.n_train_var.get()),
+                "parallel": self.parallel_var.get(),
                 "verbose": False,
             }
 
         def _run_experiment(self) -> None:
             """
-            Lanza un experimento en un hilo secundario para no bloquear la UI.
+            Lanza los experimentos en un hilo secundario para no bloquear la UI.
 
-            El hilo de entrenamiento nunca toca widgets; solo escribe en la
-            cola. El hilo principal lee la cola cada 100 ms mediante
-            _poll_queue y actualiza la ventana de progreso.
+            El hilo de entrenamiento solo escribe en la cola; el hilo principal
+            lee la cola cada 100 ms mediante _poll_queue y actualiza la ventana.
             """
             try:
                 # Recolecta parámetros
@@ -850,6 +912,262 @@ def run_interactive_mode() -> None:
                     q, widgets, num_experiments, num_epochs, _on_done
                 ),
             )
+
+        def _run_benchmark(self) -> None:
+            """
+            Lanza el benchmark secuencial vs paralelo en un hilo secundario.
+
+            Ejecuta ``run_benchmark_comparison`` con los parámetros actuales.
+            Al terminar dibuja el panel de benchmark en lugar de los cuatro
+            paneles habituales para mostrar la comparativa directamente.
+            """
+            try:
+                params = self._collect_params()
+            except ValueError as e:
+                messagebox.showerror("Error de parámetros", str(e))
+                return
+
+            # El benchmark siempre corre ambos modos con los mismos parámetros;
+            # el flag parallel del checkbox se ignora aquí.
+            bm_params = {
+                k: v for k, v in params.items() if k not in ("parallel", "verbose")
+            }
+
+            q = queue.Queue()
+            num_experiments = params["num_experiments"]
+            num_epochs = params["num_epochs"]
+
+            # El benchmark ejecuta 2 rondas (seq + par), cada una con
+            # num_experiments experimentos; el progreso total es el doble.
+            widgets = self._create_progress_window(num_experiments * 2, num_epochs)
+            self.status_var.set("Ejecutando benchmark secuencial vs paralelo...")
+
+            def _training_thread():
+                def on_progress(msg):
+                    q.put(("msg", msg))
+                    if msg.startswith("EXPERIMENTO"):
+                        try:
+                            n = int(msg.split()[1].split("/")[0])
+                            q.put(("exp", n))
+                        except (IndexError, ValueError):
+                            pass
+                    elif msg.startswith("[Época"):
+                        try:
+                            epoch = int(msg.split()[1].split("/")[0])
+                            q.put(("epoch", epoch))
+                        except (IndexError, ValueError):
+                            pass
+
+                try:
+                    result = run_benchmark_comparison(
+                        **bm_params, verbose=False, on_progress=on_progress
+                    )
+                    q.put(("done", result))
+                except Exception as e:
+                    q.put(("error", e))
+
+            def _on_done(bm_result):
+                self.current_results = bm_result.get("sequential", {})
+                self.current_params = params
+                self._plot_benchmark(bm_result)
+                comp = bm_result["comparison"]
+                self.status_var.set(
+                    f"Benchmark completo — Speedup: {comp['speedup']:.2f}×  |  "
+                    f"Eficiencia: {comp['efficiency_pct']:.1f}%  |  "
+                    f"Δ Precisión: {comp['accuracy_delta']:+.2f}%"
+                )
+
+            threading.Thread(target=_training_thread, daemon=True).start()
+            self.root.after(
+                100,
+                lambda: self._poll_queue(
+                    q, widgets, num_experiments * 2, num_epochs, _on_done
+                ),
+            )
+
+        def _plot_benchmark(self, bm_result: dict) -> None:
+            """
+            Renderiza los cuatro paneles en modo comparación de benchmark.
+
+            Panel 1 — Tiempos por experimento (barras lado a lado)
+            Panel 2 — Curvas de aprendizaje secuencial vs paralelo
+            Panel 3 — Barras de precisión final por modo
+            Panel 4 — Tabla de métricas resumen (speedup, eficiencia, etc.)
+            """
+            ax1, ax2, ax3, ax4 = self.axes.flatten()
+            self._clear_cursors()
+            for ax in self.axes.flatten():
+                ax.clear()
+
+            bm_data = prepare_benchmark_data(bm_result)
+            t_data = bm_data["times"]
+            summary = bm_data["summary"]
+            comp = bm_result["comparison"]
+            seq_h = bm_result["sequential"]["all_histories"]
+            par_h = bm_result["parallel"]["all_histories"]
+
+            # Panel 1 - tiempos por experimento
+            n = len(t_data["x"])
+            x = np.arange(n)
+            w = 0.35
+            b1 = ax1.bar(
+                x - w / 2,
+                t_data["seq"],
+                w,
+                label=f"Secuencial (μ={t_data['seq_mean']:.2f}s)",
+                color="#2196F3",
+                alpha=0.85,
+            )
+            b2 = ax1.bar(
+                x + w / 2,
+                t_data["par"],
+                w,
+                label=f"Paralelo   (μ={t_data['par_mean']:.2f}s)",
+                color="#4CAF50",
+                alpha=0.85,
+            )
+            ax1.axhline(
+                t_data["seq_mean"], color="#2196F3", linestyle="--", linewidth=1.5
+            )
+            ax1.axhline(
+                t_data["par_mean"], color="#4CAF50", linestyle="--", linewidth=1.5
+            )
+            ax1.set_xticks(x)
+            ax1.set_xticklabels([f"Exp {i}" for i in t_data["x"]])
+            ax1.set(
+                xlabel=t_data["xlabel"], ylabel=t_data["ylabel"], title=t_data["title"]
+            )
+            ax1.legend(loc="upper right", fontsize=8)
+            ax1.grid(True, alpha=0.3, axis="y")
+
+            def _fmt_time(sel):
+                sel.annotation.set_text(f"Tiempo: {sel.target[1]:.3f}s")
+                sel.annotation.get_bbox_patch().set(facecolor="#e3f2fd", alpha=0.95)
+
+            self._add_cursor([b1, b2], _fmt_time)
+
+            # Panel 2 - curvas de aprendizaje de ambos modos
+            seq_stats = compute_epoch_statistics(seq_h)
+            par_stats = compute_epoch_statistics(par_h)
+            epochs_x = list(range(1, len(seq_stats["mean"]) + 1))
+
+            seq_mean = np.array(seq_stats["mean"])
+            par_mean = np.array(par_stats["mean"])
+            seq_std = np.array(seq_stats["std"])
+            par_std = np.array(par_stats["std"])
+
+            (ln_seq,) = ax2.plot(
+                epochs_x,
+                seq_mean,
+                "o-",
+                color="#2196F3",
+                linewidth=2,
+                markersize=4,
+                label="Secuencial",
+            )
+            (ln_par,) = ax2.plot(
+                epochs_x,
+                par_mean,
+                "s-",
+                color="#4CAF50",
+                linewidth=2,
+                markersize=4,
+                label="Paralelo",
+            )
+            ax2.fill_between(
+                epochs_x,
+                seq_mean - seq_std,
+                seq_mean + seq_std,
+                alpha=0.15,
+                color="#2196F3",
+            )
+            ax2.fill_between(
+                epochs_x,
+                par_mean - par_std,
+                par_mean + par_std,
+                alpha=0.15,
+                color="#4CAF50",
+            )
+            ax2.set(
+                xlabel="Época",
+                ylabel="Precisión (%)",
+                title="Curvas de Aprendizaje: Secuencial vs Paralelo",
+            )
+            ax2.legend(loc="lower right", fontsize=8)
+            ax2.grid(True, alpha=0.3)
+
+            def _fmt_lr(sel):
+                sel.annotation.set_text(
+                    f"Época: {sel.target[0]:.0f}\nPrecisión: {sel.target[1]:.2f}%"
+                )
+                sel.annotation.get_bbox_patch().set(facecolor="#ffffcc", alpha=0.95)
+
+            self._add_cursor([ln_seq, ln_par], _fmt_lr)
+
+            # Panel 3 - precisión final por modo
+            modes = ["Secuencial", "Paralelo"]
+            accs = [comp["seq_mean_accuracy"], comp["par_mean_accuracy"]]
+            colors = ["#2196F3", "#4CAF50"]
+            bars3 = ax3.bar(modes, accs, color=colors, alpha=0.85, edgecolor="black")
+            for bar, val in zip(bars3, accs):
+                ax3.text(
+                    bar.get_x() + bar.get_width() / 2,
+                    val + 0.3,
+                    f"{val:.2f}%",
+                    ha="center",
+                    va="bottom",
+                    fontsize=10,
+                    fontweight="bold",
+                )
+            ax3.set(
+                ylabel="Precisión (%)",
+                title=f"Precisión Final  |  Δ = {comp['accuracy_delta']:+.2f}%",
+            )
+            ax3.set_ylim(0, max(accs) * 1.12)
+            ax3.grid(True, alpha=0.3, axis="y")
+
+            # Panel 4 - tabla de métricas
+            ax4.axis("off")
+            rows = [
+                ["Métrica", "Valor"],
+                ["Speedup", f"{summary['speedup']:.2f}×"],
+                ["Eficiencia / núcleo", f"{summary['efficiency_pct']:.1f}%"],
+                ["Overhead de procesos", f"{summary['overhead_sec']:.3f}s"],
+                ["Tiempo medio sec.", f"{comp['seq_mean_time']:.2f}s"],
+                ["Tiempo medio par.", f"{comp['par_mean_time']:.2f}s"],
+                ["Precisión sec.", f"{summary['seq_mean_accuracy']:.2f}%"],
+                ["Precisión par.", f"{summary['par_mean_accuracy']:.2f}%"],
+                ["Δ Precisión (par − sec)", f"{summary['accuracy_delta']:+.2f}%"],
+            ]
+            table = ax4.table(
+                cellText=rows[1:],
+                colLabels=rows[0],
+                loc="center",
+                cellLoc="center",
+            )
+            table.auto_set_font_size(False)
+            table.set_fontsize(9)
+            table.scale(1.0, 1.6)
+
+            # Cabecera en azul oscuro, filas alternas en gris suave
+            for (row, col), cell in table.get_celld().items():
+                if row == 0:
+                    cell.set_facecolor("#1565C0")
+                    cell.set_text_props(color="white", fontweight="bold")
+                elif row % 2 == 0:
+                    cell.set_facecolor("#F5F5F5")
+
+            ax4.set_title(
+                "Métricas del Benchmark", fontsize=10, fontweight="bold", pad=8
+            )
+
+            self.fig.suptitle(
+                "Benchmark — Secuencial vs Paralelo",
+                fontsize=14,
+                fontweight="bold",
+            )
+            self.fig.tight_layout()
+            self.canvas.draw()
 
         def _compare_configurations(self):
             """Guarda la configuración actual y lanza un nuevo experimento para comparar."""
@@ -1164,8 +1482,8 @@ def run_interactive_mode() -> None:
                 # La última configuración es la actual
                 is_current = i == n_configs - 1
                 (ln,) = ax1.plot(
-                    cfg["x"],  # Épocas
-                    cfg["y"],  # Precisión
+                    cfg["x"],
+                    cfg["y"],
                     "o-",
                     color=self.COLORS[i % len(self.COLORS)],
                     # Configuramos que la línea actual es más gruesa
@@ -1221,6 +1539,16 @@ def main() -> None:
     parser.add_argument("--hidden-neurons", "-n", type=int, default=30)
     parser.add_argument("--learning-rate", "-l", type=float, default=1.0)
     parser.add_argument("--n-train", type=int, default=5000)
+    parser.add_argument(
+        "--parallel",
+        action="store_true",
+        help="Usa multiprocessing (1 proceso por partición)",
+    )
+    parser.add_argument(
+        "--benchmark",
+        action="store_true",
+        help="Ejecuta ambos modos (secuencial y paralelo) y compara tiempos",
+    )
 
     args = parser.parse_args()
     os.makedirs("Data", exist_ok=True)
@@ -1235,8 +1563,4 @@ def main() -> None:
 if __name__ == "__main__":
     # Requerido en Windows para que multiprocessing funcione correctamente.
     # El método 'spawn' re-importa el módulo __main__ en cada proceso hijo;
-    # freeze_support() evita que los hijos ejecuten main() accidentalmente.
-    import multiprocessing
-
-    multiprocessing.freeze_support()
     main()

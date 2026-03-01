@@ -271,9 +271,163 @@ class DiegoNeuronalNetwork:
         Y_test: np.ndarray | None = None,
         verbose: bool = True,
         on_epoch_end: Callable | None = None,
+        parallel: bool = False,
     ) -> Dict[str, Any]:
         """
-        Entrena usando el algoritmo de Diego (entrenamiento federado).
+        Punto de entrada unificado para el algoritmo de Diego.
+
+        Delega a ``train_diego_sequential`` o ``train_diego_parallel``
+        según el valor de ``parallel``. Mantener un único punto de
+        entrada simplifica el código en experiment_runner: siempre
+        llama a ``train_diego`` y solo varía el flag.
+
+        :param parallel: Si True usa multiprocessing (un proceso por
+                         partición). Si False entrena secuencialmente.
+        :type parallel: bool
+        """
+        if parallel:
+            return self.train_diego_parallel(
+                partitions=partitions,
+                epochs=epochs,
+                learning_rate=learning_rate,
+                X_test=X_test,
+                Y_test=Y_test,
+                verbose=verbose,
+                on_epoch_end=on_epoch_end,
+            )
+        return self.train_diego_sequential(
+            partitions=partitions,
+            epochs=epochs,
+            learning_rate=learning_rate,
+            X_test=X_test,
+            Y_test=Y_test,
+            verbose=verbose,
+            on_epoch_end=on_epoch_end,
+        )
+
+    def train_diego_sequential(
+        self,
+        partitions: List[Tuple[np.ndarray, np.ndarray]],
+        epochs: int,
+        learning_rate: float,
+        X_test: np.ndarray | None = None,
+        Y_test: np.ndarray | None = None,
+        verbose: bool = True,
+        on_epoch_end: Callable | None = None,
+    ) -> Dict[str, Any]:
+        """
+        Entrena usando el algoritmo de Diego en modo secuencial.
+
+        Por cada época:
+        1. Guarda parámetros globales.
+        2. Entrena cada partición independientemente (un bucle for).
+        3. Promedia parámetros de todas las particiones.
+        4. Evalúa el modelo global sobre el conjunto de prueba.
+
+        :param partitions: Lista de particiones (X_part, Y_part)
+        :type partitions: List[Tuple[np.ndarray, np.ndarray]]
+
+        :param epochs: Número de épocas
+        :type epochs: int
+
+        :param learning_rate: Tasa de aprendizaje
+        :type learning_rate: float
+
+        :param X_test: Imágenes del conjunto de prueba, forma (N, 784).
+        :type X_test: np.ndarray | None
+
+        :param Y_test: Etiquetas del conjunto de prueba, forma (N,).
+        :type Y_test: np.ndarray | None
+
+        :param verbose: Si True muestra progreso
+        :type verbose: bool
+
+        :param on_epoch_end: Callback opcional al final de cada época
+        :type on_epoch_end: Callable | None
+
+        :return: Historial con accuracies, losses y métricas por partición
+        :rtype: Dict[str, Any]
+        """
+        num_partitions = len(partitions)
+        accuracies: List[float] = []
+        losses: List[float] = []
+        partition_accuracies: List[List[float]] = []
+
+        use_test = X_test is not None and Y_test is not None
+        if use_test:
+            X_eval, Y_eval = X_test, Y_test
+        else:
+            X_eval = np.vstack([X for X, _ in partitions])
+            Y_eval = np.concatenate([Y for _, Y in partitions])
+
+        assert X_eval is not None
+        assert Y_eval is not None
+
+        if verbose:
+            print("=" * 70)
+            print("ENTRENAMIENTO CON ALGORITMO DE DIEGO (SECUENCIAL)")
+            print("=" * 70)
+            print(f"Particiones   : {num_partitions}")
+            print(f"Épocas        : {epochs}")
+            print(f"Learning rate : {learning_rate}")
+            print(f"Evaluación    : {'test' if use_test else 'entrenamiento'}")
+            print(
+                f"Arquitectura  : {self.input_size} → {self.hidden_size} → {self.output_size}"
+            )
+            print("=" * 70)
+
+        for epoch in range(epochs):
+            if verbose:
+                print(f"\n--- Época {epoch + 1}/{epochs} ---")
+
+            global_params = self.get_parameters()
+            partition_params = []
+            partition_metrics = []
+
+            for p_idx, (X_part, Y_part) in enumerate(partitions):
+                # Cada partición empieza desde los mismos pesos globales
+                self.set_parameters(global_params)
+                loss, accuracy = self.train_on_batch(X_part, Y_part, learning_rate)
+                partition_params.append(self.get_parameters())
+                partition_metrics.append(accuracy)
+                if verbose:
+                    print(
+                        f"  Partición {p_idx + 1}: loss={loss:.4f}  acc={accuracy:.2f}%"
+                    )
+
+            self.set_parameters(average_network_parameters(partition_params))
+            global_accuracy, global_loss = self.evaluate(X_eval, Y_eval)
+
+            accuracies.append(global_accuracy)
+            losses.append(global_loss)
+            partition_accuracies.append(partition_metrics)
+
+            if verbose:
+                print(f"  Global → loss={global_loss:.4f}  acc={global_accuracy:.2f}%")
+
+            if on_epoch_end is not None:
+                on_epoch_end(epoch + 1, epochs, global_accuracy, global_loss)
+
+        history = {
+            "accuracies": accuracies,
+            "losses": losses,
+            "partition_accuracies": partition_accuracies,
+        }
+        self.training_history = history
+        return history
+
+    def train_diego_parallel(
+        self,
+        partitions: List[Tuple[np.ndarray, np.ndarray]],
+        epochs: int,
+        learning_rate: float,
+        X_test: np.ndarray | None = None,
+        Y_test: np.ndarray | None = None,
+        verbose: bool = True,
+        on_epoch_end: Callable | None = None,
+    ) -> Dict[str, Any]:
+        """
+        Entrena usando el algoritmo de Diego en modo paralelo.
 
         Por cada época:
         1. Guarda parámetros globales.
