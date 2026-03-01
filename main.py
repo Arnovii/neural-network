@@ -612,9 +612,9 @@ def run_interactive_mode() -> None:
         def _clear_cursors(self):
             """Elimina todos los cursores interactivos activos."""
             # Recorre todos los cursores creados
-            for c in self._active_cursors:
+            for cursor in self._active_cursors:
                 try:
-                    c.remove()
+                    cursor.remove()
                 except Exception:
                     pass
 
@@ -647,7 +647,7 @@ def run_interactive_mode() -> None:
             # Crea ventana secundaria sobre la principal
             win = tk.Toplevel(self.root)
             win.title("Ejecutando experimentos...")
-            win.geometry("520x320")
+            win.geometry("520x360")
             win.resizable(False, False)
 
             # Hace que la ventana sea modal
@@ -662,62 +662,65 @@ def run_interactive_mode() -> None:
                 win, text="Entrenamiento en progreso", font=("Helvetica", 13, "bold")
             ).pack(pady=(18, 4))
 
+            # Etiqueta de fase. Se crea aquí en el orden correcto del árbol
+            # de widgets para que pack() la coloque debajo del título.
+            # Empieza oculta (no se llama a pack todavía); _poll_queue la
+            # hace visible cuando recibe el primer mensaje ("phase", ...).
+            phase_var = tk.StringVar(value="")
+            phase_label = tk.Label(
+                win,
+                textvariable=phase_var,
+                font=("Helvetica", 10, "bold"),
+                fg="white",
+                bg="#607D8B",
+                width=46,
+                pady=4,
+            )
+
             # Experimento actual
             # Se actualizará en tiempo real con el experimento que se esté ejecutando
             exp_label_var = tk.StringVar(value="Inicializando...")
-            ttk.Label(win, textvariable=exp_label_var, font=("Helvetica", 10)).pack(
-                pady=2
-            )
+            ttk.Label(win, textvariable=exp_label_var, font=("Helvetica", 10)).pack(pady=2)
 
             # Barra de progreso general (experimentos)
-            ttk.Label(win, text="Progreso general:").pack(
-                anchor=tk.W, padx=24, pady=(10, 0)
-            )
+            ttk.Label(win, text="Progreso general:").pack(anchor=tk.W, padx=24, pady=(10, 0))
             exp_bar = ttk.Progressbar(
-                win,
-                orient=tk.HORIZONTAL,
-                length=470,
-                mode="determinate",
-                maximum=num_experiments,
+                win, orient=tk.HORIZONTAL, length=470,
+                mode="determinate", maximum=num_experiments,
             )
             exp_bar.pack(padx=24, pady=4)
 
             # Barra de épocas del experimento actual
             ttk.Label(win, text="Época actual:").pack(anchor=tk.W, padx=24, pady=(8, 0))
             epoch_bar = ttk.Progressbar(
-                win,
-                orient=tk.HORIZONTAL,
-                length=470,
-                mode="determinate",
-                maximum=num_epochs,
+                win, orient=tk.HORIZONTAL, length=470,
+                mode="determinate", maximum=num_epochs,
             )
             epoch_bar.pack(padx=24, pady=4)
 
             # Último mensaje recibido
-            ttk.Label(win, text="Último estado:").pack(
-                anchor=tk.W, padx=24, pady=(8, 0)
-            )
+            ttk.Label(win, text="Último estado:").pack(anchor=tk.W, padx=24, pady=(8, 0))
 
             # Último mensaje recibido del entrenamiento
             # Funciona igual que el mensaje de experimento actual
             msg_var = tk.StringVar(value="—")
             ttk.Label(
-                win,
-                textvariable=msg_var,
-                font=("Helvetica", 9),
-                foreground="#555555",
-                wraplength=470,
-                justify=tk.LEFT,
+                win, textvariable=msg_var,
+                font=("Helvetica", 9), foreground="#555555",
+                wraplength=470, justify=tk.LEFT,
             ).pack(anchor=tk.W, padx=24)
 
             # Diccionario con referencias a todos los widgets que
             # necesitan actualización dinámica desde el hilo de entrenamiento
             return {
-                "window": win,
+                "window":        win,
                 "exp_label_var": exp_label_var,
-                "exp_bar": exp_bar,
-                "epoch_bar": epoch_bar,
-                "msg_var": msg_var,
+                "exp_bar":       exp_bar,
+                "epoch_bar":     epoch_bar,
+                "msg_var":       msg_var,
+                "phase_var":     phase_var,
+                "phase_label":   phase_label,
+                "phase_visible": False,
             }
 
         def _poll_queue(
@@ -748,31 +751,45 @@ def run_interactive_mode() -> None:
             """
             try:
                 while True:
-                    # q.get_nowait() intenta obtener un mensaje sin bloquear el hilo principal
                     msg_type, payload = q.get_nowait()
                     if msg_type == "exp":
+                        # Usa el total de la fase actual si está disponible,
+                        # o el total general si no (modo experimento normal).
+                        total = widgets.get("phase_total", num_experiments)
                         widgets["exp_label_var"].set(
-                            f"Experimento {payload} de {num_experiments}"
+                            f"Experimento {payload} de {total}"
                         )
-                        widgets["exp_bar"]["value"] = payload - 1
+                        widgets["exp_bar"]["value"]   = payload - 1
                         widgets["epoch_bar"]["value"] = 0
                     elif msg_type == "epoch":
                         widgets["epoch_bar"]["value"] = payload
                     elif msg_type == "msg":
                         widgets["msg_var"].set(payload)
+                    elif msg_type == "phase":
+                        # Muestra la etiqueta de fase la primera vez y
+                        # actualiza su texto y color según el modo activo.
+                        lbl = widgets["phase_label"]
+                        if not widgets["phase_visible"]:
+                            lbl.pack(fill=tk.X, padx=24, pady=(2, 6))
+                            widgets["phase_visible"] = True
+                        widgets["phase_var"].set(payload)
+                        lbl.configure(
+                            bg="#1565C0" if "SECUENCIAL" in payload else "#2E7D32"
+                        )
+                        # Reinicia las barras y ajusta el máximo al total
+                        # de experimentos de esta fase (no del benchmark completo).
+                        widgets["exp_bar"]["value"]     = 0
+                        widgets["epoch_bar"]["value"]   = 0
+                        widgets["exp_bar"]["maximum"]   = widgets["phase_total"]
                     elif msg_type == "done":
-                        widgets["exp_bar"]["value"] = num_experiments
+                        widgets["exp_bar"]["value"]   = num_experiments
                         widgets["epoch_bar"]["value"] = num_epochs
                         widgets["window"].destroy()
-                        on_done(
-                            payload
-                        )  # Llama al callback _on_done con los resultados
+                        on_done(payload)
                         return
-                    elif (
-                        msg_type == "error"
-                    ):  # Ocurrió una excepción en el hilo secundario
-                        widgets["window"].destroy()  # Cierra la ventana
-                        raise payload  # Propaga la excepción al hilo principal
+                    elif msg_type == "error":
+                        widgets["window"].destroy()
+                        raise payload
             except queue.Empty:
                 pass  # No hay mensajes nuevos; sigue esperando
             except Exception as e:
@@ -938,14 +955,21 @@ def run_interactive_mode() -> None:
             num_epochs = params["num_epochs"]
 
             # El benchmark ejecuta 2 rondas (seq + par), cada una con
-            # num_experiments experimentos; el progreso total es el doble.
-            widgets = self._create_progress_window(num_experiments * 2, num_epochs)
+            # num_experiments experimentos. La barra se inicializa con el
+            # total de una sola fase; phase_total permite mostrar el número
+            # correcto en el texto "Experimento X de Y" por fase.
+            widgets = self._create_progress_window(num_experiments, num_epochs)
+            widgets["phase_total"] = num_experiments
             self.status_var.set("Ejecutando benchmark secuencial vs paralelo...")
 
             def _training_thread():
                 def on_progress(msg):
                     q.put(("msg", msg))
-                    if msg.startswith("EXPERIMENTO"):
+                    if "Fase 1/2" in msg:
+                        q.put(("phase", "▶  Fase 1 / 2  —  Modo SECUENCIAL"))
+                    elif "Fase 2/2" in msg:
+                        q.put(("phase", "▶  Fase 2 / 2  —  Modo PARALELO"))
+                    elif msg.startswith("EXPERIMENTO"):
                         try:
                             n = int(msg.split()[1].split("/")[0])
                             q.put(("exp", n))
