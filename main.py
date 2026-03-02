@@ -680,46 +680,61 @@ def run_interactive_mode() -> None:
             # Experimento actual
             # Se actualizará en tiempo real con el experimento que se esté ejecutando
             exp_label_var = tk.StringVar(value="Inicializando...")
-            ttk.Label(win, textvariable=exp_label_var, font=("Helvetica", 10)).pack(pady=2)
+            ttk.Label(win, textvariable=exp_label_var, font=("Helvetica", 10)).pack(
+                pady=2
+            )
 
             # Barra de progreso general (experimentos)
-            ttk.Label(win, text="Progreso general:").pack(anchor=tk.W, padx=24, pady=(10, 0))
+            ttk.Label(win, text="Progreso general:").pack(
+                anchor=tk.W, padx=24, pady=(10, 0)
+            )
             exp_bar = ttk.Progressbar(
-                win, orient=tk.HORIZONTAL, length=470,
-                mode="determinate", maximum=num_experiments,
+                win,
+                orient=tk.HORIZONTAL,
+                length=470,
+                mode="determinate",
+                maximum=num_experiments,
             )
             exp_bar.pack(padx=24, pady=4)
 
             # Barra de épocas del experimento actual
             ttk.Label(win, text="Época actual:").pack(anchor=tk.W, padx=24, pady=(8, 0))
             epoch_bar = ttk.Progressbar(
-                win, orient=tk.HORIZONTAL, length=470,
-                mode="determinate", maximum=num_epochs,
+                win,
+                orient=tk.HORIZONTAL,
+                length=470,
+                mode="determinate",
+                maximum=num_epochs,
             )
             epoch_bar.pack(padx=24, pady=4)
 
             # Último mensaje recibido
-            ttk.Label(win, text="Último estado:").pack(anchor=tk.W, padx=24, pady=(8, 0))
+            ttk.Label(win, text="Último estado:").pack(
+                anchor=tk.W, padx=24, pady=(8, 0)
+            )
 
             # Último mensaje recibido del entrenamiento
             # Funciona igual que el mensaje de experimento actual
             msg_var = tk.StringVar(value="—")
             ttk.Label(
-                win, textvariable=msg_var,
-                font=("Helvetica", 9), foreground="#555555",
-                wraplength=470, justify=tk.LEFT,
+                win,
+                textvariable=msg_var,
+                font=("Helvetica", 9),
+                foreground="#555555",
+                wraplength=470,
+                justify=tk.LEFT,
             ).pack(anchor=tk.W, padx=24)
 
             # Diccionario con referencias a todos los widgets que
             # necesitan actualización dinámica desde el hilo de entrenamiento
             return {
-                "window":        win,
+                "window": win,
                 "exp_label_var": exp_label_var,
-                "exp_bar":       exp_bar,
-                "epoch_bar":     epoch_bar,
-                "msg_var":       msg_var,
-                "phase_var":     phase_var,
-                "phase_label":   phase_label,
+                "exp_bar": exp_bar,
+                "epoch_bar": epoch_bar,
+                "msg_var": msg_var,
+                "phase_var": phase_var,
+                "phase_label": phase_label,
                 "phase_visible": False,
             }
 
@@ -759,7 +774,7 @@ def run_interactive_mode() -> None:
                         widgets["exp_label_var"].set(
                             f"Experimento {payload} de {total}"
                         )
-                        widgets["exp_bar"]["value"]   = payload - 1
+                        widgets["exp_bar"]["value"] = payload - 1
                         widgets["epoch_bar"]["value"] = 0
                     elif msg_type == "epoch":
                         widgets["epoch_bar"]["value"] = payload
@@ -778,11 +793,11 @@ def run_interactive_mode() -> None:
                         )
                         # Reinicia las barras y ajusta el máximo al total
                         # de experimentos de esta fase (no del benchmark completo).
-                        widgets["exp_bar"]["value"]     = 0
-                        widgets["epoch_bar"]["value"]   = 0
-                        widgets["exp_bar"]["maximum"]   = widgets["phase_total"]
+                        widgets["exp_bar"]["value"] = 0
+                        widgets["epoch_bar"]["value"] = 0
+                        widgets["exp_bar"]["maximum"] = widgets["phase_total"]
                     elif msg_type == "done":
-                        widgets["exp_bar"]["value"]   = num_experiments
+                        widgets["exp_bar"]["value"] = num_experiments
                         widgets["epoch_bar"]["value"] = num_epochs
                         widgets["window"].destroy()
                         on_done(payload)
@@ -1292,6 +1307,22 @@ def run_interactive_mode() -> None:
                 ax.clear()
 
             histories = results["all_histories"]
+
+            # Actualiza el título de la figura con el tiempo del experimento
+            bm = results.get("benchmark", {})
+            mode_label = "Paralelo" if params.get("parallel") else "Secuencial"
+            if bm:
+                total_s = bm.get("total_time", 0.0)
+                self.fig.suptitle(
+                    f"Análisis de Algoritmo de Diego  —  {mode_label}\n"
+                    f"Duración: {total_s:.1f} segundos",
+                    fontsize=12,
+                    fontweight="bold",
+                )
+            else:
+                self.fig.suptitle(
+                    "Análisis de Algoritmo de Diego", fontsize=14, fontweight="bold"
+                )
 
             # Panel 1 — Curva de aprendizaje con banda ±1σ
             acc = prepare_accuracy_chart_data(histories)
