@@ -65,10 +65,18 @@ def _init_params(
     """
     Inicializa los parámetros de la red con Xavier.
 
-    :param input_size:  Neuronas de entrada.
+    :param input_size: Neuronas de entrada.
+    :type input_size: int
+
     :param hidden_size: Neuronas en la capa oculta.
+    :type hidden_size: int
+
     :param output_size: Neuronas de salida (clases).
-    :param seed:        Semilla aleatoria para reproducibilidad.
+    :type output_size: int
+
+    :param seed: Semilla aleatoria para reproducibilidad.
+    :type seed: int|None
+
     :return: Diccionario con W1, b1, W2, b2.
     """
     if seed is not None:

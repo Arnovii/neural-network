@@ -201,6 +201,9 @@ def encode(msg_type: MsgType, payload: Any) -> bytes:
         "payload": _arrays_to_json(payload),
     }
     body = json.dumps(message, ensure_ascii=False).encode("utf-8")
+
+    # Convierte la longitud del mensaje en un prefijo de 4 bytes en formato big-endian.
+    # Luego, se concatena el prefrijo con el mensaje real.
     return struct.pack(">I", len(body)) + body
 
 
@@ -240,8 +243,13 @@ def send_message(sock: socket.socket, msg_type: MsgType, payload: Any) -> None:
     :raises ConnectionError: Si el socket se cierra antes de enviar todo.
     """
     data = encode(msg_type, payload)
+
+    # Lleva la cuenta de cuántos bytes ya se enviaron
     total_sent = 0
+
     while total_sent < len(data):
+
+        # TCP puede enviar solo parte del mensaje en una llamada a sock.send()
         sent = sock.send(data[total_sent:])
         if sent == 0:
             raise ConnectionError("Socket cerrado antes de completar el envío")
@@ -252,6 +260,9 @@ def receive_message(sock: socket.socket) -> Dict[str, Any]:
     """
     Recibe un mensaje completo desde un socket TCP.
 
+    Garantiza que el PS lea exactamente un mensaje completo, y luego lo
+    decodifica a un diccionario Python listo para usar.
+
     :param sock: Socket TCP conectado.
     :type sock: socket.socket
 
@@ -261,6 +272,7 @@ def receive_message(sock: socket.socket) -> Dict[str, Any]:
     :raises ConnectionError: Si el socket se cierra inesperadamente.
     """
     raw_length = _recv_exact(sock, 4)
+    # Convierte los 4 bytes de longitud a un entero usando big-endian.
     length = struct.unpack(">I", raw_length)[0]
     raw_body = _recv_exact(sock, length)
     return decode(raw_body)
@@ -284,8 +296,12 @@ def _recv_exact(sock: socket.socket, n_bytes: int) -> bytes:
 
     :raises ConnectionError: Si el socket se cierra antes de leer todo.
     """
+    # Bytes acumulados hasta ahora
     buffer = b""
+
     while len(buffer) < n_bytes:
+
+        # Intenta leer los bytes que faltan
         chunk = sock.recv(n_bytes - len(buffer))
         if not chunk:
             raise ConnectionError(

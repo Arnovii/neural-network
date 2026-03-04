@@ -231,6 +231,12 @@ class ParameterServer:
 
         Lee READY, asigna ID, responde con WORKER_ID y registra el Worker.
         Si el mensaje no es READY, cierra la conexión sin registrar nada.
+
+        :param conn: Socket para comunicarse con ese Worker
+        :type conn: socket.socket
+
+        :param addr: Dirección del Worker (IP y puerto)
+        :type addr: tuple
         """
         try:
             msg = receive_message(conn)
@@ -242,6 +248,7 @@ class ParameterServer:
             conn.close()
             return
 
+        # Asigna ID único a Worker
         with self._lock:
             worker_id = self._next_id
             self._next_id += 1
@@ -305,6 +312,7 @@ class ParameterServer:
                 "Inicia al menos un Worker antes de entrenar."
             )
 
+        # Crea una copia de los parámetros iniciales
         params = {k: v.copy() for k, v in initial_params.items()}
 
         history: Dict[str, List[float]] = {
@@ -332,12 +340,16 @@ class ParameterServer:
             print(f"[PS] ── Época {epoch}/{epochs} ──────────────────────────")
             t_start = time.perf_counter()
 
+            # Limpia los gradientes anteriores
             self._epoch_gradients.clear()
             self._epoch_metrics.clear()
 
             index_chunks = self._split_indices(worker_ids, n_train)
 
             done_event = threading.Event()
+
+            # Se usa una lista con un solo elemento para poder modificar
+            # ese valor desde varios hilos dentro de una función interna.
             received_count = [0]
 
             def _receive_from_worker(wid: int) -> None:
@@ -397,6 +409,8 @@ class ParameterServer:
             for t in threads:
                 t.start()
 
+            # El PS se queda esperando hasta que todos
+            # los Workers manden gradientes (o fallen).
             done_event.wait()
             for t in threads:
                 t.join()
@@ -408,6 +422,7 @@ class ParameterServer:
             avg_grads = self._average_gradients(list(self._epoch_gradients.values()))
             self._apply_gradients(params, avg_grads, learning_rate)
 
+            # Promedia métricas
             losses = [m[0] for m in self._epoch_metrics.values()]
             accuracies = [m[1] for m in self._epoch_metrics.values()]
             epoch_loss = float(np.mean(losses))
@@ -437,7 +452,18 @@ class ParameterServer:
         payload: Any,
         worker_ids: List[int],
     ) -> None:
-        """Envía el mismo mensaje a todos los Workers indicados."""
+        """
+        Envía el mismo mensaje a todos los Workers indicados.
+        
+        :param msg_type: Tipo de mensaje
+        :type msg_type: MsgType
+
+        :param payload: Datos que se envían
+        :type payload: Any
+
+        :param worker_ids: Lista de IDs a los que se enviará
+        :type worker_ids: List[int]
+        """
         for wid in worker_ids:
             with self._lock:
                 sock = self._worker_sockets.get(wid)
@@ -478,19 +504,33 @@ class ParameterServer:
         self, worker_ids: List[int], n_train: int
     ) -> Dict[int, List[int]]:
         """
-        Divide ``range(n_train)`` en chunks disjuntos, uno por Worker.
+        Divide el conjunto de índices ``range(n_train)`` en subconjuntos
+        disjuntos, asignando uno a cada Worker.
 
-        Los índices se mezclan antes de dividir para garantizar balance
-        de clases. El último Worker absorbe el residuo.
+        Los índices se mezclan aleatoriamente antes de dividirse para
+        garantizar una distribución balanceada de clases entre Workers.
+        El último Worker absorbe cualquier residuo si ``n_train`` no es
+        divisible exactamente por el número de Workers.
+
+        :param worker_ids: Lista de IDs de Workers activos que
+                        recibirán una partición de los datos.
+        :type worker_ids: List[int]
+
+        :param n_train: Número total de ejemplos de entrenamiento.
+        :type n_train: int
+
+        :return: Diccionario que mapea cada ``worker_id`` a la lista
+                de índices que deberá procesar en la época actual.
+        :rtype: Dict[int, List[int]]
         """
         indices = np.random.permutation(n_train).tolist()
-        n = len(worker_ids)
-        chunk_size = len(indices) // n
+        num_workers = len(worker_ids)
+        chunk_size = len(indices) // num_workers
         chunks: Dict[int, List[int]] = {}
 
         for i, wid in enumerate(worker_ids):
             start = i * chunk_size
-            end = start + chunk_size if i < n - 1 else len(indices)
+            end = start + chunk_size if i < num_workers - 1 else len(indices)
             chunks[wid] = indices[start:end]
 
         return chunks
@@ -498,7 +538,33 @@ class ParameterServer:
     def _average_gradients(
         self, gradients_list: List[Dict[str, np.ndarray]]
     ) -> Dict[str, np.ndarray]:
-        """∇θ = (1/N) * Σᵢ ∇θ L(Bᵢ)"""
+        """
+        Calcula el promedio elemento a elemento de los gradientes
+        enviados por múltiples Workers.
+
+        Implementa la operación:
+
+            ∇θ = (1/N) * Σᵢ ∇θᵢ
+
+        donde N es el número de Workers y ∇θᵢ representa el gradiente
+        calculado localmente por el Worker i sobre su subconjunto de datos.
+
+        Se asume que todos los diccionarios de ``gradients_list`` contienen
+        exactamente las mismas claves.
+
+        :param gradients_list: Lista de diccionarios de gradientes,
+                            uno por Worker. Cada diccionario debe
+                            contener las mismas claves (por ejemplo,
+                            ``"dW1"``, ``"db1"``, etc.) y valores de tipo
+                            ``np.ndarray``.
+        :type gradients_list: List[Dict[str, np.ndarray]]
+
+        :return: Diccionario con los gradientes promediados para cada
+                parámetro del modelo.
+        :rtype: Dict[str, np.ndarray]
+
+        :raises ValueError: Si ``gradients_list`` está vacío.
+        """
         averaged: Dict[str, np.ndarray] = {}
         for key in gradients_list[0]:
             stacked = np.array([g[key] for g in gradients_list])
@@ -511,7 +577,36 @@ class ParameterServer:
         gradients: Dict[str, np.ndarray],
         learning_rate: float,
     ) -> None:
-        """θ ← θ − lr * ∇θ"""
+        """
+        Actualiza los parámetros del modelo  usando los gradientes proporcionados.
+
+        Implementa la regla de actualización:
+
+            θ ← θ − lr * ∇θ
+
+        donde:
+            θ   = parámetros del modelo
+            lr  = learning rate
+            ∇θ  = gradientes promediados
+
+        La actualización se realiza in-place sobre el diccionario ``params``.
+
+        :param params: Diccionario de parámetros del modelo a actualizar
+                    (por ejemplo, ``"W1"``, ``"b1"``, ``"W2"``, ``"b2"``).
+        :type params: Dict[str, np.ndarray]
+
+        :param gradients: Diccionario con los gradientes correspondientes
+                        a cada parámetro (por ejemplo, ``"dW1"``,
+                        ``"db1"``, etc.).
+        :type gradients: Dict[str, np.ndarray]
+
+        :param learning_rate: Tasa de aprendizaje utilizada para escalar
+                            el gradiente antes de aplicarlo.
+        :type learning_rate: float
+
+        :return: None
+        :rtype: None
+        """
         params["W1"] -= learning_rate * gradients["dW1"]
         params["b1"] -= learning_rate * gradients["db1"]
         params["W2"] -= learning_rate * gradients["dW2"]

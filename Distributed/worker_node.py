@@ -35,9 +35,9 @@ CÁLCULO DE GRADIENTES
 El Worker NO actualiza sus pesos. Solo calcula gradientes y los
 envía. La actualización θ ← θ − lr * ∇θ la hace exclusivamente el PS.
 
-Forward:   Z1=W1@X.T+b1  A1=σ(Z1)  Z2=W2@A1+b2  A2=softmax(Z2)
-Backward:  δ2=A2−Y_hot  dW2=(1/n)δ2@A1.T  db2=(1/n)Σδ2
-           δ1=(W2.T@δ2)⊙σ'(A1)  dW1=(1/n)δ1@X  db1=(1/n)Σδ1
+Forward:   Z1=W1@X.T+b1  ->  A1=σ(Z1)  ->  Z2=W2@A1+b2  ->  A2=softmax(Z2)
+Backward:  δ2=A2−Y_hot  ->  dW2=(1/n)δ2@A1.T  ->  db2=(1/n)Σδ2
+           δ1=(W2.T@δ2)⊙σ'(A1)  ->  dW1=(1/n)δ1@X  ->  db1=(1/n)Σδ1
 """
 
 import socket
@@ -137,6 +137,9 @@ class WorkerNode:
 
         Envía READY (sin ID) y espera WORKER_ID con el ID asignado.
         """
+
+        # AF_INET = IPv4.
+        # SOCK_STREAM = TCP
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._sock.connect((self.server_host, self.server_port))
 
@@ -268,42 +271,62 @@ class WorkerNode:
         No modifica los parámetros: devuelve gradientes, loss y accuracy.
 
         :param params: Parámetros globales (W1, b1, W2, b2).
+        :type params: Dict[str, np.ndarray]
+
         :param X: Batch de imágenes ``(n, input_size)``.
+        :type X: np.ndarray
+
         :param Y: Etiquetas del batch ``(n,)``.
+        :type Y: np.ndarray
+
         :return: ``(gradients, loss, accuracy)``
         """
         W1, b1 = params["W1"], params["b1"]
         W2, b2 = params["W2"], params["b2"]
-        n = len(X)
+        num_imagenes = len(X)
 
         # Forward
-        Z1 = W1 @ X.T + b1[:, np.newaxis]
-        A1 = self._sigmoid(Z1)
-        Z2 = W2 @ A1 + b2[:, np.newaxis]
-        A2 = self._softmax(Z2)
+
+        # Multiplica los pesos por cada entrada: W1 @ X_T -> (hidden_size, N),
+        # b1 tiene forma (hidden_size,), una dimensión por debajo de W1 @ X_T
+        # np.newaxis agrega una dimensión extra, convirtiendo (hidden_size,) en (hidden_size, 1)
+        Z1 = W1 @ X.T + b1[:, np.newaxis] # (hidden, N)
+
+        A1 = self._sigmoid(Z1) # (hidden, N)
+        Z2 = W2 @ A1 + b2[:, np.newaxis]# (output, N)
+        A2 = self._softmax(Z2) # (output, N)
 
         # Métricas
-        predictions = np.argmax(A2, axis=0)
+
+        # Escoge la clase más probable
+        predictions = np.argmax(A2, axis=0) # (N,)
+
+        # Cuenta cuántas predicciones fueron correctas
         correct = int(np.sum(predictions == Y))
+
+        # Calcula el error usando "cross-entropy"
         log_probs = np.log(np.clip(A2, 1e-15, 1.0))
-        total_loss = -float(np.sum(log_probs[Y, np.arange(n)]))
+
+        # log_probs[Y, np.arange(n)] significa:
+        # Para cada muestra, toma el logaritmo de la probabilidad de su clase correcta
+        total_loss = -float(np.sum(log_probs[Y, np.arange(num_imagenes)]))
 
         # Backward
-        Y_onehot = np.zeros((self.output_size, n))
-        Y_onehot[Y, np.arange(n)] = 1.0
+        Y_onehot = np.zeros((self.output_size, num_imagenes))
+        Y_onehot[Y, np.arange(num_imagenes)] = 1.0
 
-        delta2 = A2 - Y_onehot
-        dW2 = (1.0 / n) * (delta2 @ A1.T)
-        db2 = (1.0 / n) * np.sum(delta2, axis=1)
+        delta2 = A2 - Y_onehot # (output, N)
+        dW2 = (1.0 / num_imagenes) * (delta2 @ A1.T) # (output, hidden)
+        db2 = (1.0 / num_imagenes) * np.sum(delta2, axis=1) # (output,)
 
-        delta1 = (W2.T @ delta2) * self._sigmoid_deriv(A1)
-        dW1 = (1.0 / n) * (delta1 @ X)
-        db1 = (1.0 / n) * np.sum(delta1, axis=1)
+        delta1 = (W2.T @ delta2) * self._sigmoid_deriv(A1) # (hidden, N)
+        dW1 = (1.0 / num_imagenes) * (delta1 @ X) # (hidden, input)
+        db1 = (1.0 / num_imagenes) * np.sum(delta1, axis=1) # (hidden,)
 
         return (
             {"dW1": dW1, "db1": db1, "dW2": dW2, "db2": db2},
-            total_loss / n,
-            100.0 * correct / n,
+            total_loss / num_imagenes,
+            100.0 * correct / num_imagenes,
         )
 
     # ================================================================
@@ -312,14 +335,51 @@ class WorkerNode:
 
     @staticmethod
     def _sigmoid(z: np.ndarray) -> np.ndarray:
+        """
+        Función sigmoide vectorizada: σ(z) = 1 / (1 + e^(−z)).
+
+        - Recibe un número o un arreglo de números.
+        - Aplica la fórmula elemento por elemento.
+        - Devuelve un arreglo del mismo tamaño.
+
+        :param z: Array de entrada (escalar o N-dimensional)
+        :type z: np.ndarray
+
+        :return: Array con valores en el rango (0, 1)
+        :rtype: np.ndarray
+        """
+        # np.clip recorta valores fuera del rango entre -500 y 500
         return 1.0 / (1.0 + np.exp(-np.clip(z, -500, 500)))
 
     @staticmethod
     def _sigmoid_deriv(a: np.ndarray) -> np.ndarray:
+        """
+        Derivada de la sigmoide a partir de la activación: a · (1 − a).
+
+        σ'(z) = σ(z) · (1 − σ(z)) = a · (1 − a)
+
+        :param a: Activación (resultado previo de sigmoid)
+        :type a: np.ndarray
+
+        :return: Derivada evaluada en z
+        :rtype: np.ndarray
+        """
+        # Multiplicación elemento a elemento del arreglo
         return a * (1.0 - a)
 
     @staticmethod
     def _softmax(z: np.ndarray) -> np.ndarray:
+        """
+        Función softmax con estabilización numérica.
+
+        :param z: Logits. Array de forma ``(clases,)`` o ``(clases, N)``
+        :type z: np.ndarray
+
+        :return: Probabilidades con la misma forma que ``z``
+        :rtype: np.ndarray
+        """
+        # keepdims=True preserva las dimensiones originales para que la resta
+        # y la división sean compatibles
         z_stable = z - np.max(z, axis=0, keepdims=True)
         exp_z = np.exp(z_stable)
         return exp_z / np.sum(exp_z, axis=0, keepdims=True)
