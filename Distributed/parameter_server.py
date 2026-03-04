@@ -5,51 +5,52 @@ Implementación del Parameter Server para el algoritmo de Diego
 distribuido con Data-Oriented Parallelism sobre sockets TCP.
 
 ──────────────────────────────────────────────────────────────────
-ROL DEL PARAMETER SERVER
+CICLO DE VIDA
 ──────────────────────────────────────────────────────────────────
-El Parameter Server (PS) es el nodo central del sistema. Mantiene
-la copia autoritativa de los pesos de la red neuronal y coordina
-el entrenamiento distribuido.
+El PS tiene tres fases independientes:
 
-Responsabilidades:
-    1. Escuchar conexiones entrantes de Workers.
-    2. Esperar a que todos los Workers estén listos.
-    3. Por cada época:
-       a. Dividir los índices de entrenamiento en N chunks disjuntos,
-          uno por Worker, sin solapamiento.
-       b. Hacer broadcast de los parámetros actuales + índices asignados.
-       c. Esperar los gradientes de TODOS los Workers (barrera).
-       d. Promediar gradientes: ∇θ = (1/N) * Σ ∇θL(Bᵢ)
-       e. Actualizar pesos: θ ← θ − lr * ∇θ
-    4. Al finalizar, hacer broadcast de STOP.
+    listen()   → Abre el socket y acepta Workers indefinidamente
+                 en un hilo de fondo. Los Workers que se conectan
+                 quedan registrados y esperan instrucciones.
+                 El PS les asigna un ID secuencial (0, 1, 2, …).
+
+    train()    → Ejecuta una sesión de entrenamiento con los Workers
+                 actualmente conectados. Puede llamarse múltiples
+                 veces sin reiniciar el servidor ni reconectar Workers.
+
+    shutdown() → Envía STOP a todos los Workers, cierra conexiones
+                 y detiene el hilo de aceptación.
+
+──────────────────────────────────────────────────────────────────
+ASIGNACIÓN DE IDs
+──────────────────────────────────────────────────────────────────
+El Worker ya no declara su propio ID. Al conectarse envía READY
+con payload vacío y el PS responde con WORKER_ID asignando el
+siguiente entero disponible (0, 1, 2, …). Esto evita colisiones
+cuando varios Workers se conectan simultáneamente.
+
+──────────────────────────────────────────────────────────────────
+WORKERS PERSISTENTES
+──────────────────────────────────────────────────────────────────
+Los Workers no se desconectan al finalizar un entrenamiento.
+Permanecen conectados esperando el siguiente TRAIN_START. El PS
+puede lanzar múltiples sesiones de entrenamiento sin que los
+Workers se reinicien.
 
 ──────────────────────────────────────────────────────────────────
 CALLBACKS DISPONIBLES
 ──────────────────────────────────────────────────────────────────
 on_worker_connected(worker_id, addr)
-    Llamado en cuanto un Worker envía READY y queda registrado.
-    Útil para actualizar el panel de Workers en la GUI.
+    Llamado cuando un Worker envía READY y queda registrado.
+
+on_worker_disconnected(worker_id)
+    Llamado cuando un Worker pierde la conexión inesperadamente.
 
 on_gradients_received(worker_id, epoch, loss, accuracy)
     Llamado cada vez que se reciben los gradientes de un Worker.
-    Permite marcar individualmente qué Workers ya terminaron la época.
 
 on_epoch_end(epoch, total_epochs, accuracy, loss)
     Llamado tras promediar gradientes y actualizar pesos.
-    Los valores de accuracy y loss son el promedio de todos los Workers.
-
-──────────────────────────────────────────────────────────────────
-CONCURRENCIA
-──────────────────────────────────────────────────────────────────
-Cada Worker se atiende en un hilo independiente. Esto permite
-recibir gradientes en paralelo mientras los Workers computan.
-La sincronización usa threading.Event como barrera ligera:
-
-    done_event.wait()  ←── bloquea hasta que TODOS los Workers
-                            hayan enviado sus gradientes en la época.
-
-Una vez cruzado el evento, solo el hilo coordinador (run())
-hace el promediado, la actualización y el siguiente broadcast.
 """
 
 import socket
@@ -64,10 +65,11 @@ from Distributed.protocol import MsgType, receive_message, send_message
 
 class ParameterServer:
     """
-    Parameter Server para entrenamiento distribuido con sockets TCP.
+    Parameter Server persistente para entrenamiento distribuido.
 
-    Gestiona la conexión con N Workers, coordina cada época de
-    entrenamiento y mantiene los pesos globales de la red.
+    El servidor acepta conexiones continuamente hasta llamar a
+    ``shutdown()``. Una sesión de entrenamiento se inicia con
+    ``train()`` y puede repetirse sin reconectar Workers.
 
     :param host: Dirección IP en la que escucha el servidor.
     :type host: str
@@ -75,32 +77,19 @@ class ParameterServer:
     :param port: Puerto TCP.
     :type port: int
 
-    :param num_workers: Número exacto de Workers que deben conectarse
-                        antes de iniciar el entrenamiento.
-    :type num_workers: int
-
-    :param initial_params: Parámetros iniciales de la red (W1, b1, W2, b2).
-    :type initial_params: Dict[str, np.ndarray]
-
-    :param learning_rate: Tasa de aprendizaje para la actualización de pesos.
-    :type learning_rate: float
-
-    :param n_train: Total de ejemplos de entrenamiento disponibles.
-                    Se usa para dividir los índices entre Workers.
-    :type n_train: int
-
-    :param on_worker_connected: Callback opcional llamado cuando un Worker
-                                se conecta y envía READY.
-                                Firma: ``(worker_id: int, addr: str) -> None``
+    :param on_worker_connected: Callback cuando un Worker se registra.
+                                Firma: ``(worker_id: int, addr: str)``
     :type on_worker_connected: Callable | None
 
-    :param on_gradients_received: Callback opcional llamado cuando se
-                                  reciben los gradientes de un Worker.
+    :param on_worker_disconnected: Callback cuando un Worker se pierde.
+                                   Firma: ``(worker_id: int)``
+    :type on_worker_disconnected: Callable | None
+
+    :param on_gradients_received: Callback al recibir gradientes.
                                   Firma: ``(worker_id, epoch, loss, accuracy)``
     :type on_gradients_received: Callable | None
 
-    :param on_epoch_end: Callback opcional llamado al final de cada época,
-                         tras promediar gradientes y actualizar pesos.
+    :param on_epoch_end: Callback al final de cada época.
                          Firma: ``(epoch, total_epochs, accuracy, loss)``
     :type on_epoch_end: Callable | None
     """
@@ -109,135 +98,228 @@ class ParameterServer:
         self,
         host: str,
         port: int,
-        num_workers: int,
+        on_worker_connected: Optional[Callable] = None,
+        on_worker_disconnected: Optional[Callable] = None,
+        on_gradients_received: Optional[Callable] = None,
+        on_epoch_end: Optional[Callable] = None,
+    ) -> None:
+        self.host = host
+        self.port = port
+
+        self.on_worker_connected = on_worker_connected
+        self.on_worker_disconnected = on_worker_disconnected
+        self.on_gradients_received = on_gradients_received
+        self.on_epoch_end = on_epoch_end
+
+        # Sockets y metadatos de Workers activos
+        self._worker_sockets: Dict[int, socket.socket] = {}
+        self._worker_addrs: Dict[int, str] = {}
+        self._next_id: int = 0  # contador para asignar IDs
+        self._lock = threading.Lock()  # protege las estructuras anteriores
+
+        # Servidor TCP
+        self._server_sock: Optional[socket.socket] = None
+        self._accept_thread: Optional[threading.Thread] = None
+        self._shutdown_flag = threading.Event()
+
+        # Gradientes y métricas de la época actual (reutilizados por train)
+        self._epoch_gradients: Dict[int, Dict[str, np.ndarray]] = {}
+        self._epoch_metrics: Dict[int, Tuple[float, float]] = {}
+
+    # ================================================================
+    # CICLO DE VIDA DEL SERVIDOR
+    # ================================================================
+
+    def listen(self) -> None:
+        """
+        Abre el socket TCP y comienza a aceptar Workers en un hilo
+        de fondo. Retorna inmediatamente; las conexiones se procesan
+        de forma asíncrona.
+
+        :raises RuntimeError: Si el servidor ya está escuchando.
+        """
+        if self._server_sock is not None:
+            raise RuntimeError("El servidor ya está escuchando.")
+
+        self._shutdown_flag.clear()
+
+        self._server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self._server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self._server_sock.bind((self.host, self.port))
+        self._server_sock.listen(32)
+        # Timeout corto para que el hilo de aceptación pueda comprobar
+        # el flag de apagado sin bloquearse indefinidamente en accept().
+        self._server_sock.settimeout(1.0)
+
+        self._accept_thread = threading.Thread(target=self._accept_loop, daemon=True)
+        self._accept_thread.start()
+
+        print(f"[PS] Escuchando en {self.host}:{self.port}")
+
+    def shutdown(self) -> None:
+        """
+        Envía STOP a todos los Workers, cierra conexiones y detiene
+        el hilo de aceptación.
+        """
+        print("[PS] Apagando servidor...")
+        self._shutdown_flag.set()
+
+        with self._lock:
+            worker_ids = list(self._worker_sockets.keys())
+
+        for wid in worker_ids:
+            self._stop_worker(wid)
+
+        if self._server_sock is not None:
+            try:
+                self._server_sock.close()
+            except Exception:
+                pass
+            self._server_sock = None
+
+        if self._accept_thread is not None:
+            self._accept_thread.join(timeout=3)
+            self._accept_thread = None
+
+        print("[PS] Servidor apagado.")
+
+    @property
+    def connected_workers(self) -> List[int]:
+        """IDs de los Workers actualmente conectados, ordenados."""
+        with self._lock:
+            return sorted(self._worker_sockets.keys())
+
+    # ================================================================
+    # HILO DE ACEPTACIÓN
+    # ================================================================
+
+    def _accept_loop(self) -> None:
+        """
+        Acepta conexiones entrantes indefinidamente hasta que se activa
+        el flag de apagado.
+
+        Por cada conexión: lee READY, asigna un ID, responde con
+        WORKER_ID y llama al callback on_worker_connected.
+        """
+        while not self._shutdown_flag.is_set():
+            if self._server_sock is None:
+                break
+            try:
+                conn, addr = self._server_sock.accept()
+            except socket.timeout:
+                continue
+            except Exception:
+                break
+
+            # Maneja el handshake en un hilo aparte para no bloquear accept()
+            threading.Thread(
+                target=self._handshake,
+                args=(conn, addr),
+                daemon=True,
+            ).start()
+
+    def _handshake(self, conn: socket.socket, addr: tuple) -> None:
+        """
+        Realiza el handshake inicial con un Worker que acaba de conectarse.
+
+        Lee READY, asigna ID, responde con WORKER_ID y registra el Worker.
+        Si el mensaje no es READY, cierra la conexión sin registrar nada.
+        """
+        try:
+            msg = receive_message(conn)
+        except Exception:
+            conn.close()
+            return
+
+        if msg["type"] != MsgType.READY:
+            conn.close()
+            return
+
+        with self._lock:
+            worker_id = self._next_id
+            self._next_id += 1
+            self._worker_sockets[worker_id] = conn
+            self._worker_addrs[worker_id] = f"{addr[0]}:{addr[1]}"
+
+        # Informa al Worker su ID asignado
+        try:
+            send_message(conn, MsgType.WORKER_ID, {"worker_id": worker_id})
+        except Exception:
+            with self._lock:
+                self._worker_sockets.pop(worker_id, None)
+                self._worker_addrs.pop(worker_id, None)
+            conn.close()
+            return
+
+        addr_str = f"{addr[0]}:{addr[1]}"
+        print(f"[PS] Worker {worker_id} conectado desde {addr_str}")
+
+        if self.on_worker_connected is not None:
+            self.on_worker_connected(worker_id, addr_str)
+
+    # ================================================================
+    # SESIÓN DE ENTRENAMIENTO
+    # ================================================================
+
+    def train(
+        self,
+        epochs: int,
         initial_params: Dict[str, np.ndarray],
         learning_rate: float,
         n_train: int,
-        on_worker_connected:  Optional[Callable] = None,
-        on_gradients_received: Optional[Callable] = None,
-        on_epoch_end:         Optional[Callable] = None,
-    ) -> None:
-        self.host           = host
-        self.port           = port
-        self.num_workers    = num_workers
-        self.params         = {k: v.copy() for k, v in initial_params.items()}
-        self.learning_rate  = learning_rate
-        self.n_train        = n_train
-
-        self.on_worker_connected   = on_worker_connected
-        self.on_gradients_received = on_gradients_received
-        self.on_epoch_end          = on_epoch_end
-
-        # Sockets de cada Worker, indexados por worker_id
-        self._worker_sockets: Dict[int, socket.socket] = {}
-        # Dirección IP de cada Worker, para mostrar en la GUI
-        self._worker_addrs:   Dict[int, str]           = {}
-        self._lock = threading.Lock()
-
-        # Gradientes y métricas acumulados en la época actual
-        self._epoch_gradients: Dict[int, Dict[str, np.ndarray]] = {}
-        self._epoch_metrics:   Dict[int, Tuple[float, float]]   = {}
-
-        # Historial de métricas por época (accuracy y loss globales)
-        self.history: Dict[str, List[float]] = {
-            "accuracies": [],
-            "losses":     [],
-        }
-
-    # ================================================================
-    # PUNTO DE ENTRADA PRINCIPAL
-    # ================================================================
-
-    def run(self, epochs: int) -> Dict[str, List[float]]:
+    ) -> Dict[str, List[float]]:
         """
-        Inicia el servidor, espera conexiones y ejecuta el entrenamiento.
+        Ejecuta una sesión de entrenamiento con los Workers conectados.
 
-        Bloquea hasta que el entrenamiento completa todas las épocas.
+        Puede llamarse múltiples veces; cada llamada es independiente
+        y comienza desde ``initial_params``.
 
         :param epochs: Número de épocas a entrenar.
         :type epochs: int
 
-        :return: Historial con ``accuracies`` y ``losses`` por época.
+        :param initial_params: Pesos iniciales de la red (W1, b1, W2, b2).
+        :type initial_params: Dict[str, np.ndarray]
+
+        :param learning_rate: Tasa de aprendizaje.
+        :type learning_rate: float
+
+        :param n_train: Total de ejemplos de entrenamiento.
+        :type n_train: int
+
+        :return: Historial con ``"accuracies"`` y ``"losses"`` por época.
         :rtype: Dict[str, List[float]]
+
+        :raises RuntimeError: Si no hay Workers conectados.
         """
+        worker_ids = self.connected_workers
+        if not worker_ids:
+            raise RuntimeError(
+                "No hay Workers conectados. "
+                "Inicia al menos un Worker antes de entrenar."
+            )
+
+        params = {k: v.copy() for k, v in initial_params.items()}
+
+        history: Dict[str, List[float]] = {
+            "accuracies": [],
+            "losses": [],
+        }
+
         print("=" * 70)
-        print("PARAMETER SERVER — ALGORITMO DE DIEGO DISTRIBUIDO")
+        print("PARAMETER SERVER — INICIANDO ENTRENAMIENTO")
         print("=" * 70)
-        print(f"  Escuchando en     : {self.host}:{self.port}")
-        print(f"  Workers esperados : {self.num_workers}")
-        print(f"  Épocas            : {epochs}")
-        print(f"  Learning rate     : {self.learning_rate}")
-        print(f"  Ejemplos train    : {self.n_train}")
+        print(f"  Workers activos : {worker_ids}")
+        print(f"  Épocas          : {epochs}")
+        print(f"  Learning rate   : {learning_rate}")
+        print(f"  Ejemplos train  : {n_train}")
         print("=" * 70)
 
-        self._accept_workers()
-        self._run_training_loop(epochs)
-        self._broadcast_stop()
-
-        return self.history
-
-    # ================================================================
-    # ACEPTACIÓN DE CONEXIONES
-    # ================================================================
-
-    def _accept_workers(self) -> None:
-        """
-        Acepta exactamente ``num_workers`` conexiones TCP.
-
-        Bloquea hasta que todos los Workers se hayan conectado y
-        enviado su mensaje READY. Llama a ``on_worker_connected``
-        por cada Worker que se registra.
-        """
-        server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        server_sock.bind((self.host, self.port))
-        server_sock.listen(self.num_workers)
-
-        print(f"\n[PS] Esperando {self.num_workers} worker(s)...")
-
-        while len(self._worker_sockets) < self.num_workers:
-            conn, addr = server_sock.accept()
-            msg = receive_message(conn)
-
-            if msg["type"] != MsgType.READY:
-                conn.close()
-                continue
-
-            worker_id  = msg["payload"]["worker_id"]
-            addr_str   = f"{addr[0]}:{addr[1]}"
-
-            with self._lock:
-                self._worker_sockets[worker_id] = conn
-                self._worker_addrs[worker_id]   = addr_str
-
-            print(f"[PS] Worker {worker_id} conectado desde {addr_str}")
-
-            if self.on_worker_connected is not None:
-                self.on_worker_connected(worker_id, addr_str)
-
-        server_sock.close()
-        print(f"[PS] Todos los workers conectados. Iniciando entrenamiento.\n")
-
-    # ================================================================
-    # LOOP PRINCIPAL DE ENTRENAMIENTO
-    # ================================================================
-
-    def _run_training_loop(self, epochs: int) -> None:
-        """
-        Ejecuta el loop de entrenamiento distribuido por épocas.
-
-        Por cada época:
-            1. Divide índices en chunks disjuntos (sin solapamiento).
-            2. Hace broadcast params + índices a cada Worker.
-            3. Lanza un hilo receptor por Worker.
-            4. Espera (barrera) a que todos entreguen gradientes.
-            5. Promedia gradientes y actualiza pesos.
-            6. Llama a on_epoch_end con las métricas globales.
-
-        :param epochs: Total de épocas.
-        :type epochs: int
-        """
-        worker_ids = sorted(self._worker_sockets.keys())
+        # Notifica a los Workers que va a comenzar una sesión
+        self._broadcast(
+            MsgType.TRAIN_START,
+            {"epochs": epochs, "n_train": n_train},
+            worker_ids,
+        )
 
         for epoch in range(1, epochs + 1):
             print(f"[PS] ── Época {epoch}/{epochs} ──────────────────────────")
@@ -246,25 +328,24 @@ class ParameterServer:
             self._epoch_gradients.clear()
             self._epoch_metrics.clear()
 
-            index_chunks = self._split_indices(worker_ids)
+            index_chunks = self._split_indices(worker_ids, n_train)
 
-            done_event     = threading.Event()
+            done_event = threading.Event()
             received_count = [0]
 
             def _receive_from_worker(wid: int) -> None:
-                """Hilo receptor: espera los gradientes de un Worker."""
                 try:
                     msg = receive_message(self._worker_sockets[wid])
                     if msg["type"] == MsgType.GRADIENTS:
                         payload = msg["payload"]
-                        loss     = payload["loss"]
+                        loss = payload["loss"]
                         accuracy = payload["accuracy"]
 
                         with self._lock:
                             self._epoch_gradients[wid] = payload["gradients"]
-                            self._epoch_metrics[wid]   = (loss, accuracy)
+                            self._epoch_metrics[wid] = (loss, accuracy)
                             received_count[0] += 1
-                            all_done = received_count[0] == self.num_workers
+                            all_done = received_count[0] == len(worker_ids)
 
                         if self.on_gradients_received is not None:
                             self.on_gradients_received(wid, epoch, loss, accuracy)
@@ -274,24 +355,29 @@ class ParameterServer:
 
                 except Exception as exc:
                     print(f"[PS] Error recibiendo de Worker {wid}: {exc}")
+                    self._remove_worker(wid)
                     with self._lock:
                         received_count[0] += 1
-                        if received_count[0] == self.num_workers:
+                        if received_count[0] == len(worker_ids):
                             done_event.set()
 
-            # Broadcast: parámetros + índices asignados a cada Worker
+            # Broadcast: params + índices
             for wid in worker_ids:
-                send_message(
-                    self._worker_sockets[wid],
-                    MsgType.PARAMS,
-                    {
-                        "epoch":   epoch,
-                        "params":  self.params,
-                        "indices": index_chunks[wid],
-                    },
-                )
+                try:
+                    send_message(
+                        self._worker_sockets[wid],
+                        MsgType.PARAMS,
+                        {
+                            "epoch": epoch,
+                            "params": params,
+                            "indices": index_chunks[wid],
+                        },
+                    )
+                except Exception as exc:
+                    print(f"[PS] Error enviando a Worker {wid}: {exc}")
+                    self._remove_worker(wid)
 
-            # Lanza un hilo receptor por Worker
+            # Lanza receptores
             threads = [
                 threading.Thread(
                     target=_receive_from_worker,
@@ -299,85 +385,113 @@ class ParameterServer:
                     daemon=True,
                 )
                 for wid in worker_ids
+                if wid in self._worker_sockets
             ]
             for t in threads:
                 t.start()
 
-            # Barrera: espera a que todos los Workers entreguen gradientes
             done_event.wait()
             for t in threads:
                 t.join()
 
-            # Promedia gradientes y actualiza pesos
-            avg_grads = self._average_gradients(list(self._epoch_gradients.values()))
-            self._apply_gradients(avg_grads)
+            if not self._epoch_gradients:
+                print("[PS] Sin gradientes — todos los Workers fallaron.")
+                break
 
-            # Métricas globales de la época
-            losses     = [m[0] for m in self._epoch_metrics.values()]
+            avg_grads = self._average_gradients(list(self._epoch_gradients.values()))
+            self._apply_gradients(params, avg_grads, learning_rate)
+
+            losses = [m[0] for m in self._epoch_metrics.values()]
             accuracies = [m[1] for m in self._epoch_metrics.values()]
             epoch_loss = float(np.mean(losses))
-            epoch_acc  = float(np.mean(accuracies))
+            epoch_acc = float(np.mean(accuracies))
 
-            self.history["losses"].append(epoch_loss)
-            self.history["accuracies"].append(epoch_acc)
+            history["losses"].append(epoch_loss)
+            history["accuracies"].append(epoch_acc)
 
             elapsed = time.perf_counter() - t_start
             print(
-                f"[PS]   loss={epoch_loss:.4f}  acc={epoch_acc:.2f}%  "
-                f"({elapsed:.2f}s)"
+                f"[PS]   loss={epoch_loss:.4f}  acc={epoch_acc:.2f}%  ({elapsed:.2f}s)"
             )
 
             if self.on_epoch_end is not None:
                 self.on_epoch_end(epoch, epochs, epoch_acc, epoch_loss)
 
+        print("[PS] Entrenamiento completado.\n")
+        return history
+
     # ================================================================
-    # DIVISIÓN DE ÍNDICES
+    # HELPERS INTERNOS
     # ================================================================
 
+    def _broadcast(
+        self,
+        msg_type: MsgType,
+        payload: Any,
+        worker_ids: List[int],
+    ) -> None:
+        """Envía el mismo mensaje a todos los Workers indicados."""
+        for wid in worker_ids:
+            with self._lock:
+                sock = self._worker_sockets.get(wid)
+            if sock is None:
+                continue
+            try:
+                send_message(sock, msg_type, payload)
+            except Exception as exc:
+                print(f"[PS] Error haciendo broadcast a Worker {wid}: {exc}")
+                self._remove_worker(wid)
+
+    def _stop_worker(self, worker_id: int) -> None:
+        """Envía STOP y cierra el socket de un Worker."""
+        with self._lock:
+            sock = self._worker_sockets.pop(worker_id, None)
+            self._worker_addrs.pop(worker_id, None)
+        if sock is not None:
+            try:
+                send_message(sock, MsgType.STOP, None)
+                sock.close()
+            except Exception:
+                pass
+
+    def _remove_worker(self, worker_id: int) -> None:
+        """Elimina un Worker que perdió la conexión, sin enviar STOP."""
+        with self._lock:
+            sock = self._worker_sockets.pop(worker_id, None)
+            self._worker_addrs.pop(worker_id, None)
+        if sock is not None:
+            try:
+                sock.close()
+            except Exception:
+                pass
+        if self.on_worker_disconnected is not None:
+            self.on_worker_disconnected(worker_id)
+
     def _split_indices(
-        self, worker_ids: List[int]
+        self, worker_ids: List[int], n_train: int
     ) -> Dict[int, List[int]]:
         """
         Divide ``range(n_train)`` en chunks disjuntos, uno por Worker.
 
-        Los índices se mezclan antes de dividir para garantizar que
-        cada Worker ve clases balanceadas en cada época. No hay
-        solapamiento: cada índice pertenece exactamente a un Worker.
-
-        :param worker_ids: Lista de IDs de Workers conectados.
-        :type worker_ids: List[int]
-
-        :return: Diccionario ``{worker_id: [índices]}``.
-        :rtype: Dict[int, List[int]]
+        Los índices se mezclan antes de dividir para garantizar balance
+        de clases. El último Worker absorbe el residuo.
         """
-        indices = np.random.permutation(self.n_train).tolist()
+        indices = np.random.permutation(n_train).tolist()
         n = len(worker_ids)
         chunk_size = len(indices) // n
         chunks: Dict[int, List[int]] = {}
 
         for i, wid in enumerate(worker_ids):
             start = i * chunk_size
-            end   = start + chunk_size if i < n - 1 else len(indices)
+            end = start + chunk_size if i < n - 1 else len(indices)
             chunks[wid] = indices[start:end]
 
         return chunks
 
-    # ================================================================
-    # PROMEDIADO Y ACTUALIZACIÓN DE PESOS
-    # ================================================================
-
     def _average_gradients(
         self, gradients_list: List[Dict[str, np.ndarray]]
     ) -> Dict[str, np.ndarray]:
-        """
-        Implementa: ∇θ = (1/N) * Σᵢ ∇θ L(Bᵢ)
-
-        :param gradients_list: Lista de gradientes, uno por Worker.
-        :type gradients_list: List[Dict[str, np.ndarray]]
-
-        :return: Gradiente promedio.
-        :rtype: Dict[str, np.ndarray]
-        """
+        """∇θ = (1/N) * Σᵢ ∇θ L(Bᵢ)"""
         averaged: Dict[str, np.ndarray] = {}
         for key in gradients_list[0]:
             stacked = np.array([g[key] for g in gradients_list])
@@ -385,32 +499,13 @@ class ParameterServer:
         return averaged
 
     def _apply_gradients(
-        self, gradients: Dict[str, np.ndarray]
+        self,
+        params: Dict[str, np.ndarray],
+        gradients: Dict[str, np.ndarray],
+        learning_rate: float,
     ) -> None:
-        """
-        Actualiza los pesos globales: θ ← θ − lr * ∇θ
-
-        :param gradients: Gradiente promedio con claves dW1, db1, dW2, db2.
-        :type gradients: Dict[str, np.ndarray]
-        """
-        self.params["W1"] -= self.learning_rate * gradients["dW1"]
-        self.params["b1"] -= self.learning_rate * gradients["db1"]
-        self.params["W2"] -= self.learning_rate * gradients["dW2"]
-        self.params["b2"] -= self.learning_rate * gradients["db2"]
-
-    # ================================================================
-    # SEÑAL DE FIN
-    # ================================================================
-
-    def _broadcast_stop(self) -> None:
-        """
-        Envía STOP a todos los Workers y cierra las conexiones.
-        """
-        print("\n[PS] Enviando señal STOP a todos los Workers...")
-        for wid, sock in self._worker_sockets.items():
-            try:
-                send_message(sock, MsgType.STOP, None)
-                sock.close()
-            except Exception:
-                pass
-        print("[PS] Entrenamiento distribuido completado.")
+        """θ ← θ − lr * ∇θ"""
+        params["W1"] -= learning_rate * gradients["dW1"]
+        params["b1"] -= learning_rate * gradients["db1"]
+        params["W2"] -= learning_rate * gradients["dW2"]
+        params["b2"] -= learning_rate * gradients["db2"]

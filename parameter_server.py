@@ -102,25 +102,45 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Parameter Server — Algoritmo de Diego Distribuido"
     )
-    parser.add_argument("--host",    type=str,   default="0.0.0.0",
-                        help="IP en la que escucha el servidor (default: 0.0.0.0)")
-    parser.add_argument("--port",    type=int,   default=9999,
-                        help="Puerto TCP (default: 9999)")
-    parser.add_argument("--workers", type=int,   default=2,
-                        help="Número de Workers a esperar (default: 2)")
-    parser.add_argument("--epochs",  type=int,   default=10,
-                        help="Épocas de entrenamiento (default: 10)")
-    parser.add_argument("--hidden",  type=int,   default=30,
-                        help="Neuronas en la capa oculta (default: 30)")
-    parser.add_argument("--lr",      type=float, default=0.1,
-                        help="Tasa de aprendizaje (default: 0.1)")
-    parser.add_argument("--n-train", type=int,   default=10_000,
-                        help="Total de ejemplos de entrenamiento (default: 10000)")
-    parser.add_argument("--seed",    type=int,   default=None,
-                        help="Semilla aleatoria (default: ninguna)")
+    parser.add_argument(
+        "--host",
+        type=str,
+        default="0.0.0.0",
+        help="IP en la que escucha el servidor (default: 0.0.0.0)",
+    )
+    parser.add_argument(
+        "--port", type=int, default=9999, help="Puerto TCP (default: 9999)"
+    )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=2,
+        help="Número de Workers a esperar (default: 2)",
+    )
+    parser.add_argument(
+        "--epochs", type=int, default=10, help="Épocas de entrenamiento (default: 10)"
+    )
+    parser.add_argument(
+        "--hidden",
+        type=int,
+        default=30,
+        help="Neuronas en la capa oculta (default: 30)",
+    )
+    parser.add_argument(
+        "--lr", type=float, default=0.1, help="Tasa de aprendizaje (default: 0.1)"
+    )
+    parser.add_argument(
+        "--n-train",
+        type=int,
+        default=10_000,
+        help="Total de ejemplos de entrenamiento (default: 10000)",
+    )
+    parser.add_argument(
+        "--seed", type=int, default=None, help="Semilla aleatoria (default: ninguna)"
+    )
     args = parser.parse_args()
 
-    INPUT_SIZE  = 784
+    INPUT_SIZE = 784
     OUTPUT_SIZE = 10
 
     print("=" * 70)
@@ -138,13 +158,13 @@ def main() -> None:
     initial_params = _init_params(INPUT_SIZE, args.hidden, OUTPUT_SIZE, args.seed)
 
     server = ParameterServer(
-        host           = args.host,
-        port           = args.port,
-        num_workers    = args.workers,
-        initial_params = initial_params,
-        learning_rate  = args.lr,
-        n_train        = args.n_train,
-        on_epoch_end   = _on_epoch_end,
+        host=args.host,
+        port=args.port,
+        num_workers=args.workers,
+        initial_params=initial_params,
+        learning_rate=args.lr,
+        n_train=args.n_train,
+        on_epoch_end=_on_epoch_end,
     )
 
     history = server.run(epochs=args.epochs)

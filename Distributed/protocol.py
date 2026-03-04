@@ -23,36 +23,61 @@ empieza el siguiente.
 ──────────────────────────────────────────────────────────────────
 ARRAYS NUMPY EN JSON
 ──────────────────────────────────────────────────────────────────
-JSON no conoce np.ndarray. La solución es representar cada array
-como un objeto con su forma, su tipo y sus datos:
+JSON no conoce np.ndarray. Cada array se representa como:
 
-    {"__ndarray__": true, "dtype": "float64", "shape": [30, 784], "data": [[...]]}
+    {"__ndarray__": true, "dtype": "float64", "shape": [...], "data": [...]}
 
 ``encode`` convierte todos los ndarrays del payload antes de
 serializar. ``decode`` los reconstruye después de deserializar.
-Esta conversión es transparente: PS y Worker siguen trabajando
-con np.ndarray sin saber nada del formato de red.
+Esta conversión es transparente para PS y Worker.
 
 ──────────────────────────────────────────────────────────────────
-TIPOS DE MENSAJE
+TIPOS DE MENSAJE Y FLUJO
+──────────────────────────────────────────────────────────────────
+
+  Worker                          Parameter Server
+  ──────                          ────────────────
+  READY ─────────────────────────►  (se conecta; PS asigna ID)
+        ◄──────────────────────── WORKER_ID  (PS envía ID asignado)
+
+  [en espera...]
+
+        ◄──────────────────────── TRAIN_START  (PS inicia entrenamiento)
+
+  [por cada época:]
+        ◄──────────────────────── PARAMS  (params + índices)
+  GRADIENTS ─────────────────────►
+
+  [vuelve a esperar TRAIN_START para el siguiente entrenamiento]
+
+        ◄──────────────────────── STOP  (PS se apaga)
+  [Worker cierra conexión]
+
+──────────────────────────────────────────────────────────────────
+DESCRIPCIÓN DE CADA MENSAJE
 ──────────────────────────────────────────────────────────────────
 READY
-    Worker → Parameter Server
-    El worker está conectado y listo para recibir trabajo.
+    Worker → PS  |  El worker está conectado y listo.
+    payload: {}   (sin datos; el PS asigna el ID)
+
+WORKER_ID
+    PS → Worker  |  ID asignado por el PS a este Worker.
     payload: {"worker_id": int}
 
+TRAIN_START
+    PS → Worker (broadcast)  |  Comienza una sesión de entrenamiento.
+    payload: {"epochs": int, "n_train": int}
+
 PARAMS
-    Parameter Server → Worker (broadcast)
-    Parámetros globales de la red + índices del batch de esta época.
+    PS → Worker (broadcast)  |  Pesos globales + índices del batch.
     payload: {
         "epoch":   int,
         "params":  Dict[str, np.ndarray],   # W1, b1, W2, b2
-        "indices": List[int],               # índices en MNIST train
+        "indices": List[int],
     }
 
 GRADIENTS
-    Worker → Parameter Server
-    Gradientes calculados sobre el batch asignado.
+    Worker → PS  |  Gradientes calculados sobre el batch asignado.
     payload: {
         "worker_id": int,
         "epoch":     int,
@@ -62,8 +87,7 @@ GRADIENTS
     }
 
 STOP
-    Parameter Server → Worker (broadcast)
-    Señal de fin de entrenamiento; el worker debe cerrar la conexión.
+    PS → Worker (broadcast)  |  El PS se apaga; el Worker debe cerrar.
     payload: None
 """
 
@@ -88,10 +112,13 @@ class MsgType(str, Enum):
     Extiende ``str`` para que los valores sean directamente
     comparables con strings y se serialicen bien en JSON.
     """
-    READY     = "READY"
-    PARAMS    = "PARAMS"
+
+    READY = "READY"
+    WORKER_ID = "WORKER_ID"
+    TRAIN_START = "TRAIN_START"
+    PARAMS = "PARAMS"
     GRADIENTS = "GRADIENTS"
-    STOP      = "STOP"
+    STOP = "STOP"
 
 
 # ================================================================
@@ -101,15 +128,13 @@ class MsgType(str, Enum):
 
 def _arrays_to_json(obj: Any) -> Any:
     """
-    Convierte recursivamente todos los ``np.ndarray`` en un objeto
-    Python a una representación serializable en JSON.
+    Convierte recursivamente todos los ``np.ndarray`` a una
+    representación serializable en JSON.
 
     Un array se convierte en:
         {"__ndarray__": true, "dtype": "float64", "shape": [...], "data": [...]}
 
-    Cualquier otro tipo se devuelve sin cambios.
-
-    :param obj: Objeto a convertir (dict, list, ndarray, escalar…).
+    :param obj: Objeto a convertir.
     :type obj: Any
 
     :return: Objeto equivalente sin ndarrays.
@@ -118,16 +143,14 @@ def _arrays_to_json(obj: Any) -> Any:
     if isinstance(obj, np.ndarray):
         return {
             "__ndarray__": True,
-            "dtype":       str(obj.dtype),
-            "shape":       list(obj.shape),
-            "data":        obj.tolist(),
+            "dtype": str(obj.dtype),
+            "shape": list(obj.shape),
+            "data": obj.tolist(),
         }
     if isinstance(obj, dict):
         return {k: _arrays_to_json(v) for k, v in obj.items()}
     if isinstance(obj, list):
         return [_arrays_to_json(item) for item in obj]
-    # Los escalares NumPy (int64, float32, etc.) tampoco son
-    # serializables en JSON directamente; se convierten a Python nativo.
     if isinstance(obj, np.integer):
         return int(obj)
     if isinstance(obj, np.floating):
@@ -137,7 +160,7 @@ def _arrays_to_json(obj: Any) -> Any:
 
 def _json_to_arrays(obj: Any) -> Any:
     """
-    Reconstruye recursivamente los ``np.ndarray`` a partir de su
+    Reconstruye recursivamente los ``np.ndarray`` desde su
     representación JSON generada por ``_arrays_to_json``.
 
     :param obj: Objeto deserializado desde JSON.
@@ -164,20 +187,17 @@ def encode(msg_type: MsgType, payload: Any) -> bytes:
     """
     Serializa un mensaje a bytes listos para enviar por socket.
 
-    Convierte los ndarrays del payload, serializa a JSON (UTF-8)
-    y añade el prefijo de 4 bytes con la longitud.
-
     :param msg_type: Tipo del mensaje.
     :type msg_type: MsgType
 
     :param payload: Contenido del mensaje.
     :type payload: Any
 
-    :return: Bytes con prefijo de longitud seguidos del JSON codificado.
+    :return: Bytes con prefijo de longitud seguidos del JSON UTF-8.
     :rtype: bytes
     """
     message = {
-        "type":    msg_type.value,
+        "type": msg_type.value,
         "payload": _arrays_to_json(payload),
     }
     body = json.dumps(message, ensure_ascii=False).encode("utf-8")
@@ -187,8 +207,6 @@ def encode(msg_type: MsgType, payload: Any) -> bytes:
 def decode(raw: bytes) -> Dict[str, Any]:
     """
     Deserializa bytes a un diccionario de mensaje.
-
-    Reconstruye los ndarrays embebidos en el payload JSON.
 
     :param raw: Bytes del cuerpo del mensaje (sin prefijo de longitud).
     :type raw: bytes
@@ -234,9 +252,6 @@ def receive_message(sock: socket.socket) -> Dict[str, Any]:
     """
     Recibe un mensaje completo desde un socket TCP.
 
-    Primero lee los 4 bytes de longitud, luego lee exactamente
-    esa cantidad de bytes del cuerpo del mensaje.
-
     :param sock: Socket TCP conectado.
     :type sock: socket.socket
 
@@ -246,8 +261,8 @@ def receive_message(sock: socket.socket) -> Dict[str, Any]:
     :raises ConnectionError: Si el socket se cierra inesperadamente.
     """
     raw_length = _recv_exact(sock, 4)
-    length     = struct.unpack(">I", raw_length)[0]
-    raw_body   = _recv_exact(sock, length)
+    length = struct.unpack(">I", raw_length)[0]
+    raw_body = _recv_exact(sock, length)
     return decode(raw_body)
 
 
@@ -255,8 +270,8 @@ def _recv_exact(sock: socket.socket, n_bytes: int) -> bytes:
     """
     Lee exactamente ``n_bytes`` bytes de un socket.
 
-    TCP puede fragmentar los datos en varios segmentos; este helper
-    garantiza que se leen todos antes de retornar.
+    TCP puede fragmentar los datos; este helper garantiza que se
+    leen todos antes de retornar.
 
     :param sock: Socket TCP conectado.
     :type sock: socket.socket
@@ -267,7 +282,7 @@ def _recv_exact(sock: socket.socket, n_bytes: int) -> bytes:
     :return: Bytes leídos.
     :rtype: bytes
 
-    :raises ConnectionError: Si el socket se cierra antes de leer ``n_bytes``.
+    :raises ConnectionError: Si el socket se cierra antes de leer todo.
     """
     buffer = b""
     while len(buffer) < n_bytes:
