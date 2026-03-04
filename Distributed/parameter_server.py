@@ -114,13 +114,13 @@ class ParameterServer:
         # Sockets y metadatos de Workers activos
         self._worker_sockets: Dict[int, socket.socket] = {}
         self._worker_addrs: Dict[int, str] = {}
-        self._next_id: int = 0  # contador para asignar IDs
-        self._lock = threading.Lock()  # protege las estructuras anteriores
+        self._next_id: int = 0  # Contador para asignar IDs
+        self._lock = threading.Lock()  # Evita que múltiples hilos modifiquen las estructuras anteriores al mismo tiempo
 
         # Servidor TCP
-        self._server_sock: Optional[socket.socket] = None
-        self._accept_thread: Optional[threading.Thread] = None
-        self._shutdown_flag = threading.Event()
+        self._server_sock: Optional[socket.socket] = None # Socket principal
+        self._accept_thread: Optional[threading.Thread] = None # Hilo que acepta conexiones
+        self._shutdown_flag = threading.Event() # Bandera para detener el servidor
 
         # Gradientes y métricas de la época actual (reutilizados por train)
         self._epoch_gradients: Dict[int, Dict[str, np.ndarray]] = {}
@@ -143,10 +143,15 @@ class ParameterServer:
 
         self._shutdown_flag.clear()
 
+        # AF_INET = IPv4
+        # SOCK_STREAM = TCP
         self._server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+
+        # Permite reiniciar el servidor inmediatamente sin tener que esperar
+        # a que el sistema operativo libere el puerto.
         self._server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self._server_sock.bind((self.host, self.port))
-        self._server_sock.listen(32)
+        self._server_sock.bind((self.host, self.port)) # Asocia IP y puerto
+        self._server_sock.listen(32) # Permite hasta 32 conexiones en cola.
         # Timeout corto para que el hilo de aceptación pueda comprobar
         # el flag de apagado sin bloquearse indefinidamente en accept().
         self._server_sock.settimeout(1.0)
@@ -178,7 +183,7 @@ class ParameterServer:
             self._server_sock = None
 
         if self._accept_thread is not None:
-            self._accept_thread.join(timeout=3)
+            self._accept_thread.join(timeout=3) # Espera a que el hilo termine
             self._accept_thread = None
 
         print("[PS] Servidor apagado.")
@@ -205,6 +210,8 @@ class ParameterServer:
             if self._server_sock is None:
                 break
             try:
+                # conn = nuevo socket exclusivo para el Worker
+                # addr = dirección IP y puerto del Worker
                 conn, addr = self._server_sock.accept()
             except socket.timeout:
                 continue
