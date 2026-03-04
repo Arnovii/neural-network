@@ -175,7 +175,7 @@ def main() -> None:
     print("=" * 70)
     print(f"  Precisión final  : {history['accuracies'][-1]:.2f}%")
     print(f"  Mejor precisión  : {max(history['accuracies']):.2f}%")
-    print(f"  Loss final       : {history['losses'][-1]:.4f}")
+    print(f"  Pérdida final       : {history['losses'][-1]:.4f}")
     print("\n  Evolución por época:")
     for i, (acc, loss) in enumerate(zip(history["accuracies"], history["losses"]), 1):
         bar = "█" * int(acc / 5)

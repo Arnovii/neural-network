@@ -340,9 +340,15 @@ class DistributedPSApp:
 
         _add_slider(frame, "Épocas (50 – 1000):", self._v_epochs, 50, 1000)
         _add_slider(frame, "Neuronas ocultas (10 – 100):", self._v_hidden, 10, 100)
-        _add_float_input(frame, "Tasa de aprendizaje:", self._v_lr, 0.0001, 10.0)
+        _add_float_input(
+            frame, "Tasa de aprendizaje\n(0.0001 - 10):", self._v_lr, 0.0001, 10.0
+        )
         _add_integer_input(
-            frame, "Ejemplos de entrenamiento:", self._v_n_train, 100, 60000
+            frame,
+            "Ejemplos de entrenamiento\n(10 - 60000):",
+            self._v_n_train,
+            100,
+            60000,
         )
         _add_text_input(frame, "Semilla (vacío = aleatoria):", self._v_seed)
 
@@ -391,6 +397,10 @@ class DistributedPSApp:
             frame, text="Limpiar gráficas", command=self._clear_plots
         )
         btn_clear.pack(fill=tk.X, pady=4)
+        ToolTip(
+            btn_clear,
+            "Borra todas las gráficas actuales",
+        )
 
     # ── Panel derecho ─────────────────────────────────────────────
 
@@ -496,7 +506,7 @@ class DistributedPSApp:
 
     def _build_status_bar(self) -> None:
         self._status_var = tk.StringVar(
-            value="Listo — configura los parámetros y enciende el servidor."
+            value="Listo. Configura los parámetros y enciende el servidor."
         )
         ttk.Label(
             self.root,
@@ -549,13 +559,13 @@ class DistributedPSApp:
     def _setup_axes(self) -> None:
         self._ax_acc.set_title("Precisión por época")
         self._ax_acc.set_xlabel("Época")
-        self._ax_acc.set_ylabel("Accuracy (%)")
+        self._ax_acc.set_ylabel("Precisión (%)")
         self._ax_acc.set_ylim(0, 100)
         self._ax_acc.grid(True, alpha=0.3)
 
         self._ax_loss.set_title("Pérdida por época")
         self._ax_loss.set_xlabel("Época")
-        self._ax_loss.set_ylabel("Loss")
+        self._ax_loss.set_ylabel("Pérdida")
         self._ax_loss.grid(True, alpha=0.3)
 
         self._fig.tight_layout(rect=(0, 0, 1, 0.93))
@@ -625,7 +635,7 @@ class DistributedPSApp:
                 color="#2196F3",
                 linewidth=2,
                 markersize=4,
-                label="Accuracy promedio",
+                label="Precisión promedio",
             )
             self._ax_acc.legend(loc="lower right", fontsize=8)
             self._ax_loss.plot(
@@ -635,7 +645,7 @@ class DistributedPSApp:
                 color="#F44336",
                 linewidth=2,
                 markersize=4,
-                label="Loss promedio",
+                label="Pérdida promedio",
             )
             self._ax_loss.legend(loc="upper right", fontsize=8)
         self._canvas.draw()
@@ -914,13 +924,13 @@ class DistributedPSApp:
 
         self._fig.suptitle(
             f"Entrenamiento Distribuido — Época {epoch}/{total}  |  "
-            f"Acc: {accuracy:.2f}%  |  Loss: {loss:.4f}",
+            f"Precisión: {accuracy:.2f}%  |  Pérdida: {loss:.4f}",
             fontsize=12,
             fontweight="bold",
         )
         self._update_plots()
         self._status_var.set(
-            f"Época {epoch}/{total} — Accuracy: {accuracy:.2f}%  |  Loss: {loss:.4f}"
+            f"Época {epoch}/{total} — Precisión: {accuracy:.2f}%  |  Pérdida: {loss:.4f}"
         )
 
     def _on_training_done(self, history: dict) -> None:
@@ -929,8 +939,8 @@ class DistributedPSApp:
         final_loss = history["losses"][-1] if history["losses"] else 0.0
 
         self._fig.suptitle(
-            f"Completado  |  Mejor acc: {best_acc:.2f}%  |  "
-            f"Acc final: {final_acc:.2f}%",
+            f"Completado  |  Mejor precisión: {best_acc:.2f}%  |  "
+            f"Precisión final: {final_acc:.2f}%",
             fontsize=12,
             fontweight="bold",
         )
@@ -945,7 +955,7 @@ class DistributedPSApp:
         self._log("[PS] Entrenamiento completado")
         self._log(f"     Precisión final : {final_acc:.2f}%")
         self._log(f"     Mejor precisión : {best_acc:.2f}%")
-        self._log(f"     Loss final      : {final_loss:.4f}")
+        self._log(f"     Pérdida final      : {final_loss:.4f}")
         self._log("─" * 50)
 
         # Vuelve a LISTENING — los Workers siguen conectados

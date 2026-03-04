@@ -480,9 +480,15 @@ def run_interactive_mode() -> None:
             _add_slider(ctrl, "Épocas (50 - 1.000):", self.epochs_var, 50, 1000)
             _add_slider(ctrl, "Experimentos (1 - 20):", self.experiments_var, 1, 20)
             _add_slider(ctrl, "Neuronas ocultas (10 - 100):", self.hidden_var, 10, 100)
-            _add_float_input(ctrl, "Tasa de aprendizaje:", self.lr_var, 0.0001, 10.0)
+            _add_float_input(
+                ctrl, "Tasa de aprendizaje (0.0001 - 10):", self.lr_var, 0.0001, 10.0
+            )
             _add_integer_input(
-                ctrl, "Ejemplos de entrenamiento:", self.n_train_var, 100, 60000
+                ctrl,
+                "Ejemplos de entrenamiento (10 - 60000):",
+                self.n_train_var,
+                100,
+                60000,
             )
 
             # Checkbox de modo paralelo.

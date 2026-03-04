@@ -123,7 +123,7 @@ def run_single_experiment(
     # Callback que se llama al final de cada época, para mostrar métricas.
     def _on_epoch_end(epoch: int, total: int, accuracy: float, loss: float) -> None:
         _notify(
-            f"[Época {epoch}/{total}] — Precisión: {accuracy:.2f}%  Loss: {loss:.4f}]"
+            f"[Época {epoch}/{total}] — Precisión: {accuracy:.2f}%  Pérdida: {loss:.4f}]"
         )
 
     mode_label = "paralelo" if parallel else "secuencial"
