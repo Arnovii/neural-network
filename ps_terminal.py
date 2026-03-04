@@ -6,12 +6,12 @@ Punto de entrada del Parameter Server.
 ──────────────────────────────────────────────────────────────────
 USO
 ──────────────────────────────────────────────────────────────────
-    python parameter_server.py [opciones]
+    python ps_terminal.py [opciones]
 
 Opciones:
     --host          IP en la que escucha el servidor     (default: 0.0.0.0)
     --port          Puerto TCP                           (default: 9999)
-    --workers       Número de Workers esperados          (default: 2)
+    --workers       Número de Workers a esperar          (default: 2)
     --epochs        Épocas de entrenamiento              (default: 10)
     --hidden        Neuronas en la capa oculta           (default: 30)
     --lr            Tasa de aprendizaje                  (default: 0.1)
@@ -19,21 +19,28 @@ Opciones:
     --seed          Semilla aleatoria                    (default: ninguna)
 
 Ejemplo — servidor esperando 3 workers, 20 épocas:
-    python parameter_server.py --workers 3 --epochs 20
+    python ps_terminal.py --workers 3 --epochs 20
 
 ──────────────────────────────────────────────────────────────────
 ARQUITECTURA
 ──────────────────────────────────────────────────────────────────
-El PS inicializa los pesos de la red con Xavier e inmediatamente
-empieza a escuchar conexiones TCP. Una vez que todos los Workers
-se conectan, ejecuta el loop de entrenamiento distribuido:
+El PS tiene tres fases:
 
-    Por cada época:
-        1. Dividir índices 0..n_train en N chunks disjuntos.
-        2. Broadcast: enviar params + índices a cada Worker.
-        3. Esperar gradientes de TODOS los Workers (barrera).
-        4. Promediar gradientes: ∇θ = (1/N) * Σ ∇θL(Bᵢ)
-        5. Actualizar pesos:     θ ← θ − lr * ∇θ
+    1. listen()  → Abre el socket y acepta Workers en un hilo de
+                   fondo. Retorna inmediatamente.
+
+    2. Espera    → El script bloquea hasta que se conectan
+                   exactamente --workers Workers.
+
+    3. train()   → Ejecuta el loop de entrenamiento distribuido:
+                       Por cada época:
+                       a. Dividir índices 0..n_train en N chunks.
+                       b. Broadcast: params + índices a cada Worker.
+                       c. Esperar gradientes de TODOS los Workers.
+                       d. Promediar:  ∇θ = (1/N) * Σ ∇θL(Bᵢ)
+                       e. Actualizar: θ ← θ − lr * ∇θ
+
+    4. shutdown() → Envía STOP a los Workers y cierra el servidor.
 
 Al finalizar imprime el historial de precisión y pérdida por época.
 """
@@ -41,6 +48,7 @@ Al finalizar imprime el historial de precisión y pérdida por época.
 import argparse
 import os
 import sys
+import threading
 
 import numpy as np
 
@@ -163,19 +171,57 @@ def main() -> None:
     print(f"  Semilla         : {args.seed if args.seed is not None else 'aleatoria'}")
     print("=" * 70)
 
-    initial_params = _init_params(INPUT_SIZE, args.hidden, OUTPUT_SIZE, args.seed)
+    # Espera hasta que se conecten los N Workers requeridos
+    ready_event = threading.Event()
+    connected_count = [0]
 
+    def _on_worker_connected(worker_id: int, addr: str) -> None:
+        connected_count[0] += 1
+        print(
+            f"  [+] Worker {worker_id} conectado desde {addr} "
+            f"({connected_count[0]}/{args.workers})"
+        )
+        if connected_count[0] >= args.workers:
+            ready_event.set()
+
+    def _on_worker_disconnected(worker_id: int) -> None:
+        print(f"  [-] Worker {worker_id} desconectado inesperadamente.")
+
+    def _on_gradients_received(
+        worker_id: int, epoch: int, loss: float, accuracy: float
+    ) -> None:
+        print(
+            f"  [↓] Gradientes de Worker {worker_id}  "
+            f"loss={loss:.4f}  acc={accuracy:.2f}%"
+        )
+
+    # Creación del servidor
     server = ParameterServer(
         host=args.host,
         port=args.port,
-        num_workers=args.workers,
-        initial_params=initial_params,
-        learning_rate=args.lr,
-        n_train=args.n_train,
+        on_worker_connected=_on_worker_connected,
+        on_worker_disconnected=_on_worker_disconnected,
+        on_gradients_received=_on_gradients_received,
         on_epoch_end=_on_epoch_end,
     )
 
-    history = server.run(epochs=args.epochs)
+    server.listen()
+
+    print(f"\n  Esperando {args.workers} worker(s)...\n")
+    ready_event.wait()
+    print()
+
+    # Entrenamiento
+    initial_params = _init_params(INPUT_SIZE, args.hidden, OUTPUT_SIZE, args.seed)
+
+    history = server.train(
+        epochs=args.epochs,
+        initial_params=initial_params,
+        learning_rate=args.lr,
+        n_train=args.n_train,
+    )
+
+    server.shutdown()
 
     # Resumen final
     print("\n" + "=" * 70)
@@ -183,7 +229,7 @@ def main() -> None:
     print("=" * 70)
     print(f"  Precisión final  : {history['accuracies'][-1]:.2f}%")
     print(f"  Mejor precisión  : {max(history['accuracies']):.2f}%")
-    print(f"  Pérdida final       : {history['losses'][-1]:.4f}")
+    print(f"  Pérdida final    : {history['losses'][-1]:.4f}")
     print("\n  Evolución por época:")
     for i, (acc, loss) in enumerate(zip(history["accuracies"], history["losses"]), 1):
         bar = "█" * int(acc / 5)

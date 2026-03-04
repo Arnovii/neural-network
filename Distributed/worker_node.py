@@ -290,16 +290,16 @@ class WorkerNode:
         # Multiplica los pesos por cada entrada: W1 @ X_T -> (hidden_size, N),
         # b1 tiene forma (hidden_size,), una dimensión por debajo de W1 @ X_T
         # np.newaxis agrega una dimensión extra, convirtiendo (hidden_size,) en (hidden_size, 1)
-        Z1 = W1 @ X.T + b1[:, np.newaxis] # (hidden, N)
+        Z1 = W1 @ X.T + b1[:, np.newaxis]  # (hidden, N)
 
-        A1 = self._sigmoid(Z1) # (hidden, N)
-        Z2 = W2 @ A1 + b2[:, np.newaxis]# (output, N)
-        A2 = self._softmax(Z2) # (output, N)
+        A1 = self._sigmoid(Z1)  # (hidden, N)
+        Z2 = W2 @ A1 + b2[:, np.newaxis]  # (output, N)
+        A2 = self._softmax(Z2)  # (output, N)
 
         # Métricas
 
         # Escoge la clase más probable
-        predictions = np.argmax(A2, axis=0) # (N,)
+        predictions = np.argmax(A2, axis=0)  # (N,)
 
         # Cuenta cuántas predicciones fueron correctas
         correct = int(np.sum(predictions == Y))
@@ -315,13 +315,13 @@ class WorkerNode:
         Y_onehot = np.zeros((self.output_size, num_imagenes))
         Y_onehot[Y, np.arange(num_imagenes)] = 1.0
 
-        delta2 = A2 - Y_onehot # (output, N)
-        dW2 = (1.0 / num_imagenes) * (delta2 @ A1.T) # (output, hidden)
-        db2 = (1.0 / num_imagenes) * np.sum(delta2, axis=1) # (output,)
+        delta2 = A2 - Y_onehot  # (output, N)
+        dW2 = (1.0 / num_imagenes) * (delta2 @ A1.T)  # (output, hidden)
+        db2 = (1.0 / num_imagenes) * np.sum(delta2, axis=1)  # (output,)
 
-        delta1 = (W2.T @ delta2) * self._sigmoid_deriv(A1) # (hidden, N)
-        dW1 = (1.0 / num_imagenes) * (delta1 @ X) # (hidden, input)
-        db1 = (1.0 / num_imagenes) * np.sum(delta1, axis=1) # (hidden,)
+        delta1 = (W2.T @ delta2) * self._sigmoid_deriv(A1)  # (hidden, N)
+        dW1 = (1.0 / num_imagenes) * (delta1 @ X)  # (hidden, input)
+        db1 = (1.0 / num_imagenes) * np.sum(delta1, axis=1)  # (hidden,)
 
         return (
             {"dW1": dW1, "db1": db1, "dW2": dW2, "db2": db2},

@@ -248,7 +248,6 @@ def send_message(sock: socket.socket, msg_type: MsgType, payload: Any) -> None:
     total_sent = 0
 
     while total_sent < len(data):
-
         # TCP puede enviar solo parte del mensaje en una llamada a sock.send()
         sent = sock.send(data[total_sent:])
         if sent == 0:
@@ -300,7 +299,6 @@ def _recv_exact(sock: socket.socket, n_bytes: int) -> bytes:
     buffer = b""
 
     while len(buffer) < n_bytes:
-
         # Intenta leer los bytes que faltan
         chunk = sock.recv(n_bytes - len(buffer))
         if not chunk:

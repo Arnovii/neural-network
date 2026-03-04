@@ -118,9 +118,11 @@ class ParameterServer:
         self._lock = threading.Lock()  # Evita que múltiples hilos modifiquen las estructuras anteriores al mismo tiempo
 
         # Servidor TCP
-        self._server_sock: Optional[socket.socket] = None # Socket principal
-        self._accept_thread: Optional[threading.Thread] = None # Hilo que acepta conexiones
-        self._shutdown_flag = threading.Event() # Bandera para detener el servidor
+        self._server_sock: Optional[socket.socket] = None  # Socket principal
+        self._accept_thread: Optional[threading.Thread] = (
+            None  # Hilo que acepta conexiones
+        )
+        self._shutdown_flag = threading.Event()  # Bandera para detener el servidor
 
         # Gradientes y métricas de la época actual (reutilizados por train)
         self._epoch_gradients: Dict[int, Dict[str, np.ndarray]] = {}
@@ -150,8 +152,8 @@ class ParameterServer:
         # Permite reiniciar el servidor inmediatamente sin tener que esperar
         # a que el sistema operativo libere el puerto.
         self._server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self._server_sock.bind((self.host, self.port)) # Asocia IP y puerto
-        self._server_sock.listen(32) # Permite hasta 32 conexiones en cola.
+        self._server_sock.bind((self.host, self.port))  # Asocia IP y puerto
+        self._server_sock.listen(32)  # Permite hasta 32 conexiones en cola.
         # Timeout corto para que el hilo de aceptación pueda comprobar
         # el flag de apagado sin bloquearse indefinidamente en accept().
         self._server_sock.settimeout(1.0)
@@ -183,7 +185,7 @@ class ParameterServer:
             self._server_sock = None
 
         if self._accept_thread is not None:
-            self._accept_thread.join(timeout=3) # Espera a que el hilo termine
+            self._accept_thread.join(timeout=3)  # Espera a que el hilo termine
             self._accept_thread = None
 
         print("[PS] Servidor apagado.")
@@ -454,7 +456,7 @@ class ParameterServer:
     ) -> None:
         """
         Envía el mismo mensaje a todos los Workers indicados.
-        
+
         :param msg_type: Tipo de mensaje
         :type msg_type: MsgType
 
