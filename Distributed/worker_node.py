@@ -47,6 +47,7 @@ from typing import Any, Dict, Optional, Tuple
 import numpy as np
 
 from Distributed.protocol import MsgType, receive_message, send_message
+from Utils.math_utils import sigmoid, sigmoid_derivative_from_activation, softmax
 
 
 class WorkerNode:
@@ -292,9 +293,9 @@ class WorkerNode:
         # np.newaxis agrega una dimensión extra, convirtiendo (hidden_size,) en (hidden_size, 1)
         Z1 = W1 @ X.T + b1[:, np.newaxis]  # (hidden, N)
 
-        A1 = self._sigmoid(Z1)  # (hidden, N)
+        A1 = sigmoid(Z1)  # (hidden, N)
         Z2 = W2 @ A1 + b2[:, np.newaxis]  # (output, N)
-        A2 = self._softmax(Z2)  # (output, N)
+        A2 = softmax(Z2)  # (output, N)
 
         # Métricas
 
@@ -319,7 +320,7 @@ class WorkerNode:
         dW2 = (1.0 / num_imagenes) * (delta2 @ A1.T)  # (output, hidden)
         db2 = (1.0 / num_imagenes) * np.sum(delta2, axis=1)  # (output,)
 
-        delta1 = (W2.T @ delta2) * self._sigmoid_deriv(A1)  # (hidden, N)
+        delta1 = (W2.T @ delta2) * sigmoid_derivative_from_activation(A1)  # (hidden, N)
         dW1 = (1.0 / num_imagenes) * (delta1 @ X)  # (hidden, input)
         db1 = (1.0 / num_imagenes) * np.sum(delta1, axis=1)  # (hidden,)
 
@@ -328,61 +329,6 @@ class WorkerNode:
             total_loss / num_imagenes,
             100.0 * correct / num_imagenes,
         )
-
-    # ================================================================
-    # ACTIVACIONES (sin depender de Utils para que el Worker sea autónomo)
-    # ================================================================
-
-    @staticmethod
-    def _sigmoid(z: np.ndarray) -> np.ndarray:
-        """
-        Función sigmoide vectorizada: σ(z) = 1 / (1 + e^(−z)).
-
-        - Recibe un número o un arreglo de números.
-        - Aplica la fórmula elemento por elemento.
-        - Devuelve un arreglo del mismo tamaño.
-
-        :param z: Array de entrada (escalar o N-dimensional)
-        :type z: np.ndarray
-
-        :return: Array con valores en el rango (0, 1)
-        :rtype: np.ndarray
-        """
-        # np.clip recorta valores fuera del rango entre -500 y 500
-        return 1.0 / (1.0 + np.exp(-np.clip(z, -500, 500)))
-
-    @staticmethod
-    def _sigmoid_deriv(a: np.ndarray) -> np.ndarray:
-        """
-        Derivada de la sigmoide a partir de la activación: a · (1 − a).
-
-        σ'(z) = σ(z) · (1 − σ(z)) = a · (1 − a)
-
-        :param a: Activación (resultado previo de sigmoid)
-        :type a: np.ndarray
-
-        :return: Derivada evaluada en z
-        :rtype: np.ndarray
-        """
-        # Multiplicación elemento a elemento del arreglo
-        return a * (1.0 - a)
-
-    @staticmethod
-    def _softmax(z: np.ndarray) -> np.ndarray:
-        """
-        Función softmax con estabilización numérica.
-
-        :param z: Logits. Array de forma ``(clases,)`` o ``(clases, N)``
-        :type z: np.ndarray
-
-        :return: Probabilidades con la misma forma que ``z``
-        :rtype: np.ndarray
-        """
-        # keepdims=True preserva las dimensiones originales para que la resta
-        # y la división sean compatibles
-        z_stable = z - np.max(z, axis=0, keepdims=True)
-        exp_z = np.exp(z_stable)
-        return exp_z / np.sum(exp_z, axis=0, keepdims=True)
 
     # ================================================================
     # LOG
