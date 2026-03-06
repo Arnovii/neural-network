@@ -1,5 +1,5 @@
 """
-parameter_server.py
+ps_terminal.py
 
 Punto de entrada del Parameter Server.
 
@@ -42,6 +42,10 @@ El PS tiene tres fases:
 
     4. shutdown() → Envía STOP a los Workers y cierra el servidor.
 
+Las etiquetas MNIST se cargan aquí (solo Y_train, ~240 KB) para
+pasar al PS la información necesaria para la partición estratificada.
+Los datos (imágenes) nunca salen de cada Worker.
+
 Al finalizar imprime el historial de precisión y pérdida por época.
 """
 
@@ -57,6 +61,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from Distributed.parameter_server import ParameterServer
 from Utils.math_utils import xavier_initialization, vector_zeros
+from Utils.mnist_loader import load_mnist_labels
 
 
 # ================================================================
@@ -211,14 +216,21 @@ def main() -> None:
     ready_event.wait()
     print()
 
-    # Entrenamiento
+    # Inicializa pesos
     initial_params = _init_params(INPUT_SIZE, args.hidden, OUTPUT_SIZE, args.seed)
 
+    # Carga etiquetas para partición estratificada
+    print(f"\nCargando etiquetas MNIST ({args.n_train} ejemplos)...")
+    Y_train = load_mnist_labels(n_train=args.n_train)
+    print("Etiquetas listas.\n")
+
+    # Entrenamiento
     history = server.train(
         epochs=args.epochs,
         initial_params=initial_params,
         learning_rate=args.lr,
         n_train=args.n_train,
+        Y_train=Y_train,
     )
 
     server.shutdown()

@@ -283,6 +283,7 @@ class ParameterServer:
         initial_params: Dict[str, np.ndarray],
         learning_rate: float,
         n_train: int,
+        Y_train: np.ndarray,
     ) -> Dict[str, List[float]]:
         """
         Ejecuta una sesión de entrenamiento con los Workers conectados.
@@ -301,6 +302,11 @@ class ParameterServer:
 
         :param n_train: Total de ejemplos de entrenamiento.
         :type n_train: int
+
+        :param Y_train: Etiquetas de entrenamiento, forma ``(n_train,)``.
+                        Se usa exclusivamente para la partición estratificada;
+                        los datos nunca se envían por red.
+        :type Y_train: np.ndarray
 
         :return: Historial con ``"accuracies"`` y ``"losses"`` por época.
         :rtype: Dict[str, List[float]]
@@ -346,7 +352,7 @@ class ParameterServer:
             self._epoch_gradients.clear()
             self._epoch_metrics.clear()
 
-            index_chunks = self._split_indices(worker_ids, n_train)
+            index_chunks = self._split_indices(worker_ids, n_train, Y_train)
 
             done_event = threading.Event()
 
@@ -503,39 +509,53 @@ class ParameterServer:
             self.on_worker_disconnected(worker_id)
 
     def _split_indices(
-        self, worker_ids: List[int], n_train: int
+        self,
+        worker_ids: List[int],
+        n_train: int,
+        Y_train: np.ndarray,
     ) -> Dict[int, List[int]]:
         """
-        Divide el conjunto de índices ``range(n_train)`` en subconjuntos
-        disjuntos, asignando uno a cada Worker.
+        Divide los índices de entrenamiento en chunks disjuntos y
+        estratificados, uno por Worker.
 
-        Los índices se mezclan aleatoriamente antes de dividirse para
-        garantizar una distribución balanceada de clases entre Workers.
-        El último Worker absorbe cualquier residuo si ``n_train`` no es
-        divisible exactamente por el número de Workers.
+        Estratificación significa que cada Worker recibe aproximadamente
+        la misma proporción de cada clase (dígito 0–9). Esto se logra
+        con un reparto Round Robin por clase, igual que en
+        ``data_partitioner.py``, pero devolviendo solo índices (no datos)
+        para no romper el protocolo distribuido.
 
-        :param worker_ids: Lista de IDs de Workers activos que
-                        recibirán una partición de los datos.
+        Sin estratificación, una permutación aleatoria con pocos Workers
+        puede producir batches desbalanceados, lo que sesga los gradientes
+        de cada Worker aunque el promediado lo amortigüe parcialmente.
+
+        :param worker_ids: IDs de los Workers conectados.
         :type worker_ids: List[int]
 
-        :param n_train: Número total de ejemplos de entrenamiento.
+        :param n_train: Total de ejemplos de entrenamiento.
         :type n_train: int
 
-        :return: Diccionario que mapea cada ``worker_id`` a la lista
-                de índices que deberá procesar en la época actual.
-        :rtype: Dict[int, List[int]]
+        :param Y_train: Etiquetas ``(n_train,)``, solo para estratificar.
+        :type Y_train: np.ndarray
+
+        :return: Diccionario ``{worker_id: [índices]}``.
         """
-        indices = np.random.permutation(n_train).tolist()
-        num_workers = len(worker_ids)
-        chunk_size = len(indices) // num_workers
-        chunks: Dict[int, List[int]] = {}
+        n = len(worker_ids)
+        partitions: Dict[int, List[int]] = {wid: [] for wid in worker_ids}
 
-        for i, wid in enumerate(worker_ids):
-            start = i * chunk_size
-            end = start + chunk_size if i < num_workers - 1 else len(indices)
-            chunks[wid] = indices[start:end]
+        for digit in range(10):
+            # Índices de todos los ejemplos de esta clase
+            class_indices = np.where(Y_train[:n_train] == digit)[0].tolist()
+            np.random.shuffle(class_indices)
 
-        return chunks
+            # Round Robin: reparte los índices de esta clase entre Workers
+            for i, idx in enumerate(class_indices):
+                partitions[worker_ids[i % n]].append(idx)
+
+        # Mezcla dentro de cada partición para que no quede ordenada por clase
+        for wid in worker_ids:
+            np.random.shuffle(partitions[wid])
+
+        return partitions
 
     def _average_gradients(
         self, gradients_list: List[Dict[str, np.ndarray]]

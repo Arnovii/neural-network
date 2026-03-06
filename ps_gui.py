@@ -68,6 +68,7 @@ import numpy as np
 
 from Distributed.parameter_server import ParameterServer
 from Utils.math_utils import xavier_initialization, vector_zeros
+from Utils.mnist_loader import load_mnist_labels
 
 
 # ================================================================
@@ -775,15 +776,24 @@ class DistributedPSApp:
         q = self._q
         server = self._server
 
+        if server is None:
+            messagebox.showerror("Error", "Servidor no disponible")
+            self._state = self._S_LISTENING
+            self._refresh_buttons()
+            return
+
         def _train_thread() -> None:
             try:
-                if server is None:
-                    raise RuntimeError("Server not initialized")
+                # Carga solo las etiquetas (~60 KB) para la partición
+                # estratificada. No se leen las imágenes (~47 MB).
+                Y_train = load_mnist_labels(n_train=n_train)
+
                 history = server.train(
                     epochs=epochs,
                     initial_params=initial_params,
                     learning_rate=lr,
                     n_train=n_train,
+                    Y_train=Y_train,
                 )
                 q.put(("training_done", history))
             except Exception as exc:

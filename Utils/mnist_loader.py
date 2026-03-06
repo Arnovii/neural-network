@@ -179,3 +179,95 @@ def load_mnist_test(
         print(f"\n✓ {len(X)} ejemplos de prueba cargados")
 
     return X, Y
+
+
+# ========================
+# CARGA SOLO DE ETIQUETAS
+# ========================
+
+
+def load_mnist_labels(
+    data_dir: str | None = None,
+    n_train: int | None = None,
+    download_if_missing: bool = True,
+) -> np.ndarray:
+    """
+    Carga únicamente las etiquetas del conjunto de entrenamiento de MNIST.
+
+    Lee el archivo IDX de etiquetas directamente (``train-labels-idx1-ubyte``,
+    ~60 KB), sin tocar el archivo de imágenes (~47 MB). Útil cuando solo
+    se necesitan las clases, por ejemplo para la partición estratificada
+    del Parameter Server.
+
+    Si el archivo todavía no existe en disco, lo descarga usando
+    ``torchvision`` (que también descarga las imágenes en ese primer uso,
+    pero eso solo ocurre una vez).
+
+    Formato IDX de etiquetas:
+        Bytes 0–3 : número mágico (0x00000801)
+        Bytes 4–7 : número total de etiquetas (int32 big-endian)
+        Bytes 8…  : una etiqueta por byte (uint8), valor en {0, …, 9}
+
+    :param data_dir: Directorio raíz de MNIST (contiene ``MNIST/raw/``).
+                     Si es None, se usa el directorio ``Data/`` del proyecto.
+    :type data_dir: str | None
+
+    :param n_train: Número de etiquetas a devolver.
+                    Si es None se devuelven las 60 000.
+                    Si es menor al total se devuelven las primeras ``n_train``
+                    (mismas posiciones que usaría ``load_mnist_train``
+                    sin semilla, es decir, en orden natural).
+    :type n_train: int | None
+
+    :param download_if_missing: Si True y el archivo no existe, lo descarga
+                                mediante torchvision antes de leerlo.
+    :type download_if_missing: bool
+
+    :return: Array de forma ``(n_train,)`` con etiquetas en ``{0, …, 9}``,
+             dtype ``int32``.
+    :rtype: np.ndarray
+
+    :raises FileNotFoundError: Si el archivo no existe y
+                               ``download_if_missing=False``.
+    :raises ValueError: Si ``n_train`` supera el total disponible.
+    """
+    import struct
+
+    if data_dir is None:
+        data_dir = get_data_directory()
+
+    label_path = os.path.join(data_dir, "MNIST", "raw", "train-labels-idx1-ubyte")
+
+    # Si el archivo no existe, usa torchvision solo para descargarlo
+    if not os.path.exists(label_path):
+        if not download_if_missing:
+            raise FileNotFoundError(
+                f"Archivo de etiquetas no encontrado: {label_path}\n"
+                "Pasa download_if_missing=True para descargarlo."
+            )
+        from torchvision import datasets
+
+        datasets.MNIST(
+            root=data_dir,
+            train=True,
+            download=True,
+            transform=None,
+        )
+
+    # Lee el archivo IDX directamente — sin cargar imágenes
+    with open(label_path, "rb") as f:
+        magic, total = struct.unpack(">II", f.read(8))
+        if magic != 0x00000801:
+            raise ValueError(
+                f"Número mágico inesperado: {magic:#010x} (se esperaba 0x00000801)"
+            )
+
+        if n_train is not None and n_train > total:
+            raise ValueError(
+                f"n_train ({n_train}) supera los ejemplos disponibles ({total})"
+            )
+
+        count = n_train if n_train is not None else total
+        raw = f.read(count)  # un byte por etiqueta
+
+    return np.frombuffer(raw, dtype=np.uint8).astype(np.int32)
