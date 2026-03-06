@@ -5,7 +5,7 @@ Módulos
 -------
 parameter_server    Clase ParameterServer: ciclo de vida TCP + entrenamiento.
 worker_node         Clase WorkerNode: cálculo de gradientes sobre un batch.
-protocol            Protocolo de mensajes JSON sobre TCP (MsgType, send/receive).
+protocol            Protocolo de mensajes Pickle sobre TCP (MsgType, send/receive).
 
 Uso rápido
 ----------

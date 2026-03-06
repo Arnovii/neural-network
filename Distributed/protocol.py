@@ -6,14 +6,14 @@ Protocolo de comunicación entre el Parameter Server y los Workers.
 ──────────────────────────────────────────────────────────────────
 FORMATO DE MENSAJE
 ──────────────────────────────────────────────────────────────────
-Cada mensaje es un diccionario Python serializado como JSON (UTF-8)
-y precedido de 4 bytes (big-endian) que indican la longitud del
-string codificado:
+Cada mensaje es un diccionario Python serializado con Pickle y
+precedido de 4 bytes (big-endian) que indican la longitud del
+bloque serializado:
 
     ┌──────────────┬────────────────────────────────────────────┐
     │  4 bytes     │  N bytes                                   │
-    │  longitud N  │  json.dumps({"type": ..., "payload": …})   │
-    │  (big-endian)│  codificado como UTF-8                     │
+    │  longitud N  │  pickle.dumps({"type": MsgType,            │
+    │  (big-endian)│               "payload": …})               │
     └──────────────┴────────────────────────────────────────────┘
 
 El prefijo de longitud es imprescindible porque TCP es un stream:
@@ -21,15 +21,16 @@ sin él no hay forma de saber dónde termina un mensaje y dónde
 empieza el siguiente.
 
 ──────────────────────────────────────────────────────────────────
-ARRAYS NUMPY EN JSON
+POR QUÉ PICKLE EN VEZ DE JSON
 ──────────────────────────────────────────────────────────────────
-JSON no conoce np.ndarray. Cada array se representa como:
+Pickle serializa np.ndarray de forma nativa y binaria. Las
+ventajas frente a JSON son:
 
-    {"__ndarray__": true, "dtype": "float64", "shape": [...], "data": [...]}
-
-``encode`` convierte todos los ndarrays del payload antes de
-serializar. ``decode`` los reconstruye después de deserializar.
-Esta conversión es transparente para PS y Worker.
+  • Sin conversión ndarray ↔ lista: los arrays se serializan
+    directamente en su representación binaria (float64 / int32).
+  • Tamaño en red mucho menor: un array (784,) float64 ocupa
+    ~6 KB en Pickle vs ~15 KB en JSON.
+  • Más rápido: no hay llamadas a .tolist() ni parsing de texto.
 
 ──────────────────────────────────────────────────────────────────
 TIPOS DE MENSAJE Y FLUJO
@@ -91,13 +92,11 @@ STOP
     payload: None
 """
 
-import json
+import pickle
 import socket
 import struct
 from enum import Enum
 from typing import Any, Dict
-
-import numpy as np
 
 
 # ================================================================
@@ -122,63 +121,6 @@ class MsgType(str, Enum):
 
 
 # ================================================================
-# CONVERSIÓN NDARRAY ↔ JSON
-# ================================================================
-
-
-def _arrays_to_json(obj: Any) -> Any:
-    """
-    Convierte recursivamente todos los ``np.ndarray`` a una
-    representación serializable en JSON.
-
-    Un array se convierte en:
-        {"__ndarray__": true, "dtype": "float64", "shape": [...], "data": [...]}
-
-    :param obj: Objeto a convertir.
-    :type obj: Any
-
-    :return: Objeto equivalente sin ndarrays.
-    :rtype: Any
-    """
-    if isinstance(obj, np.ndarray):
-        return {
-            "__ndarray__": True,
-            "dtype": str(obj.dtype),
-            "shape": list(obj.shape),
-            "data": obj.tolist(),
-        }
-    if isinstance(obj, dict):
-        return {k: _arrays_to_json(v) for k, v in obj.items()}
-    if isinstance(obj, list):
-        return [_arrays_to_json(item) for item in obj]
-    if isinstance(obj, np.integer):
-        return int(obj)
-    if isinstance(obj, np.floating):
-        return float(obj)
-    return obj
-
-
-def _json_to_arrays(obj: Any) -> Any:
-    """
-    Reconstruye recursivamente los ``np.ndarray`` desde su
-    representación JSON generada por ``_arrays_to_json``.
-
-    :param obj: Objeto deserializado desde JSON.
-    :type obj: Any
-
-    :return: Objeto con ndarrays reconstruidos.
-    :rtype: Any
-    """
-    if isinstance(obj, dict):
-        if obj.get("__ndarray__") is True:
-            return np.array(obj["data"], dtype=obj["dtype"])
-        return {k: _json_to_arrays(v) for k, v in obj.items()}
-    if isinstance(obj, list):
-        return [_json_to_arrays(item) for item in obj]
-    return obj
-
-
-# ================================================================
 # SERIALIZACIÓN
 # ================================================================
 
@@ -190,20 +132,18 @@ def encode(msg_type: MsgType, payload: Any) -> bytes:
     :param msg_type: Tipo del mensaje.
     :type msg_type: MsgType
 
-    :param payload: Contenido del mensaje.
+    :param payload: Contenido del mensaje. Puede contener np.ndarray
+                    directamente; Pickle los serializa sin conversión.
     :type payload: Any
 
-    :return: Bytes con prefijo de longitud seguidos del JSON UTF-8.
+    :return: Bytes con prefijo de longitud seguidos del bloque Pickle.
     :rtype: bytes
     """
-    message = {
-        "type": msg_type.value,
-        "payload": _arrays_to_json(payload),
-    }
-    body = json.dumps(message, ensure_ascii=False).encode("utf-8")
+    message = {"type": msg_type, "payload": payload}
+    body = pickle.dumps(message, protocol=pickle.HIGHEST_PROTOCOL)
 
     # Convierte la longitud del mensaje en un prefijo de 4 bytes en formato big-endian.
-    # Luego, se concatena el prefrijo con el mensaje real.
+    # Luego, se concatena el prefijo con el mensaje real.
     return struct.pack(">I", len(body)) + body
 
 
@@ -217,9 +157,7 @@ def decode(raw: bytes) -> Dict[str, Any]:
     :return: Diccionario con claves ``"type"`` y ``"payload"``.
     :rtype: Dict[str, Any]
     """
-    message = json.loads(raw.decode("utf-8"))
-    message["payload"] = _json_to_arrays(message["payload"])
-    return message
+    return pickle.loads(raw)
 
 
 # ================================================================
