@@ -706,7 +706,7 @@ class DistributedPSApp:
         self._refresh_buttons()
         self._log(f"[PS] Servidor encendido en {host}:{port}")
         self._status_var.set(
-            f"Servidor escuchando en {host}:{port} — esperando Workers..."
+            f"Servidor escuchando en {host}:{port}. Esperando Workers..."
         )
 
         # Arranca el poller

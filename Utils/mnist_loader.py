@@ -206,7 +206,7 @@ def load_mnist_labels(
     Formato IDX de etiquetas:
         Bytes 0–3 : número mágico (0x00000801)
         Bytes 4–7 : número total de etiquetas (int32 big-endian)
-        Bytes 8…  : una etiqueta por byte (uint8), valor en {0, …, 9}
+        Bytes 8...  : una etiqueta por byte (uint8), valor en {0, …, 9}
 
     :param data_dir: Directorio raíz de MNIST (contiene ``MNIST/raw/``).
                      Si es None, se usa el directorio ``Data/`` del proyecto.
@@ -254,9 +254,11 @@ def load_mnist_labels(
             transform=None,
         )
 
-    # Lee el archivo IDX directamente — sin cargar imágenes
+    # Lee el archivo IDX directamente, sin cargar imágenes
     with open(label_path, "rb") as f:
+        # Lee los primeros 8 bytes del archivo en big endian
         magic, total = struct.unpack(">II", f.read(8))
+        # Confirma que el archivo realmente es un archivo de etiquetas MNIST
         if magic != 0x00000801:
             raise ValueError(
                 f"Número mágico inesperado: {magic:#010x} (se esperaba 0x00000801)"
@@ -267,7 +269,9 @@ def load_mnist_labels(
                 f"n_train ({n_train}) supera los ejemplos disponibles ({total})"
             )
 
+        # Determina cuántas etiquetas leer
         count = n_train if n_train is not None else total
         raw = f.read(count)  # un byte por etiqueta
 
+    # Convierte los bytes en un array de NumPy de tipo int32
     return np.frombuffer(raw, dtype=np.uint8).astype(np.int32)

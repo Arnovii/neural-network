@@ -321,7 +321,7 @@ class ParameterServer:
             )
 
         # Crea una copia de los parámetros iniciales
-        params = {k: v.copy() for k, v in initial_params.items()}
+        params = {tipo: datos.copy() for tipo, datos in initial_params.items()}
 
         history: Dict[str, List[float]] = {
             "accuracies": [],
