@@ -42,7 +42,8 @@ Tipos de mensaje en la cola:
     ("gradients_received",   {"worker_id": int, "epoch": int,
                               "loss": float, "accuracy": float})
     ("epoch_end",            {"epoch": int, "total": int,
-                              "accuracy": float, "loss": float})
+                              "accuracy": float, "loss": float,
+                              "test_accuracy": float | None, "test_loss": float | None})
     ("training_done",        history: dict)
     ("error",                exc: Exception)
 """
@@ -68,7 +69,7 @@ import numpy as np
 
 from Distributed.parameter_server import ParameterServer
 from Utils.math_utils import xavier_initialization, vector_zeros
-from Utils.mnist_loader import load_mnist_labels
+from Utils.mnist_loader import load_mnist_labels, load_mnist_test
 
 
 # ================================================================
@@ -174,6 +175,8 @@ class DistributedPSApp:
         self._worker_grads: dict = {}
         self._acc_history: list = []
         self._loss_history: list = []
+        self._test_acc_history: list = []
+        self._test_loss_history: list = []
         self._total_epochs: int = 0
 
         self._build_ui()
@@ -636,8 +639,18 @@ class DistributedPSApp:
                 color="#2196F3",
                 linewidth=2,
                 markersize=4,
-                label="Precisión promedio",
+                label="Entrenamiento",
             )
+            if self._test_acc_history:
+                self._ax_acc.plot(
+                    list(range(1, len(self._test_acc_history) + 1)),
+                    self._test_acc_history,
+                    "s--",
+                    color="#FF9800",
+                    linewidth=2,
+                    markersize=4,
+                    label="Prueba",
+                )
             self._ax_acc.legend(loc="lower right", fontsize=8)
             self._ax_loss.plot(
                 epochs,
@@ -646,14 +659,26 @@ class DistributedPSApp:
                 color="#F44336",
                 linewidth=2,
                 markersize=4,
-                label="Pérdida promedio",
+                label="Entrenamiento",
             )
+            if self._test_loss_history:
+                self._ax_loss.plot(
+                    list(range(1, len(self._test_loss_history) + 1)),
+                    self._test_loss_history,
+                    "s--",
+                    color="#FF9800",
+                    linewidth=2,
+                    markersize=4,
+                    label="Prueba",
+                )
             self._ax_loss.legend(loc="upper right", fontsize=8)
         self._canvas.draw()
 
     def _clear_plots(self) -> None:
         self._acc_history.clear()
         self._loss_history.clear()
+        self._test_acc_history.clear()
+        self._test_loss_history.clear()
         self._update_plots()
         self._status_var.set("Gráficas limpiadas.")
 
@@ -687,10 +712,17 @@ class DistributedPSApp:
                     {"worker_id": wid, "epoch": ep, "loss": loss, "accuracy": acc},
                 )
             ),
-            on_epoch_end=lambda ep, tot, acc, loss: q.put(
+            on_epoch_end=lambda ep, tot, train_acc, train_loss, test_acc, test_loss: q.put(
                 (
                     "epoch_end",
-                    {"epoch": ep, "total": tot, "accuracy": acc, "loss": loss},
+                    {
+                        "epoch": ep,
+                        "total": tot,
+                        "accuracy": train_acc,
+                        "loss": train_loss,
+                        "test_accuracy": test_acc,
+                        "test_loss": test_loss,
+                    },
                 )
             ),
         )
@@ -748,6 +780,8 @@ class DistributedPSApp:
         # Reinicia historial y barras para esta sesión
         self._acc_history.clear()
         self._loss_history.clear()
+        self._test_acc_history.clear()
+        self._test_loss_history.clear()
         self._total_epochs = epochs
         self._epoch_bar.configure(maximum=epochs)
         self._epoch_bar["value"] = 0
@@ -766,8 +800,8 @@ class DistributedPSApp:
         n_workers = len(self._worker_status)
         self._log(
             f"[PS] Iniciando entrenamiento — "
-            f"{n_workers} worker(s)  epochs={epochs}  "
-            f"lr={lr}  n_train={n_train}"
+            f"{n_workers} worker(s)  épocas={epochs}  "
+            f"lr={lr}  ejemplos={n_train}"
         )
         self._status_var.set(
             f"Entrenando — {n_workers} worker(s)  |  {epochs} épocas  |  lr={lr}"
@@ -788,12 +822,17 @@ class DistributedPSApp:
                 # estratificada. No se leen las imágenes (~47 MB).
                 Y_train = load_mnist_labels(n_train=n_train)
 
+                # Carga el conjunto de prueba completo para evaluación por época
+                X_test, Y_test = load_mnist_test(verbose=False)
+
                 history = server.train(
                     epochs=epochs,
                     initial_params=initial_params,
                     learning_rate=lr,
                     n_train=n_train,
                     Y_train=Y_train,
+                    X_test=X_test,
+                    Y_test=Y_test,
                 )
                 q.put(("training_done", history))
             except Exception as exc:
@@ -913,16 +952,21 @@ class DistributedPSApp:
         self._worker_status[wid] = self._ST_DONE
         self._update_worker_row(wid)
 
-        self._log(f"[W{wid}] Época {epoch} — loss={loss:.4f}  acc={accuracy:.2f}%")
+        self._log(f"[W{wid}] Época {epoch} — precisión={accuracy:.2f}%  pérdida={loss:.4f}")
 
     def _on_epoch_end(self, payload: dict) -> None:
         epoch = payload["epoch"]
         total = payload["total"]
         accuracy = payload["accuracy"]
         loss = payload["loss"]
+        test_acc = payload.get("test_accuracy")
+        test_loss = payload.get("test_loss")
 
         self._acc_history.append(accuracy)
         self._loss_history.append(loss)
+        if test_acc is not None:
+            self._test_acc_history.append(test_acc)
+            self._test_loss_history.append(test_loss)
 
         self._epoch_bar["value"] = epoch
         self._epoch_var.set(f"{epoch} / {total}")
@@ -932,52 +976,68 @@ class DistributedPSApp:
             self._worker_status[wid] = self._ST_COMPUTING
             self._update_worker_row(wid)
 
+        test_str = (
+            f"  |  Prueba: {test_acc:.2f}%  Pérdida={test_loss:.4f}"
+            if test_acc is not None
+            else ""
+        )
         self._fig.suptitle(
             f"Entrenamiento Distribuido — Época {epoch}/{total}  |  "
-            f"Precisión: {accuracy:.2f}%  |  Pérdida: {loss:.4f}",
+            f"Entrenamiento: {accuracy:.2f}%  Pérdida: {loss:.4f}{test_str}",
             fontsize=12,
             fontweight="bold",
         )
         self._update_plots()
         self._status_var.set(
-            f"Época {epoch}/{total} — Precisión: {accuracy:.2f}%  |  Pérdida: {loss:.4f}"
+            f"Época {epoch}/{total} — Entrenamiento: {accuracy:.2f}%  Pérdida: {loss:.4f}{test_str}"
         )
 
     def _on_training_done(self, history: dict) -> None:
-        final_acc = history["accuracies"][-1] if history["accuracies"] else 0.0
-        best_acc = max(history["accuracies"]) if history["accuracies"] else 0.0
+        final_train = history["accuracies"][-1] if history["accuracies"] else 0.0
+        best_train = max(history["accuracies"]) if history["accuracies"] else 0.0
         final_loss = history["losses"][-1] if history["losses"] else 0.0
 
-        self._fig.suptitle(
-            f"Completado  |  Mejor precisión: {best_acc:.2f}%  |  "
-            f"Precisión final: {final_acc:.2f}%",
-            fontsize=12,
-            fontweight="bold",
+        has_test = bool(history.get("test_accuracies"))
+        final_test = history["test_accuracies"][-1] if has_test else None
+        best_test = max(history["test_accuracies"]) if has_test else None
+        final_test_loss = history["test_losses"][-1] if has_test else None
+
+        title = (
+            f"Completado  |  Mejor Entrenamiento: {best_train:.2f}%  |  Entrenamiento Final: {final_train:.2f}%"
         )
+        if best_test is not None:
+            title += f"  |  Mejor Prueba: {best_test:.2f}%"
+        self._fig.suptitle(title, fontsize=12, fontweight="bold")
         self._update_plots()
 
-        # Marca todos los Workers como "Conectado" (listos para otro entrenamiento)
+        # Marca todos los Workers como "Conectado"
         for wid in self._worker_status:
             self._worker_status[wid] = self._ST_CONNECTED
             self._update_worker_row(wid)
 
         self._log("─" * 50)
         self._log("[PS] Entrenamiento completado")
-        self._log(f"     Precisión final : {final_acc:.2f}%")
-        self._log(f"     Mejor precisión : {best_acc:.2f}%")
-        self._log(f"     Pérdida final      : {final_loss:.4f}")
+        self._log(f"     Precisión final de entrenamiento  : {final_train:.2f}%")
+        self._log(f"     Mejor precisión de entrenamiento  : {best_train:.2f}%")
+        self._log(f"     Pérdida final de entrenamiento    : {final_loss:.4f}")
+        if final_test is not None:
+            self._log(f"     Precisión final de prueba   : {final_test:.2f}%")
+            self._log(f"     Mejor precisión de prueba   : {best_test:.2f}%")
+            self._log(f"     Pérdida final de prueba     : {final_test_loss:.4f}")
         self._log("─" * 50)
 
-        # Vuelve a LISTENING — los Workers siguen conectados
+        # Vuelve a LISTENING
         self._state = self._S_LISTENING
         self._refresh_buttons()
 
-        self._status_var.set(
-            f"Entrenamiento completado — "
-            f"Precisión final: {final_acc:.2f}%  |  "
-            f"Mejor: {best_acc:.2f}%  |  "
-            f"Workers conectados: {len(self._worker_status)}"
+        status = (
+            f"Entrenamiento completado — Entrenamiento: {final_train:.2f}%  "
+            f"Mejor: {best_train:.2f}%"
         )
+        if final_test is not None:
+            status += f"  |  Prueba: {final_test:.2f}%  Mejor Prueba: {best_test:.2f}%"
+        status += f"  |  Workers: {len(self._worker_status)}"
+        self._status_var.set(status)
 
     def _on_error(self, exc: Exception) -> None:
         self._log(f"[ERROR] {exc}")

@@ -49,8 +49,9 @@ on_worker_disconnected(worker_id)
 on_gradients_received(worker_id, epoch, loss, accuracy)
     Llamado cada vez que se reciben los gradientes de un Worker.
 
-on_epoch_end(epoch, total_epochs, accuracy, loss)
+on_epoch_end(epoch, total_epochs, train_accuracy, train_loss, test_accuracy, test_loss)
     Llamado tras promediar gradientes y actualizar pesos.
+    ``test_accuracy`` y ``test_loss`` son None si no se pasaron datos de prueba.
 """
 
 import socket
@@ -61,6 +62,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 import numpy as np
 
 from Distributed.protocol import MsgType, receive_message, send_message
+from Utils.math_utils import sigmoid, softmax
 
 
 class ParameterServer:
@@ -90,7 +92,10 @@ class ParameterServer:
     :type on_gradients_received: Callable | None
 
     :param on_epoch_end: Callback al final de cada época.
-                         Firma: ``(epoch, total_epochs, accuracy, loss)``
+                           Firma: ``(epoch, total_epochs, train_accuracy, train_loss,
+                           test_accuracy, test_loss)``.
+                           ``test_accuracy`` y ``test_loss`` son None si no se
+                           proporcionaron datos de prueba.
     :type on_epoch_end: Callable | None
     """
 
@@ -284,6 +289,8 @@ class ParameterServer:
         learning_rate: float,
         n_train: int,
         Y_train: np.ndarray,
+        X_test: Optional[np.ndarray] = None,
+        Y_test: Optional[np.ndarray] = None,
     ) -> Dict[str, List[float]]:
         """
         Ejecuta una sesión de entrenamiento con los Workers conectados.
@@ -308,7 +315,17 @@ class ParameterServer:
                         los datos nunca se envían por red.
         :type Y_train: np.ndarray
 
-        :return: Historial con ``"accuracies"`` y ``"losses"`` por época.
+        :param X_test: Imágenes del conjunto de prueba, forma ``(N_test, 784)``.
+                       Si se proporciona junto con ``Y_test``, el PS evaluará
+                       el modelo global después de cada época.
+        :type X_test: np.ndarray | None
+
+        :param Y_test: Etiquetas del conjunto de prueba, forma ``(N_test,)``.
+        :type Y_test: np.ndarray | None
+
+        :return: Historial con ``"accuracies"``, ``"losses"``,
+                 ``"test_accuracies"`` y ``"test_losses"`` por época.
+                 Las listas de test están vacías si no se pasaron datos de prueba.
         :rtype: Dict[str, List[float]]
 
         :raises RuntimeError: Si no hay Workers conectados.
@@ -326,6 +343,8 @@ class ParameterServer:
         history: Dict[str, List[float]] = {
             "accuracies": [],
             "losses": [],
+            "test_accuracies": [],
+            "test_losses": [],
         }
 
         print("=" * 70)
@@ -439,13 +458,27 @@ class ParameterServer:
             history["losses"].append(epoch_loss)
             history["accuracies"].append(epoch_acc)
 
+            # Evalúa sobre datos de prueba (si se proporcionaron)
+            test_acc: Optional[float] = None
+            test_loss: Optional[float] = None
+            if X_test is not None and Y_test is not None:
+                test_acc, test_loss = self._evaluate(params, X_test, Y_test)
+                history["test_accuracies"].append(test_acc)
+                history["test_losses"].append(test_loss)
+
             elapsed = time.perf_counter() - t_start
+            test_str = (
+                f"  precisión_prueba={test_acc:.2f}%  pérdida_prueba={test_loss:.4f}"
+                if test_acc is not None
+                else ""
+            )
             print(
-                f"[PS]   loss={epoch_loss:.4f}  acc={epoch_acc:.2f}%  ({elapsed:.2f}s)"
+                f"[PS]   precisión={epoch_acc:.2f}%  pérdida={epoch_loss:.4f}"
+                f"{test_str}  ({elapsed:.2f}s)"
             )
 
             if self.on_epoch_end is not None:
-                self.on_epoch_end(epoch, epochs, epoch_acc, epoch_loss)
+                self.on_epoch_end(epoch, epochs, epoch_acc, epoch_loss, test_acc, test_loss)
 
         print("[PS] Entrenamiento completado.\n")
         return history
@@ -633,3 +666,44 @@ class ParameterServer:
         params["b1"] -= learning_rate * gradients["db1"]
         params["W2"] -= learning_rate * gradients["dW2"]
         params["b2"] -= learning_rate * gradients["db2"]
+
+    def _evaluate(
+        self,
+        params: Dict[str, np.ndarray],
+        X: np.ndarray,
+        Y: np.ndarray,
+    ) -> Tuple[float, float]:
+        """
+        Hace Forward Pass sobre ``X`` con los parámetros
+        actuales y devuelve precisión y pérdida sobre el conjunto dado.
+
+        No modifica ``params`` ni calcula gradientes.
+
+        :param params: Parámetros globales actualizados (W1, b1, W2, b2).
+        :type params: Dict[str, np.ndarray]
+
+        :param X: Imágenes de evaluación, forma ``(N, 784)``.
+        :type X: np.ndarray
+
+        :param Y: Etiquetas, forma ``(N,)``.
+        :type Y: np.ndarray
+
+        :return: ``(accuracy_pct, mean_loss)``
+        :rtype: Tuple[float, float]
+        """
+        W1, b1 = params["W1"], params["b1"]
+        W2, b2 = params["W2"], params["b2"]
+        n = X.shape[0]
+
+        Z1 = W1 @ X.T + b1[:, np.newaxis]
+        A1 = sigmoid(Z1)
+        Z2 = W2 @ A1 + b2[:, np.newaxis]
+        A2 = softmax(Z2)
+
+        predictions = np.argmax(A2, axis=0)
+        accuracy = 100.0 * float(np.sum(predictions == Y)) / n
+
+        log_probs = np.log(np.clip(A2, 1e-15, 1.0))
+        loss = -float(np.sum(log_probs[Y, np.arange(n)])) / n
+
+        return accuracy, loss
