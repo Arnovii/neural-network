@@ -1,9 +1,6 @@
 # Red Neuronal con Algoritmo de Diego para MNIST
 
-Proyecto de redes neuronales que implementa el **Algoritmo de Diego** (promediado de gradientes por época) sobre el dataset MNIST. Incluye dos modos de ejecución independientes:
-
-- **Local** — experimentos en una sola máquina con paralelismo de hilos (`main.py`).
-- **Distribuido** — entrenamiento real sobre varias máquinas con Parameter Server y Workers conectados por TCP (`ps_terminal.py` / `ps_gui.py` + `worker.py`).
+Proyecto de redes neuronales que implementa el **Algoritmo de Diego** (promediado de gradientes por época) sobre el dataset MNIST en modo distribuido con Parameter Server y Workers conectados por TCP.
 
 ---
 
@@ -11,30 +8,20 @@ Proyecto de redes neuronales que implementa el **Algoritmo de Diego** (promediad
 
 ```
 neural-network/
-├── Analytics/               # Motor de experimentos, estadísticas y gráficas
-│   ├── experiment_runner.py
-│   ├── statistics_engine.py
-│   └── chart_generator.py
 ├── Data/
 │   └── MNIST/raw/           # Dataset MNIST (se descarga automáticamente)
 ├── Distributed/             # Núcleo del sistema distribuido
 │   ├── parameter_server.py  # Clase ParameterServer (lógica TCP + entrenamiento)
 │   ├── worker_node.py       # Clase WorkerNode (forward + backward + gradientes)
-│   └── protocol.py          # Serialización de mensajes JSON sobre TCP
-├── Networks/
-│   └── nn_diego.py          # Red neuronal (álgebra lineal pura, sin frameworks)
-├── Parallel/
-│   ├── worker.py            # Worker local (hilo)
-│   └── core_validator.py
-├── Results/                 # JSONs de experimentos anteriores
+│   └── protocol.py          # Serialización de mensajes Pickle sobre TCP
+├── Model/                   # Lógica central de la red neuronal
+│   └── nn.py                # init_params, forward_pass, cross_entropy_loss, apply_gradients
 ├── Utils/
-│   ├── math_utils.py        # Xavier, softmax, sigmoid, etc.
-│   ├── mnist_loader.py      # Carga y descarga de MNIST
-│   └── data_partitioner.py
-├── main.py                  # Modo local: experimentos con paralelismo de hilos
-├── ps_terminal.py           # Modo distribuido: Parameter Server (terminal)
-├── ps_gui.py                # Modo distribuido: Parameter Server (GUI Tkinter)
-├── worker.py                # Modo distribuido: Worker Node
+│   ├── math_utils.py        # Xavier, softmax, sigmoid, average_arrays_dict, etc.
+│   └── mnist_loader.py      # Carga y descarga de MNIST
+├── ps_terminal.py           # Parameter Server (interfaz de terminal)
+├── ps_gui.py                # Parameter Server (interfaz gráfica Tkinter)
+├── worker.py                # Worker Node
 ├── pyproject.toml
 └── requirements.txt
 ```
@@ -53,51 +40,17 @@ pip install -r requirements.txt
 uv sync
 ```
 
-Dependencias principales: `numpy`, `matplotlib`, `mplcursors`, `psutil`.  
+Dependencias principales: `numpy`, `matplotlib`, `torchvision` (solo para descargar MNIST).  
 MNIST se descarga automáticamente en `Data/MNIST/raw/` al primer uso.
 
 ---
 
-## Modo 1 — Local (una sola máquina)
-
-Ejecuta el Algoritmo de Diego usando hilos locales como "workers" paralelos.
-
-### Terminal
-
-```bash
-# Experimento básico: 2 particiones, 5 épocas, 10 repeticiones
-python main.py --partitions 2 --epochs 5 --experiments 10
-
-# Configuración extendida
-python main.py --partitions 3 --epochs 10 --experiments 5 \
-               --hidden-neurons 50 --learning-rate 0.5 --n-train 8000
-
-# Ver todas las opciones
-python main.py --help
-```
-
-| Opción | Descripción | Default |
-|---|---|---|
-| `-p`, `--partitions` | Número de particiones (workers locales) | 2 |
-| `-e`, `--epochs` | Épocas de entrenamiento | 10 |
-| `-x`, `--experiments` | Repeticiones del experimento | 5 |
-| `--hidden-neurons` | Neuronas en la capa oculta | 30 |
-| `--learning-rate` | Tasa de aprendizaje | 0.1 |
-| `--n-train` | Ejemplos de entrenamiento a usar | 10 000 |
-
-### Interfaz Gráfica (GUI)
-
-```bash
-python main.py --interactive
-```
-
----
-
-## Modo 2 — Distribuido (varias máquinas)
+## Modo Distribuido (varias máquinas)
 
 El Parameter Server (PS) gestiona los pesos globales. Cada Worker carga MNIST
-localmente, recibe índices del PS, calcula gradientes sobre su batch y los
-devuelve. El PS promedia los gradientes y actualiza los pesos.
+localmente, recibe los parámetros actuales y una semilla del PS, reconstruye
+su propio chunk de datos localmente, calcula gradientes y los devuelve.
+El PS promedia los gradientes y actualiza los pesos.
 
 ```
 Worker 0 ──┐
@@ -118,11 +71,12 @@ listen()        → Abre el socket TCP, acepta Workers en un hilo de fondo.
 
 train(...)      → Ejecuta el loop de entrenamiento:
                     Por cada época:
-                      1. Divide índices 0..n_train en N chunks disjuntos.
-                      2. Broadcast: envía params + índices a cada Worker.
-                      3. Espera gradientes de TODOS los Workers (barrera).
-                      4. Promedia: ∇θ = (1/N) × Σ ∇θᵢ
-                      5. Actualiza: θ ← θ − lr × ∇θ
+                      1. Genera una semilla aleatoria de época.
+                      2. Broadcast: envía params + semilla a cada Worker.
+                      3. Cada Worker reconstruye su chunk localmente (sin red).
+                      4. Espera gradientes de TODOS los Workers (barrera).
+                      5. Promedia: ∇θ = (1/N) × Σ ∇θᵢ
+                      6. Actualiza: θ ← θ − lr × ∇θ
 
 shutdown()      → Envía STOP a todos los Workers y cierra el socket.
 ```
@@ -203,16 +157,16 @@ python worker.py
 
 ## Protocolo de Comunicación
 
-Los mensajes se transmiten como JSON precedidos de 4 bytes (big-endian) con la
-longitud del mensaje. Los arrays NumPy se codifican como objetos JSON con
-`__ndarray__: true`.
+Los mensajes se serializan con **Pickle** y van precedidos de 4 bytes (big-endian)
+con la longitud del bloque. Pickle serializa `np.ndarray` de forma binaria nativa,
+lo que elimina conversiones y reduce el tamaño en red respecto a JSON.
 
 | Mensaje | Dirección | Descripción |
 |---|---|---|
 | `READY` | Worker → PS | El Worker se conecta y solicita un ID |
 | `WORKER_ID` | PS → Worker | PS asigna un ID único al Worker |
-| `TRAIN_START` | PS → Workers | Inicia una sesión de entrenamiento |
-| `PARAMS` | PS → Workers | Pesos globales + índices del batch para la época |
+| `TRAIN_START` | PS → Workers | Inicia una sesión; envía `epochs`, `n_train`, `n_workers`, `worker_rank` |
+| `PARAMS` | PS → Workers | Pesos globales + semilla de época (el Worker reconstruye su chunk localmente) |
 | `GRADIENTS` | Worker → PS | Gradientes calculados sobre el batch asignado |
 | `STOP` | PS → Workers | Finaliza la sesión; Workers cierran la conexión |
 
@@ -228,5 +182,10 @@ Entrada (784) → Oculta (hidden, σ) → Salida (10, softmax)
 
 - **Forward:** `Z1 = W1·Xᵀ + b1` → `A1 = σ(Z1)` → `Z2 = W2·A1 + b2` → `A2 = softmax(Z2)`
 - **Backward:** gradientes estándar por retropropagación.
+- **Pérdida:** entropía cruzada promediada por muestra.
 - **Inicialización:** Xavier para W1 y W2; ceros para b1 y b2.
 - **Implementación:** álgebra lineal pura con NumPy (sin PyTorch ni TensorFlow).
+
+La lógica de red (forward pass, pérdida, inicialización y actualización de pesos)
+está centralizada en `Model/nn.py` y es compartida por el Parameter Server y
+los Workers.
