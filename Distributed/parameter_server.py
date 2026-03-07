@@ -312,7 +312,6 @@ class ParameterServer:
         initial_params: Dict[str, np.ndarray],
         learning_rate: float,
         n_train: int,
-        Y_train: np.ndarray,
         X_test: Optional[np.ndarray] = None,
         Y_test: Optional[np.ndarray] = None,
     ) -> Dict[str, List[float]]:
@@ -334,11 +333,6 @@ class ParameterServer:
         :param n_train: Total de ejemplos de entrenamiento.
         :type n_train: int
 
-        :param Y_train: Etiquetas de entrenamiento, forma ``(n_train,)``.
-                        Se usan para regenerar la partición estratificada
-                        localmente en cada Worker (vía semilla por época).
-                        Los datos y los índices nunca se envían por red.
-        :type Y_train: np.ndarray
 
         :param X_test: Imágenes del conjunto de prueba, forma ``(N_test, 784)``.
                        Si se proporciona junto con ``Y_test``, el PS evaluará

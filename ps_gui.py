@@ -70,7 +70,7 @@ import numpy as np
 
 from Distributed.parameter_server import ParameterServer
 from Utils.math_utils import xavier_initialization, vector_zeros
-from Utils.mnist_loader import load_mnist_labels, load_mnist_test
+from Utils.mnist_loader import load_mnist_test
 
 
 # ================================================================
@@ -853,10 +853,6 @@ class DistributedPSApp:
 
         def _train_thread() -> None:
             try:
-                # Carga solo las etiquetas (~60 KB) para la partición
-                # estratificada. No se leen las imágenes (~47 MB).
-                Y_train = load_mnist_labels(n_train=n_train)
-
                 # Carga el conjunto de prueba completo para evaluación por época
                 X_test, Y_test = load_mnist_test(verbose=False)
 
@@ -865,7 +861,6 @@ class DistributedPSApp:
                     initial_params=initial_params,
                     learning_rate=lr,
                     n_train=n_train,
-                    Y_train=Y_train,
                     X_test=X_test,
                     Y_test=Y_test,
                 )
