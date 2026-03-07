@@ -262,11 +262,6 @@ def main() -> None:
     # Inicializa pesos
     initial_params = _init_params(INPUT_SIZE, args.hidden, OUTPUT_SIZE, args.seed)
 
-    # Carga etiquetas para partición estratificada
-    print(f"\nCargando etiquetas MNIST ({args.n_train} ejemplos)...")
-    Y_train = load_mnist_labels(n_train=args.n_train)
-    print("Etiquetas listas.\n")
-
     # Carga datos de prueba para evaluación por época en el PS
     print("Cargando datos de prueba MNIST (10 000 ejemplos)...")
     X_test, Y_test = load_mnist_test(verbose=False)
@@ -278,7 +273,6 @@ def main() -> None:
         initial_params=initial_params,
         learning_rate=args.lr,
         n_train=args.n_train,
-        Y_train=Y_train,
         X_test=X_test,
         Y_test=Y_test,
     )
