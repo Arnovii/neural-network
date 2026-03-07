@@ -8,10 +8,9 @@ from Utils.math_utils import (
     softmax,
     vector_zeros,
     xavier_initialization,
-    average_network_parameters,
+    average_arrays_dict,
 )
 from Utils.mnist_loader import load_mnist_train, load_mnist_test
-from Utils.data_partitioner import partition_mnist_data_simple
 
 __all__ = [
     "sigmoid",
@@ -19,8 +18,7 @@ __all__ = [
     "softmax",
     "vector_zeros",
     "xavier_initialization",
-    "average_network_parameters",
+    "average_arrays_dict",
     "load_mnist_train",
     "load_mnist_test",
-    "partition_mnist_data_simple",
 ]

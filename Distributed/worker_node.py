@@ -50,7 +50,8 @@ from typing import Any, Dict, Optional, Tuple
 import numpy as np
 
 from Distributed.protocol import MsgType, receive_message, send_message
-from Utils.math_utils import sigmoid, sigmoid_derivative_from_activation, softmax
+from Model.nn import cross_entropy_loss, forward_pass
+from Utils.math_utils import sigmoid_derivative_from_activation
 
 
 class WorkerNode:
@@ -249,9 +250,9 @@ class WorkerNode:
         Procesa un mensaje PARAMS: reconstruye los índices localmente
         a partir de la semilla, calcula gradientes y los envía.
 
-        La partición es idéntica a la que el PS habría calculado con
-        ``_split_indices``: Round Robin estratificado por clase (0-9)
-        con la misma semilla → mismo resultado, cero índices por red.
+        La partición es un Round Robin estratificado por clase (0-9)
+        con la misma semilla, es decir, mismo resultado. Esto significa
+        cero índices por red.
 
         :param payload:     Dict con ``epoch``, ``params``, ``seed``.
         :param n_train:     Total de ejemplos (recibido en TRAIN_START).
@@ -374,35 +375,16 @@ class WorkerNode:
 
         :return: ``(gradients, loss, accuracy)``
         """
-        W1, b1 = params["W1"], params["b1"]
-        W2, b2 = params["W2"], params["b2"]
+        W2 = params["W2"]
         num_imagenes = len(X)
 
         # Forward
-
-        # Multiplica los pesos por cada entrada: W1 @ X_T -> (hidden_size, N),
-        # b1 tiene forma (hidden_size,), una dimensión por debajo de W1 @ X_T
-        # np.newaxis agrega una dimensión extra, convirtiendo (hidden_size,) en (hidden_size, 1)
-        Z1 = W1 @ X.T + b1[:, np.newaxis]  # (hidden, N)
-
-        A1 = sigmoid(Z1)  # (hidden, N)
-        Z2 = W2 @ A1 + b2[:, np.newaxis]  # (output, N)
-        A2 = softmax(Z2)  # (output, N)
+        A1, A2 = forward_pass(params, X)
 
         # Métricas
-
-        # Escoge la clase más probable
         predictions = np.argmax(A2, axis=0)  # (N,)
-
-        # Cuenta cuántas predicciones fueron correctas
         correct = int(np.sum(predictions == Y))
-
-        # Calcula el error usando "cross-entropy"
-        log_probs = np.log(np.clip(A2, 1e-15, 1.0))
-
-        # log_probs[Y, np.arange(n)] significa:
-        # Para cada muestra, toma el logaritmo de la probabilidad de su clase correcta
-        total_loss = -float(np.sum(log_probs[Y, np.arange(num_imagenes)]))
+        mean_loss = cross_entropy_loss(A2, Y)
 
         # Backward
         Y_onehot = np.zeros((self.output_size, num_imagenes))
@@ -418,7 +400,7 @@ class WorkerNode:
 
         return (
             {"dW1": dW1, "db1": db1, "dW2": dW2, "db2": db2},
-            total_loss / num_imagenes,
+            mean_loss,
             100.0 * correct / num_imagenes,
         )
 

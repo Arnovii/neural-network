@@ -66,10 +66,9 @@ except ImportError as e:
     print("Instala con: pip install matplotlib")
     sys.exit(1)
 
-import numpy as np
 
 from Distributed.parameter_server import ParameterServer
-from Utils.math_utils import xavier_initialization, vector_zeros
+from Model.nn import init_params
 from Utils.mnist_loader import load_mnist_test
 
 
@@ -800,15 +799,7 @@ class DistributedPSApp:
             return
 
         # Inicializar pesos
-        if seed is not None:
-            np.random.seed(seed)
-
-        initial_params = {
-            "W1": xavier_initialization(784, hidden),
-            "b1": vector_zeros(hidden),
-            "W2": xavier_initialization(hidden, 10),
-            "b2": vector_zeros(10),
-        }
+        initial_params = init_params(784, hidden, 10, seed)
 
         # Reinicia historial y barras para esta sesión
         self._acc_history.clear()

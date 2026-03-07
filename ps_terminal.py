@@ -54,53 +54,13 @@ import os
 import sys
 import threading
 
-import numpy as np
 
 # Asegura que los módulos del proyecto sean importables
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from Distributed.parameter_server import ParameterServer
-from Utils.math_utils import xavier_initialization, vector_zeros
-from Utils.mnist_loader import load_mnist_labels, load_mnist_test
-
-
-# ================================================================
-# INICIALIZACIÓN DE PARÁMETROS
-# ================================================================
-
-
-def _init_params(
-    input_size: int,
-    hidden_size: int,
-    output_size: int,
-    seed: int | None,
-) -> dict:
-    """
-    Inicializa los parámetros de la red con Xavier.
-
-    :param input_size: Neuronas de entrada.
-    :type input_size: int
-
-    :param hidden_size: Neuronas en la capa oculta.
-    :type hidden_size: int
-
-    :param output_size: Neuronas de salida (clases).
-    :type output_size: int
-
-    :param seed: Semilla aleatoria para reproducibilidad.
-    :type seed: int|None
-
-    :return: Diccionario con W1, b1, W2, b2.
-    """
-    if seed is not None:
-        np.random.seed(seed)
-
-    return {
-        "W1": xavier_initialization(input_size, hidden_size),
-        "b1": vector_zeros(hidden_size),
-        "W2": xavier_initialization(hidden_size, output_size),
-        "b2": vector_zeros(output_size),
-    }
+from Model.nn import init_params
+from Utils.mnist_loader import load_mnist_test
 
 
 # ================================================================
@@ -260,7 +220,7 @@ def main() -> None:
     print()
 
     # Inicializa pesos
-    initial_params = _init_params(INPUT_SIZE, args.hidden, OUTPUT_SIZE, args.seed)
+    initial_params = init_params(INPUT_SIZE, args.hidden, OUTPUT_SIZE, args.seed)
 
     # Carga datos de prueba para evaluación por época en el PS
     print("Cargando datos de prueba MNIST (10 000 ejemplos)...")

@@ -67,7 +67,8 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 import numpy as np
 
 from Distributed.protocol import MsgType, receive_message, send_message
-from Utils.math_utils import sigmoid, softmax
+from Model.nn import cross_entropy_loss, forward_pass
+from Utils.math_utils import average_arrays_dict
 
 
 class ParameterServer:
@@ -485,7 +486,7 @@ class ParameterServer:
                 print("[PS] Sin gradientes — todos los Workers fallaron.")
                 break
 
-            avg_grads = self._average_gradients(list(self._epoch_gradients.values()))
+            avg_grads = average_arrays_dict(list(self._epoch_gradients.values()))
             self._apply_gradients(params, avg_grads, learning_rate)
 
             # Promedia métricas
@@ -583,42 +584,6 @@ class ParameterServer:
         if self.on_worker_disconnected is not None:
             self.on_worker_disconnected(worker_id)
 
-    def _average_gradients(
-        self, gradients_list: List[Dict[str, np.ndarray]]
-    ) -> Dict[str, np.ndarray]:
-        """
-        Calcula el promedio elemento a elemento de los gradientes
-        enviados por múltiples Workers.
-
-        Implementa la operación:
-
-            ∇θ = (1/N) * Σᵢ ∇θᵢ
-
-        donde N es el número de Workers y ∇θᵢ representa el gradiente
-        calculado localmente por el Worker i sobre su subconjunto de datos.
-
-        Se asume que todos los diccionarios de ``gradients_list`` contienen
-        exactamente las mismas claves.
-
-        :param gradients_list: Lista de diccionarios de gradientes,
-                            uno por Worker. Cada diccionario debe
-                            contener las mismas claves (por ejemplo,
-                            ``"dW1"``, ``"db1"``, etc.) y valores de tipo
-                            ``np.ndarray``.
-        :type gradients_list: List[Dict[str, np.ndarray]]
-
-        :return: Diccionario con los gradientes promediados para cada
-                parámetro del modelo.
-        :rtype: Dict[str, np.ndarray]
-
-        :raises ValueError: Si ``gradients_list`` está vacío.
-        """
-        averaged: Dict[str, np.ndarray] = {}
-        for key in gradients_list[0]:
-            stacked = np.array([g[key] for g in gradients_list])
-            averaged[key] = np.mean(stacked, axis=0)
-        return averaged
-
     def _apply_gradients(
         self,
         params: Dict[str, np.ndarray],
@@ -680,19 +645,11 @@ class ParameterServer:
         :return: ``(accuracy_pct, mean_loss)``
         :rtype: Tuple[float, float]
         """
-        W1, b1 = params["W1"], params["b1"]
-        W2, b2 = params["W2"], params["b2"]
         n = X.shape[0]
-
-        Z1 = W1 @ X.T + b1[:, np.newaxis]
-        A1 = sigmoid(Z1)
-        Z2 = W2 @ A1 + b2[:, np.newaxis]
-        A2 = softmax(Z2)
+        _, A2 = forward_pass(params, X)
 
         predictions = np.argmax(A2, axis=0)
         accuracy = 100.0 * float(np.sum(predictions == Y)) / n
-
-        log_probs = np.log(np.clip(A2, 1e-15, 1.0))
-        loss = -float(np.sum(log_probs[Y, np.arange(n)])) / n
+        loss = cross_entropy_loss(A2, Y)
 
         return accuracy, loss

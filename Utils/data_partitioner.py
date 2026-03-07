@@ -1,11 +1,16 @@
 """
 Utils/data_partitioner.py
 
-Este módulo se encarga de dividir el dataset MNIST en varias particiones
-manteniendo el balance de clases (estratificación).
+DEPRECADO — Este módulo ya no se usa en el proyecto.
 
-Si el dataset tiene 10 clases (0–9), cada partición tendrá aproximadamente
-la misma proporción de cada número.
+La partición de datos pasó a realizarse localmente en cada Worker
+(``Distributed/worker_node.py``, método ``_reconstruct_indices``):
+el Parameter Server envía únicamente una semilla ``int`` por época y
+cada Worker reconstruye su propio chunk estratificado en microsegundos,
+sin transferir ningún índice por red.
+
+La función ``partition_mnist_data_simple`` se conserva por compatibilidad
+histórica pero no debe usarse en código nuevo.
 """
 
 import numpy as np

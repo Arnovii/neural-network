@@ -142,26 +142,29 @@ def xavier_initialization(fan_in: int, fan_out: int) -> np.ndarray:
 # ===========================================
 
 
-def average_network_parameters(parameters_list: List[Dict[str, Any]]) -> Dict[str, Any]:
+def average_arrays_dict(dicts_list: List[Dict[str, Any]]) -> Dict[str, Any]:
     """
-    Promedia múltiples conjuntos de parámetros de redes neuronales.
+    Promedia elemento a elemento los valores de una lista de diccionarios
+    de arrays (parámetros, gradientes, etc.).
 
-    :param parameters_list: Lista de diccionarios con W1, b1, W2, b2
-    :type parameters_list: List[Dict[str, Any]]
+    :param dicts_list: Lista de diccionarios que comparten las mismas claves
+                       y cuyos valores son np.ndarray.
+    :type dicts_list: List[Dict[str, Any]]
 
-    :return: Diccionario con parámetros promediados
+    :return: Diccionario con arrays promediados.
     :rtype: Dict[str, Any]
     """
-    if not parameters_list:
-        raise ValueError("No se puede promediar una lista vacía de parámetros")
+
+    if not dicts_list:
+        raise ValueError("No se puede promediar una lista vacía")
 
     averaged: Dict[str, Any] = {}
 
-    # Recorre las claves del primer modelo ("W1", "b1", etc.)
-    for key in parameters_list[0]:
+    # Recorre las claves del primer diccionario
+    for key in dicts_list[0]:
         # np.array convierte la lista de Python en un array de NumPy, añadiendo una dimensión
         # La nueva dimensión (axis=0) representa el modelo
-        stacked = np.array([p[key] for p in parameters_list])
+        stacked = np.array([p[key] for p in dicts_list])
 
         # np.mean calcula el promedio a lo largo del eje 0
         averaged[key] = np.mean(stacked, axis=0)
