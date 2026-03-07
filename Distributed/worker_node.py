@@ -45,7 +45,7 @@ compartidas con el resto del proyecto.
 
 import socket
 import time
-from typing import Any, Dict, Optional, Tuple, List
+from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
 
@@ -303,8 +303,7 @@ class WorkerNode:
         """
         Reconstruye el chunk de índices de este Worker para una época.
 
-        Reproduce exactamente la lógica Round Robin estratificada por
-        clase que antes ejecutaba ``ParameterServer._split_indices``:
+        Aplica una lógica Round Robin estratificada por clases:
 
         1. Fija ``np.random.seed(seed)``.
         2. Para cada dígito (0-9): obtiene los índices de esa clase y
@@ -316,25 +315,40 @@ class WorkerNode:
         reproduzcan exactamente la misma asignación global y cada uno
         extraiga su propio chunk sin recibir ningún índice por red.
 
-        :param seed:        Semilla de época enviada por el PS.
-        :param n_train:     Total de ejemplos de entrenamiento.
-        :param n_workers:   Número de Workers en la sesión.
+        :param seed: Semilla de época enviada por el PS.
+        :type seed: int
+
+        :param n_train: Total de ejemplos de entrenamiento.
+        :type n_train: int
+
+        :param n_workers: Número de Workers en la sesión.
+        :type n_workers: int
+
         :param worker_rank: Posición de este Worker (0-based).
+        :type worker_rank: int
+
         :return: Array de índices para este Worker en esta época.
         :rtype: np.ndarray
         """
+        # Crea un generador de números aleatorios determinístico
         rng = np.random.RandomState(seed)
 
-        # Particiones vacías para todos los ranks
-        partitions: List[List[int]] = [[] for _ in range(n_workers)]
+        # Selecciona n_train índices aleatorios de todo el dataset
+        indices = rng.permutation(len(self.Y_train))[:n_train]
 
+        my_indices = []
         for digit in range(10):
-            class_indices = np.where(self.Y_train[:n_train] == digit)[0]
-            rng.shuffle(class_indices)
-            for i, idx in enumerate(class_indices):
-                partitions[i % n_workers].append(int(idx))
+            # Filtra solo los índices seleccionados que pertenezcan a esta clase
+            class_indices = indices[self.Y_train[indices] == digit]
 
-        my_indices = np.array(partitions[worker_rank], dtype=np.int64)
+            # np.random.shuffle mezcla los índices aleatoriamente in-place
+            rng.shuffle(class_indices)
+
+            # Realiza asignación Round Robin a los workers
+            my_indices.append(class_indices[worker_rank::n_workers])
+
+        # Mezcla los índices del chunk de este worker
+        my_indices = np.concatenate(my_indices)
         rng.shuffle(my_indices)
         return my_indices
 
