@@ -134,7 +134,7 @@ def _on_epoch_end(
 
     :param train_loss: Valor de la función de pérdida en entrenamiento.
     :type train_loss: float
-    
+
     :param test_acc: Precisión en el conjunto de prueba en porcentaje. Si es ``None``,
                      no se muestra en la salida.
     :type test_acc: float | None
@@ -152,7 +152,9 @@ def _on_epoch_end(
         if test_acc is not None
         else ""
     )
-    print(f"  [{bar:<20}] {train_acc:5.2f}%  pérdida={train_loss:.4f}{test_str}  ({epoch}/{total})")
+    print(
+        f"  [{bar:<20}] {train_acc:5.2f}%  pérdida={train_loss:.4f}{test_str}  ({epoch}/{total})"
+    )
 
 
 # ================================================================
@@ -303,7 +305,9 @@ def main() -> None:
             t_acc = history["test_accuracies"][i - 1]
             t_loss = history["test_losses"][i - 1]
             test_str = f"  precisión_prueba={t_acc:.2f}%  pérdida_prueba={t_loss:.4f}"
-        print(f"    Época {i:3d}: precisión={acc:5.2f}%  pérdida={loss:.4f}{test_str}  {bar}")
+        print(
+            f"    Época {i:3d}: precisión={acc:5.2f}%  pérdida={loss:.4f}{test_str}  {bar}"
+        )
 
 
 if __name__ == "__main__":

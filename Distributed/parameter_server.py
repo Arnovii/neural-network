@@ -52,6 +52,11 @@ on_gradients_received(worker_id, epoch, loss, accuracy)
 on_epoch_end(epoch, total_epochs, train_accuracy, train_loss, test_accuracy, test_loss)
     Llamado tras promediar gradientes y actualizar pesos.
     ``test_accuracy`` y ``test_loss`` son None si no se pasaron datos de prueba.
+
+on_worker_joined_late(worker_id, addr)
+    Llamado cuando un Worker se conecta mientras hay un entrenamiento
+    en curso. Ese Worker NO participa en la sesión activa; se incorpora
+    en la siguiente.
 """
 
 import socket
@@ -97,6 +102,11 @@ class ParameterServer:
                            ``test_accuracy`` y ``test_loss`` son None si no se
                            proporcionaron datos de prueba.
     :type on_epoch_end: Callable | None
+
+    :param on_worker_joined_late: Callback cuando un Worker llega durante
+                                  un entrenamiento activo y queda en espera.
+                                  Firma: ``(worker_id: int, addr: str)``
+    :type on_worker_joined_late: Callable | None
     """
 
     def __init__(
@@ -107,6 +117,7 @@ class ParameterServer:
         on_worker_disconnected: Optional[Callable] = None,
         on_gradients_received: Optional[Callable] = None,
         on_epoch_end: Optional[Callable] = None,
+        on_worker_joined_late: Optional[Callable] = None,
     ) -> None:
         self.host = host
         self.port = port
@@ -115,6 +126,7 @@ class ParameterServer:
         self.on_worker_disconnected = on_worker_disconnected
         self.on_gradients_received = on_gradients_received
         self.on_epoch_end = on_epoch_end
+        self.on_worker_joined_late = on_worker_joined_late
 
         # Sockets y metadatos de Workers activos
         self._worker_sockets: Dict[int, socket.socket] = {}
@@ -123,11 +135,12 @@ class ParameterServer:
         self._lock = threading.Lock()  # Evita que múltiples hilos modifiquen las estructuras anteriores al mismo tiempo
 
         # Servidor TCP
-        self._server_sock: Optional[socket.socket] = None  # Socket principal
-        self._accept_thread: Optional[threading.Thread] = (
-            None  # Hilo que acepta conexiones
-        )
-        self._shutdown_flag = threading.Event()  # Bandera para detener el servidor
+        self._server_sock: Optional[socket.socket] = None
+        self._accept_thread: Optional[threading.Thread] = None
+        self._shutdown_flag = threading.Event()
+
+        # IDs que participan en el entrenamiento activo (None = sin sesión)
+        self._active_training_workers: Optional[List[int]] = None
 
         # Gradientes y métricas de la época actual (reutilizados por train)
         self._epoch_gradients: Dict[int, Dict[str, np.ndarray]] = {}
@@ -237,12 +250,13 @@ class ParameterServer:
         Realiza el handshake inicial con un Worker que acaba de conectarse.
 
         Lee READY, asigna ID, responde con WORKER_ID y registra el Worker.
-        Si el mensaje no es READY, cierra la conexión sin registrar nada.
+        Si hay un entrenamiento activo, llama a ``on_worker_joined_late``
+        en lugar de ``on_worker_connected``.
 
-        :param conn: Socket para comunicarse con ese Worker
+        :param conn: Socket para comunicarse con ese Worker.
         :type conn: socket.socket
 
-        :param addr: Dirección del Worker (IP y puerto)
+        :param addr: Dirección del Worker (IP y puerto).
         :type addr: tuple
         """
         try:
@@ -262,7 +276,6 @@ class ParameterServer:
             self._worker_sockets[worker_id] = conn
             self._worker_addrs[worker_id] = f"{addr[0]}:{addr[1]}"
 
-        # Informa al Worker su ID asignado
         try:
             send_message(conn, MsgType.WORKER_ID, {"worker_id": worker_id})
         except Exception:
@@ -273,10 +286,21 @@ class ParameterServer:
             return
 
         addr_str = f"{addr[0]}:{addr[1]}"
-        print(f"[PS] Worker {worker_id} conectado desde {addr_str}")
 
-        if self.on_worker_connected is not None:
-            self.on_worker_connected(worker_id, addr_str)
+        # Decide si el Worker llega en buen momento o tarde
+        training_active = self._active_training_workers is not None
+
+        if training_active:
+            print(
+                f"[PS] Worker {worker_id} conectado desde {addr_str} "
+                f"— entrenamiento en curso, esperará la próxima sesión"
+            )
+            if self.on_worker_joined_late is not None:
+                self.on_worker_joined_late(worker_id, addr_str)
+        else:
+            print(f"[PS] Worker {worker_id} conectado desde {addr_str}")
+            if self.on_worker_connected is not None:
+                self.on_worker_connected(worker_id, addr_str)
 
     # ================================================================
     # SESIÓN DE ENTRENAMIENTO
@@ -337,7 +361,11 @@ class ParameterServer:
                 "Inicia al menos un Worker antes de entrenar."
             )
 
-        # Crea una copia de los parámetros iniciales
+        # Congela los participantes de esta sesión. Cualquier Worker que se
+        # conecte a partir de este momento queda en espera y recibe el
+        # callback on_worker_joined_late en lugar de on_worker_connected.
+        self._active_training_workers = worker_ids
+
         params = {tipo: datos.copy() for tipo, datos in initial_params.items()}
 
         history: Dict[str, List[float]] = {
@@ -458,7 +486,7 @@ class ParameterServer:
             history["losses"].append(epoch_loss)
             history["accuracies"].append(epoch_acc)
 
-            # Evalúa sobre datos de prueba (si se proporcionaron)
+            # Evalúa sobre datos de prueba si se proporcionaron
             test_acc: Optional[float] = None
             test_loss: Optional[float] = None
             if X_test is not None and Y_test is not None:
@@ -478,9 +506,12 @@ class ParameterServer:
             )
 
             if self.on_epoch_end is not None:
-                self.on_epoch_end(epoch, epochs, epoch_acc, epoch_loss, test_acc, test_loss)
+                self.on_epoch_end(
+                    epoch, epochs, epoch_acc, epoch_loss, test_acc, test_loss
+                )
 
         print("[PS] Entrenamiento completado.\n")
+        self._active_training_workers = None
         return history
 
     # ================================================================

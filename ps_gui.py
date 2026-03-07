@@ -39,6 +39,7 @@ la UI exclusivamente a través de una Queue.
 Tipos de mensaje en la cola:
     ("worker_connected",     {"id": int, "addr": str})
     ("worker_disconnected",  {"id": int})
+    ("worker_joined_late",   {"id": int, "addr": str})
     ("gradients_received",   {"worker_id": int, "epoch": int,
                               "loss": float, "accuracy": float})
     ("epoch_end",            {"epoch": int, "total": int,
@@ -151,6 +152,7 @@ class DistributedPSApp:
     _ST_CONNECTED = "Conectado"
     _ST_COMPUTING = "Calculando"
     _ST_DONE = "✓ Listo"
+    _ST_WAITING = "⏳ Esperando sesión"
 
     # Estados del servidor
     _S_OFFLINE = "OFFLINE"
@@ -173,6 +175,9 @@ class DistributedPSApp:
         self._worker_status: dict = {}
         self._worker_addrs: dict = {}
         self._worker_grads: dict = {}
+        # IDs que participan en la sesión activa (vacío = sin sesión)
+        self._session_workers: set = set()
+
         self._acc_history: list = []
         self._loss_history: list = []
         self._test_acc_history: list = []
@@ -418,7 +423,7 @@ class DistributedPSApp:
         wf = ttk.LabelFrame(right, text="Workers conectados", padding=6)
         wf.grid(row=0, column=0, sticky="ew", pady=(0, 6))
 
-        cols = ("ID", "Dirección IP", "Estado", "Épocas completadas")
+        cols = ("ID", "Dirección IP", "Estado", "Épocas completadas", "Sesión actual")
         self._wk_tree = ttk.Treeview(
             wf,
             columns=cols,
@@ -430,8 +435,9 @@ class DistributedPSApp:
             self._wk_tree.heading(col, text=col)
         self._wk_tree.column("ID", width=50, anchor="center")
         self._wk_tree.column("Dirección IP", width=160, anchor="center")
-        self._wk_tree.column("Estado", width=120, anchor="center")
-        self._wk_tree.column("Épocas completadas", width=140, anchor="center")
+        self._wk_tree.column("Estado", width=140, anchor="center")
+        self._wk_tree.column("Épocas completadas", width=130, anchor="center")
+        self._wk_tree.column("Sesión actual", width=120, anchor="center")
         self._wk_tree.pack(fill=tk.X)
 
         # Indicador de estado del servidor
@@ -533,17 +539,18 @@ class DistributedPSApp:
                     solo si hay Workers conectados, "Apagar" habilitado
         TRAINING  → todos deshabilitados excepto ninguno
         """
-        s = self._state
         has_workers = bool(self._worker_status)
 
         self._btn_listen.configure(
-            state=tk.NORMAL if s == self._S_OFFLINE else tk.DISABLED
+            state=tk.NORMAL if self._state == self._S_OFFLINE else tk.DISABLED
         )
         self._btn_train.configure(
-            state=tk.NORMAL if s == self._S_LISTENING and has_workers else tk.DISABLED
+            state=tk.NORMAL
+            if self._state == self._S_LISTENING and has_workers
+            else tk.DISABLED
         )
         self._btn_shutdown.configure(
-            state=tk.NORMAL if s == self._S_LISTENING else tk.DISABLED
+            state=tk.NORMAL if self._state == self._S_LISTENING else tk.DISABLED
         )
 
         # Actualiza la pastilla de estado
@@ -552,7 +559,7 @@ class DistributedPSApp:
             self._S_LISTENING: ("LISTENING", "#2E7D32"),
             self._S_TRAINING: ("TRAINING", "#1565C0"),
         }
-        text, color = labels.get(s, ("?", "#607D8B"))
+        text, color = labels.get(self._state, ("?", "#607D8B"))
         self._srv_state_var.set(text)
         self._srv_state_lbl.configure(bg=color)
 
@@ -575,7 +582,6 @@ class DistributedPSApp:
         self._fig.tight_layout(rect=(0, 0, 1, 0.93))
 
     def _log(self, msg: str) -> None:
-        """Añade una línea al log (máx. 200 líneas). Solo hilo principal."""
         self._log_text.configure(state=tk.NORMAL)
         self._log_text.insert(tk.END, msg + "\n")
         lines = int(self._log_text.index(tk.END).split(".")[0])
@@ -584,17 +590,20 @@ class DistributedPSApp:
         self._log_text.see(tk.END)
         self._log_text.configure(state=tk.DISABLED)
 
-    def _add_worker_row(self, worker_id: int, addr: str) -> None:
+    def _add_worker_row(self, worker_id: int, addr: str, late: bool = False) -> None:
         tag = f"w{worker_id}"
         color = self.WORKER_COLORS[worker_id % len(self.WORKER_COLORS)]
+        status = self._ST_WAITING if late else self._ST_CONNECTED
+        sess = "No" if late else "—"
         if self._wk_tree.exists(tag):
             self._wk_tree.item(
                 tag,
                 values=(
                     worker_id,
                     addr,
-                    self._worker_status.get(worker_id, self._ST_CONNECTED),
+                    self._worker_status.get(worker_id, status),
                     self._worker_grads.get(worker_id, 0),
+                    sess,
                 ),
             )
         else:
@@ -602,7 +611,7 @@ class DistributedPSApp:
                 "",
                 tk.END,
                 iid=tag,
-                values=(worker_id, addr, self._ST_CONNECTED, 0),
+                values=(worker_id, addr, status, 0, sess),
                 tags=(tag,),
             )
             self._wk_tree.tag_configure(tag, foreground=color)
@@ -623,7 +632,23 @@ class DistributedPSApp:
                     current[1],
                     self._worker_status.get(worker_id, self._ST_CONNECTED),
                     self._worker_grads.get(worker_id, 0),
+                    current[4],  # Sesión actual — se gestiona por separado
                 ),
+            )
+
+    def _update_session_column(self, worker_id: int, in_session: bool) -> None:
+        """Actualiza solo la columna 'Sesión actual' de un Worker."""
+        tag = f"w{worker_id}"
+        if self._wk_tree.exists(tag):
+            current = self._wk_tree.item(tag, "values")
+            if in_session:
+                label = "✓ Activo"
+            elif self._state == self._S_TRAINING:
+                label = "No"
+            else:
+                label = "—"
+            self._wk_tree.item(
+                tag, values=(current[0], current[1], current[2], current[3], label)
             )
 
     def _update_plots(self) -> None:
@@ -652,6 +677,7 @@ class DistributedPSApp:
                     label="Prueba",
                 )
             self._ax_acc.legend(loc="lower right", fontsize=8)
+
             self._ax_loss.plot(
                 epochs,
                 self._loss_history,
@@ -687,7 +713,6 @@ class DistributedPSApp:
     # ================================================================
 
     def _cmd_listen(self) -> None:
-        """Enciende el servidor: abre el socket y empieza a escuchar."""
         try:
             host = self._v_host.get().strip()
             port = int(self._v_port.get())
@@ -706,13 +731,21 @@ class DistributedPSApp:
             on_worker_disconnected=lambda wid: q.put(
                 ("worker_disconnected", {"id": wid})
             ),
+            on_worker_joined_late=lambda wid, addr: q.put(
+                ("worker_joined_late", {"id": wid, "addr": addr})
+            ),
             on_gradients_received=lambda wid, ep, loss, acc: q.put(
                 (
                     "gradients_received",
                     {"worker_id": wid, "epoch": ep, "loss": loss, "accuracy": acc},
                 )
             ),
-            on_epoch_end=lambda ep, tot, train_acc, train_loss, test_acc, test_loss: q.put(
+            on_epoch_end=lambda ep,
+            tot,
+            train_acc,
+            train_loss,
+            test_acc,
+            test_loss: q.put(
                 (
                     "epoch_end",
                     {
@@ -788,16 +821,18 @@ class DistributedPSApp:
         self._epoch_var.set(f"0 / {epochs}")
         self._update_plots()
 
-        # Resetea contadores de Workers
+        # Marca qué Workers participan en esta sesión y resetea contadores
+        self._session_workers = set(self._worker_status.keys())
         for wid in self._worker_status:
             self._worker_status[wid] = self._ST_COMPUTING
             self._worker_grads[wid] = 0
+            self._update_session_column(wid, in_session=True)
             self._update_worker_row(wid)
 
         self._state = self._S_TRAINING
         self._refresh_buttons()
 
-        n_workers = len(self._worker_status)
+        n_workers = len(self._session_workers)
         self._log(
             f"[PS] Iniciando entrenamiento — "
             f"{n_workers} worker(s)  épocas={epochs}  "
@@ -865,6 +900,7 @@ class DistributedPSApp:
         self._worker_status.clear()
         self._worker_addrs.clear()
         self._worker_grads.clear()
+        self._session_workers.clear()
 
         for row in self._wk_tree.get_children():
             self._wk_tree.delete(row)
@@ -887,6 +923,8 @@ class DistributedPSApp:
                     self._on_worker_connected(payload)
                 elif msg_type == "worker_disconnected":
                     self._on_worker_disconnected(payload)
+                elif msg_type == "worker_joined_late":
+                    self._on_worker_joined_late(payload)
                 elif msg_type == "gradients_received":
                     self._on_gradients_received(payload)
                 elif msg_type == "epoch_end":
@@ -918,8 +956,8 @@ class DistributedPSApp:
         self._worker_addrs[wid] = addr
         self._worker_grads[wid] = 0
 
-        self._add_worker_row(wid, addr)
-        self._refresh_buttons()  # puede habilitar "Iniciar entrenamiento"
+        self._add_worker_row(wid, addr, late=False)
+        self._refresh_buttons()
 
         self._log(f"[W{wid}] Conectado desde {addr}")
         self._status_var.set(
@@ -933,6 +971,7 @@ class DistributedPSApp:
         self._worker_status.pop(wid, None)
         self._worker_addrs.pop(wid, None)
         self._worker_grads.pop(wid, None)
+        self._session_workers.discard(wid)
 
         self._remove_worker_row(wid)
         self._refresh_buttons()
@@ -940,6 +979,27 @@ class DistributedPSApp:
         self._log(f"[W{wid}] Desconectado inesperadamente.")
         self._status_var.set(
             f"Worker {wid} desconectado  |  Activos: {len(self._worker_status)}"
+        )
+
+    def _on_worker_joined_late(self, payload: dict) -> None:
+        wid = payload["id"]
+        addr = payload["addr"]
+
+        self._worker_status[wid] = self._ST_WAITING
+        self._worker_addrs[wid] = addr
+        self._worker_grads[wid] = 0
+
+        self._add_worker_row(wid, addr, late=True)
+        # No llama a _refresh_buttons: un Worker en espera no habilita
+        # el botón de entrenar (ya hay sesión activa de todas formas).
+
+        self._log(
+            f"[W{wid}] Conectado desde {addr} — "
+            f"entrenamiento en curso, esperará la próxima sesión"
+        )
+        self._status_var.set(
+            f"Worker {wid} en espera (llegó tarde)  |  "
+            f"Total conectados: {len(self._worker_status)}"
         )
 
     def _on_gradients_received(self, payload: dict) -> None:
@@ -952,7 +1012,9 @@ class DistributedPSApp:
         self._worker_status[wid] = self._ST_DONE
         self._update_worker_row(wid)
 
-        self._log(f"[W{wid}] Época {epoch} — precisión={accuracy:.2f}%  pérdida={loss:.4f}")
+        self._log(
+            f"[W{wid}] Época {epoch} — precisión={accuracy:.2f}%  pérdida={loss:.4f}"
+        )
 
     def _on_epoch_end(self, payload: dict) -> None:
         epoch = payload["epoch"]
@@ -971,13 +1033,12 @@ class DistributedPSApp:
         self._epoch_bar["value"] = epoch
         self._epoch_var.set(f"{epoch} / {total}")
 
-        # Marca Workers como "calculando" para la próxima época
-        for wid in self._worker_status:
+        for wid in self._session_workers:
             self._worker_status[wid] = self._ST_COMPUTING
             self._update_worker_row(wid)
 
         test_str = (
-            f"  |  Prueba: {test_acc:.2f}%  Pérdida={test_loss:.4f}"
+            f"  |  Prueba: {test_acc:.2f}%  Pérdida: {test_loss:.4f}"
             if test_acc is not None
             else ""
         )
@@ -989,7 +1050,8 @@ class DistributedPSApp:
         )
         self._update_plots()
         self._status_var.set(
-            f"Época {epoch}/{total} — Entrenamiento: {accuracy:.2f}%  Pérdida: {loss:.4f}{test_str}"
+            f"Época {epoch}/{total} — "
+            f"Entrenamiento: {accuracy:.2f}%  Pérdida: {loss:.4f}{test_str}"
         )
 
     def _on_training_done(self, history: dict) -> None:
@@ -1003,27 +1065,30 @@ class DistributedPSApp:
         final_test_loss = history["test_losses"][-1] if has_test else None
 
         title = (
-            f"Completado  |  Mejor Entrenamiento: {best_train:.2f}%  |  Entrenamiento Final: {final_train:.2f}%"
+            f"Completado  |  Mejor Entrenamiento: {best_train:.2f}%  |  "
+            f"Entrenamiento Final: {final_train:.2f}%"
         )
         if best_test is not None:
             title += f"  |  Mejor Prueba: {best_test:.2f}%"
         self._fig.suptitle(title, fontsize=12, fontweight="bold")
         self._update_plots()
 
-        # Marca todos los Workers como "Conectado"
+        # Limpia columna de sesión y marca todos como Conectado
+        self._session_workers.clear()
         for wid in self._worker_status:
             self._worker_status[wid] = self._ST_CONNECTED
+            self._update_session_column(wid, in_session=False)
             self._update_worker_row(wid)
 
         self._log("─" * 50)
         self._log("[PS] Entrenamiento completado")
-        self._log(f"     Precisión final de entrenamiento  : {final_train:.2f}%")
-        self._log(f"     Mejor precisión de entrenamiento  : {best_train:.2f}%")
-        self._log(f"     Pérdida final de entrenamiento    : {final_loss:.4f}")
+        self._log(f"     Precisión final de entrenamiento : {final_train:.2f}%")
+        self._log(f"     Mejor precisión de entrenamiento : {best_train:.2f}%")
+        self._log(f"     Pérdida final de entrenamiento   : {final_loss:.4f}")
         if final_test is not None:
-            self._log(f"     Precisión final de prueba   : {final_test:.2f}%")
-            self._log(f"     Mejor precisión de prueba   : {best_test:.2f}%")
-            self._log(f"     Pérdida final de prueba     : {final_test_loss:.4f}")
+            self._log(f"     Precisión final de prueba  : {final_test:.2f}%")
+            self._log(f"     Mejor precisión de prueba  : {best_test:.2f}%")
+            self._log(f"     Pérdida final de prueba    : {final_test_loss:.4f}")
         self._log("─" * 50)
 
         # Vuelve a LISTENING
@@ -1031,12 +1096,12 @@ class DistributedPSApp:
         self._refresh_buttons()
 
         status = (
-            f"Entrenamiento completado — Entrenamiento: {final_train:.2f}%  "
-            f"Mejor: {best_train:.2f}%"
+            f"Entrenamiento completado — "
+            f"Entrenamiento: {final_train:.2f}%  Mejor: {best_train:.2f}%"
         )
         if final_test is not None:
-            status += f"  |  Prueba: {final_test:.2f}%  Mejor Prueba: {best_test:.2f}%"
-        status += f"  |  Workers: {len(self._worker_status)}"
+            status += f"  |  Prueba: {final_test:.2f}%  Mejor: {best_test:.2f}%"
+        status += f"  |  Workers conectados: {len(self._worker_status)}"
         self._status_var.set(status)
 
     def _on_error(self, exc: Exception) -> None:
