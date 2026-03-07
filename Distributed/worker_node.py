@@ -38,11 +38,14 @@ envía. La actualización θ ← θ − lr * ∇θ la hace exclusivamente el PS.
 Forward:   Z1=W1@X.T+b1  ->  A1=σ(Z1)  ->  Z2=W2@A1+b2  ->  A2=softmax(Z2)
 Backward:  δ2=A2−Y_hot  ->  dW2=(1/n)δ2@A1.T  ->  db2=(1/n)Σδ2
            δ1=(W2.T@δ2)⊙σ'(A1)  ->  dW1=(1/n)δ1@X  ->  db1=(1/n)Σδ1
+
+Las funciones de activación se importan de Utils/math_utils.py,
+compartidas con el resto del proyecto.
 """
 
 import socket
 import time
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple, List
 
 import numpy as np
 
@@ -187,21 +190,34 @@ class WorkerNode:
             if msg["type"] == MsgType.TRAIN_START:
                 epochs = msg["payload"]["epochs"]
                 n_train = msg["payload"]["n_train"]
+                n_workers = msg["payload"]["n_workers"]
+                worker_rank = msg["payload"]["worker_rank"]
                 self._log(
-                    f"TRAIN_START recibido — {epochs} épocas  |  n_train={n_train}"
+                    f"TRAIN_START recibido — "
+                    f"{epochs} épocas  |  n_train={n_train}  "
+                    f"|  rank={worker_rank}/{n_workers}"
                 )
-                self._run_training_session(epochs)
+                self._run_training_session(epochs, n_train, n_workers, worker_rank)
 
-    def _run_training_session(self, epochs: int) -> None:
+    def _run_training_session(
+        self,
+        epochs: int,
+        n_train: int,
+        n_workers: int,
+        worker_rank: int,
+    ) -> None:
         """
         Procesa todas las épocas de una sesión de entrenamiento.
 
-        Por cada época: recibe PARAMS, calcula gradientes, envía GRADIENTS.
+        Por cada época: recibe PARAMS (con semilla), reconstruye los índices
+        localmente, calcula gradientes y envía GRADIENTS.
         Al terminar ``epochs`` épocas vuelve a _main_loop para esperar
         el siguiente TRAIN_START.
 
         :param epochs: Número de épocas en esta sesión.
-        :type epochs: int
+        :param n_train: Total de ejemplos de entrenamiento (para estratificación).
+        :param n_workers: Número de Workers en esta sesión.
+        :param worker_rank: Posición de este Worker en la sesión (0-based).
         """
         assert self._sock is not None
 
@@ -209,27 +225,44 @@ class WorkerNode:
             msg = receive_message(self._sock)
 
             if msg["type"] == MsgType.STOP:
-                # El PS puede apagarse incluso en medio de un entrenamiento
+                # Defensa ante un apagado forzado del PS (p.ej. desde ps_terminal.py
+                # o si el PS falla). La GUI lo previene, pero el Worker no puede
+                # asumir que siempre hay una GUI de por medio.
                 self._log("STOP recibido durante entrenamiento. Finalizando.")
                 raise SystemExit(0)
 
             if msg["type"] == MsgType.PARAMS:
-                self._handle_params(msg["payload"])
+                self._handle_params(msg["payload"], n_train, n_workers, worker_rank)
 
     # ================================================================
     # PROCESAMIENTO DE UNA ÉPOCA
     # ================================================================
 
-    def _handle_params(self, payload: Dict[str, Any]) -> None:
+    def _handle_params(
+        self,
+        payload: Dict[str, Any],
+        n_train: int,
+        n_workers: int,
+        worker_rank: int,
+    ) -> None:
         """
-        Procesa un mensaje PARAMS: calcula gradientes y los envía.
+        Procesa un mensaje PARAMS: reconstruye los índices localmente
+        a partir de la semilla, calcula gradientes y los envía.
 
-        :param payload: Dict con ``epoch``, ``params``, ``indices``.
-        :type payload: Dict[str, Any]
+        La partición es idéntica a la que el PS habría calculado con
+        ``_split_indices``: Round Robin estratificado por clase (0-9)
+        con la misma semilla → mismo resultado, cero índices por red.
+
+        :param payload:     Dict con ``epoch``, ``params``, ``seed``.
+        :param n_train:     Total de ejemplos (recibido en TRAIN_START).
+        :param n_workers:   Número de Workers en la sesión.
+        :param worker_rank: Posición de este Worker (0-based).
         """
         epoch = payload["epoch"]
         params = payload["params"]
-        indices = payload["indices"]
+        seed = payload["seed"]
+
+        indices = self._reconstruct_indices(seed, n_train, n_workers, worker_rank)
 
         self._log(f"Época {epoch} — batch {len(indices)} ejemplos")
 
@@ -259,6 +292,51 @@ class WorkerNode:
     # ================================================================
     # FORWARD + BACKWARD
     # ================================================================
+
+    def _reconstruct_indices(
+        self,
+        seed: int,
+        n_train: int,
+        n_workers: int,
+        worker_rank: int,
+    ) -> np.ndarray:
+        """
+        Reconstruye el chunk de índices de este Worker para una época.
+
+        Reproduce exactamente la lógica Round Robin estratificada por
+        clase que antes ejecutaba ``ParameterServer._split_indices``:
+
+        1. Fija ``np.random.seed(seed)``.
+        2. Para cada dígito (0-9): obtiene los índices de esa clase y
+           los shufflea.
+        3. Distribuye en Round Robin entre los ``n_workers`` ranks.
+        4. Shufflea el chunk resultante de este Worker.
+
+        El uso de la misma semilla garantiza que todos los Workers
+        reproduzcan exactamente la misma asignación global y cada uno
+        extraiga su propio chunk sin recibir ningún índice por red.
+
+        :param seed:        Semilla de época enviada por el PS.
+        :param n_train:     Total de ejemplos de entrenamiento.
+        :param n_workers:   Número de Workers en la sesión.
+        :param worker_rank: Posición de este Worker (0-based).
+        :return: Array de índices para este Worker en esta época.
+        :rtype: np.ndarray
+        """
+        rng = np.random.RandomState(seed)
+
+        # Particiones vacías para todos los ranks
+        partitions: List[List[int]] = [[] for _ in range(n_workers)]
+
+        for digit in range(10):
+            class_indices = np.where(self.Y_train[:n_train] == digit)[0]
+            rng.shuffle(class_indices)
+            for i, idx in enumerate(class_indices):
+                partitions[i % n_workers].append(int(idx))
+
+        my_indices = np.array(partitions[worker_rank], dtype=np.int64)
+        rng.shuffle(my_indices)
+        return my_indices
 
     def _compute_gradients(
         self,

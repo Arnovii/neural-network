@@ -46,7 +46,7 @@ TIPOS DE MENSAJE Y FLUJO
         ◄──────────────────────── TRAIN_START  (PS inicia entrenamiento)
 
   [por cada época:]
-        ◄──────────────────────── PARAMS  (params + índices)
+        ◄──────────────────────── PARAMS  (params + semilla de época)
   GRADIENTS ─────────────────────►
 
   [vuelve a esperar TRAIN_START para el siguiente entrenamiento]
@@ -67,15 +67,20 @@ WORKER_ID
 
 TRAIN_START
     PS → Worker (broadcast)  |  Comienza una sesión de entrenamiento.
-    payload: {"epochs": int, "n_train": int}
+    payload: {"epochs": int, "n_train": int, "n_workers": int, "worker_rank": int}
+              n_workers y worker_rank permiten al Worker reconstruir
+              su chunk de índices localmente sin recibirlos por red.
 
 PARAMS
-    PS → Worker (broadcast)  |  Pesos globales + índices del batch.
+    PS → Worker (broadcast)  |  Pesos globales actualizados + semilla de época.
     payload: {
-        "epoch":   int,
-        "params":  Dict[str, np.ndarray],   # W1, b1, W2, b2
-        "indices": List[int],
+        "epoch":  int,
+        "params": Dict[str, np.ndarray],   # W1, b1, W2, b2
+        "seed":   int,
     }
+    El Worker usa seed + n_train + n_workers + worker_rank (del TRAIN_START)
+    para reproducir la misma partición estratificada. Tráfico: 8 bytes
+    por época en lugar de ~80 KB de índices.
 
 GRADIENTS
     Worker → PS  |  Gradientes calculados sobre el batch asignado.

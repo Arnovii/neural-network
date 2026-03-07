@@ -335,8 +335,9 @@ class ParameterServer:
         :type n_train: int
 
         :param Y_train: Etiquetas de entrenamiento, forma ``(n_train,)``.
-                        Se usa exclusivamente para la partición estratificada;
-                        los datos nunca se envían por red.
+                        Se usan para regenerar la partición estratificada
+                        localmente en cada Worker (vía semilla por época).
+                        Los datos y los índices nunca se envían por red.
         :type Y_train: np.ndarray
 
         :param X_test: Imágenes del conjunto de prueba, forma ``(N_test, 784)``.
@@ -384,12 +385,28 @@ class ParameterServer:
         print(f"  Ejemplos train  : {n_train}")
         print("=" * 70)
 
-        # Notifica a los Workers que va a comenzar una sesión
-        self._broadcast(
-            MsgType.TRAIN_START,
-            {"epochs": epochs, "n_train": n_train},
-            worker_ids,
-        )
+        # Notifica a los Workers. Cada uno recibe su rank dentro de la
+        # sesión para que pueda reconstruir su chunk localmente.
+        n_workers = len(worker_ids)
+        for rank, wid in enumerate(worker_ids):
+            with self._lock:
+                sock = self._worker_sockets.get(wid)
+            if sock is None:
+                continue
+            try:
+                send_message(
+                    sock,
+                    MsgType.TRAIN_START,
+                    {
+                        "epochs": epochs,
+                        "n_train": n_train,
+                        "n_workers": n_workers,
+                        "worker_rank": rank,
+                    },
+                )
+            except Exception as exc:
+                print(f"[PS] Error enviando TRAIN_START a Worker {wid}: {exc}")
+                self._remove_worker(wid)
 
         for epoch in range(1, epochs + 1):
             print(f"[PS] ── Época {epoch}/{epochs} ──────────────────────────")
@@ -399,12 +416,11 @@ class ParameterServer:
             self._epoch_gradients.clear()
             self._epoch_metrics.clear()
 
-            index_chunks = self._split_indices(worker_ids, n_train, Y_train)
+            # Semilla única para esta época: el Worker la usa para
+            # reconstruir exactamente la misma partición estratificada.
+            epoch_seed = int(np.random.randint(0, 2**31))
 
             done_event = threading.Event()
-
-            # Se usa una lista con un solo elemento para poder modificar
-            # ese valor desde varios hilos dentro de una función interna.
             received_count = [0]
 
             def _receive_from_worker(wid: int) -> None:
@@ -435,7 +451,8 @@ class ParameterServer:
                         if received_count[0] == len(worker_ids):
                             done_event.set()
 
-            # Broadcast: params + índices
+            # Broadcast: params + semilla. El Worker reconstruye
+            # sus índices localmente a partir de la semilla.
             for wid in worker_ids:
                 try:
                     send_message(
@@ -444,7 +461,7 @@ class ParameterServer:
                         {
                             "epoch": epoch,
                             "params": params,
-                            "indices": index_chunks[wid],
+                            "seed": epoch_seed,
                         },
                     )
                 except Exception as exc:
@@ -572,55 +589,6 @@ class ParameterServer:
         if self.on_worker_disconnected is not None:
             self.on_worker_disconnected(worker_id)
 
-    def _split_indices(
-        self,
-        worker_ids: List[int],
-        n_train: int,
-        Y_train: np.ndarray,
-    ) -> Dict[int, List[int]]:
-        """
-        Divide los índices de entrenamiento en chunks disjuntos y
-        estratificados, uno por Worker.
-
-        Estratificación significa que cada Worker recibe aproximadamente
-        la misma proporción de cada clase (dígito 0–9). Esto se logra
-        con un reparto Round Robin por clase, igual que en
-        ``data_partitioner.py``, pero devolviendo solo índices (no datos)
-        para no romper el protocolo distribuido.
-
-        Sin estratificación, una permutación aleatoria con pocos Workers
-        puede producir batches desbalanceados, lo que sesga los gradientes
-        de cada Worker aunque el promediado lo amortigüe parcialmente.
-
-        :param worker_ids: IDs de los Workers conectados.
-        :type worker_ids: List[int]
-
-        :param n_train: Total de ejemplos de entrenamiento.
-        :type n_train: int
-
-        :param Y_train: Etiquetas ``(n_train,)``, solo para estratificar.
-        :type Y_train: np.ndarray
-
-        :return: Diccionario ``{worker_id: [índices]}``.
-        """
-        n = len(worker_ids)
-        partitions: Dict[int, List[int]] = {wid: [] for wid in worker_ids}
-
-        for digit in range(10):
-            # Índices de todos los ejemplos de esta clase
-            class_indices = np.where(Y_train[:n_train] == digit)[0].tolist()
-            np.random.shuffle(class_indices)
-
-            # Round Robin: reparte los índices de esta clase entre Workers
-            for i, idx in enumerate(class_indices):
-                partitions[worker_ids[i % n]].append(idx)
-
-        # Mezcla dentro de cada partición para que no quede ordenada por clase
-        for wid in worker_ids:
-            np.random.shuffle(partitions[wid])
-
-        return partitions
-
     def _average_gradients(
         self, gradients_list: List[Dict[str, np.ndarray]]
     ) -> Dict[str, np.ndarray]:
@@ -705,17 +673,13 @@ class ParameterServer:
         Y: np.ndarray,
     ) -> Tuple[float, float]:
         """
-        Hace Forward Pass sobre ``X`` con los parámetros
-        actuales y devuelve precisión y pérdida sobre el conjunto dado.
-
-        No modifica ``params`` ni calcula gradientes.
+        Forward pass sobre ``X`` con los parámetros actuales.
+        Devuelve ``(accuracy_pct, mean_loss)``. No modifica ``params``.
 
         :param params: Parámetros globales actualizados (W1, b1, W2, b2).
         :type params: Dict[str, np.ndarray]
 
         :param X: Imágenes de evaluación, forma ``(N, 784)``.
-        :type X: np.ndarray
-
         :param Y: Etiquetas, forma ``(N,)``.
         :type Y: np.ndarray
 
