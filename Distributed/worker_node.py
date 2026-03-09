@@ -45,7 +45,7 @@ compartidas con el resto del proyecto.
 
 import socket
 import time
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -105,6 +105,12 @@ class WorkerNode:
         self.hidden_size = hidden_size
         self.output_size = output_size
         self.verbose = verbose
+
+        # Índices por clase precalculados una sola vez al arrancar.
+        # _reconstruct_indices los reutiliza cada época sin recalcularlos.
+        self._class_indices: List[np.ndarray] = [
+            np.where(Y_train == digit)[0] for digit in range(10)
+        ]
 
         # Asignado por el PS durante el handshake
         self.worker_id: Optional[int] = None
@@ -304,13 +310,17 @@ class WorkerNode:
         """
         Reconstruye el chunk de índices de este Worker para una época.
 
-        Aplica una lógica Round Robin estratificada por clases:
+        Aplica Round Robin estratificado por clase usando índices
+        precalculados en ``__init__`` (``self._class_indices``).
+        Esto evita ejecutar ``np.where`` en cada época.
 
-        1. Fija ``np.random.seed(seed)``.
-        2. Para cada dígito (0-9): obtiene los índices de esa clase y
-           los shufflea.
-        3. Distribuye en Round Robin entre los ``n_workers`` ranks.
-        4. Shufflea el chunk resultante de este Worker.
+        1. Para cada clase: shufflea una copia completa de sus índices
+           antes de recortar, garantizando que todos los ejemplos del
+           dataset puedan aparecer en cualquier época (crítico cuando
+           ``n_train`` es pequeño).
+        2. Recorta proporcionalmente a ``n_train``.
+        3. Slicing Round Robin ``[worker_rank::n_workers]``.
+        4. Concatena y shufflea el chunk resultante.
 
         El uso de la misma semilla garantiza que todos los Workers
         reproduzcan exactamente la misma asignación global y cada uno
@@ -334,21 +344,26 @@ class WorkerNode:
         # Crea un generador de números aleatorios determinístico
         rng = np.random.RandomState(seed)
 
-        # Selecciona n_train índices aleatorios de todo el dataset
-        indices = rng.permutation(len(self.Y_train))[:n_train]
+        # Proporción de n_train respecto al dataset completo.
+        # Permite recortar cada clase proporcionalmente sin búsquedas.
+        ratio = n_train / len(self.Y_train)
 
+        # Aquí se guardarán los índices que le corresponden a este worker.
         my_indices = []
-        for digit in range(10):
-            # Filtra solo los índices seleccionados que pertenezcan a esta clase
-            class_indices = indices[self.Y_train[indices] == digit]
+        for class_idx in self._class_indices:
+            # Copia y shufflea la clase completa antes de recortar.
+            # Garantiza que todos los ejemplos tengan posibilidad de
+            # aparecer en cada época, incluso con n_train pequeño.
+            shuffled = class_idx.copy()
+            rng.shuffle(shuffled)
 
-            # np.random.shuffle mezcla los índices aleatoriamente in-place
-            rng.shuffle(class_indices)
+            # Define cuántos ejemplos de esta clase usar
+            # max(1, ...) evita que desaparezcan clases si n_train es pequeño
+            n_class = max(1, round(len(class_idx) * ratio))
 
-            # Realiza asignación Round Robin a los workers
-            my_indices.append(class_indices[worker_rank::n_workers])
+            # Round Robin: este Worker toma 1 de cada n_workers elementos
+            my_indices.append(shuffled[:n_class][worker_rank::n_workers])
 
-        # Mezcla los índices del chunk de este worker
         my_indices = np.concatenate(my_indices)
         rng.shuffle(my_indices)
         return my_indices
