@@ -50,9 +50,11 @@ Al finalizar imprime el historial de precisión y pérdida por época.
 """
 
 import argparse
+import json
 import os
 import sys
 import threading
+import time
 
 
 # Asegura que los módulos del proyecto sean importables
@@ -228,6 +230,8 @@ def main() -> None:
     print(f"Datos de prueba listos ({len(X_test)} ejemplos).\n")
 
     # Entrenamiento
+    t_start = time.perf_counter()
+
     history = server.train(
         epochs=args.epochs,
         initial_params=initial_params,
@@ -236,6 +240,8 @@ def main() -> None:
         X_test=X_test,
         Y_test=Y_test,
     )
+
+    elapsed = time.perf_counter() - t_start
 
     server.shutdown()
 
@@ -250,6 +256,10 @@ def main() -> None:
         print(f"  Precisión final de prueba   : {history['test_accuracies'][-1]:.2f}%")
         print(f"  Mejor precisión de prueba   : {max(history['test_accuracies']):.2f}%")
         print(f"  Pérdida final de prueba     : {history['test_losses'][-1]:.4f}")
+
+    minutes, seconds = divmod(elapsed, 60)
+    print(f"\n  Tiempo de ejecución         : {int(minutes)}m {seconds:.2f}s ({elapsed:.2f}s)")
+
     print("\n  Evolución por época:")
     has_test = bool(history["test_accuracies"])
     for i, (acc, loss) in enumerate(zip(history["accuracies"], history["losses"]), 1):
@@ -262,6 +272,49 @@ def main() -> None:
         print(
             f"    Época {i:3d}: precisión={acc:5.2f}%  pérdida={loss:.4f}{test_str}  {bar}"
         )
+
+    # Exportar resultados a JSON
+    results = {
+        "configuracion": {
+            "epochs": args.epochs,
+            "hidden": args.hidden,
+            "learning_rate": args.lr,
+            "n_train": args.n_train,
+            "workers": args.workers,
+            "seed": args.seed,
+        },
+        "tiempo_ejecucion_segundos": round(elapsed, 2),
+        "resumen": {
+            "precision_final_entrenamiento": round(history["accuracies"][-1], 4),
+            "mejor_precision_entrenamiento": round(max(history["accuracies"]), 4),
+            "perdida_final_entrenamiento": round(history["losses"][-1], 6),
+        },
+        "historial": {
+            "accuracies": [round(v, 4) for v in history["accuracies"]],
+            "losses": [round(v, 6) for v in history["losses"]],
+        },
+    }
+    if history["test_accuracies"]:
+        results["resumen"]["precision_final_prueba"] = round(
+            history["test_accuracies"][-1], 4
+        )
+        results["resumen"]["mejor_precision_prueba"] = round(
+            max(history["test_accuracies"]), 4
+        )
+        results["resumen"]["perdida_final_prueba"] = round(
+            history["test_losses"][-1], 6
+        )
+        results["historial"]["test_accuracies"] = [
+            round(v, 4) for v in history["test_accuracies"]
+        ]
+        results["historial"]["test_losses"] = [
+            round(v, 6) for v in history["test_losses"]
+        ]
+
+    json_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "resultados.json")
+    with open(json_path, "w", encoding="utf-8") as f:
+        json.dump(results, f, indent=2, ensure_ascii=False)
+    print(f"\n  Resultados exportados a: {json_path}")
 
 
 if __name__ == "__main__":

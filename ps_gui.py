@@ -49,10 +49,12 @@ Tipos de mensaje en la cola:
     ("error",                exc: Exception)
 """
 
+import json
 import os
 import queue
 import sys
 import threading
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -182,6 +184,7 @@ class DistributedPSApp:
         self._test_acc_history: list = []
         self._test_loss_history: list = []
         self._total_epochs: int = 0
+        self._train_start_time: float = 0.0
 
         self._build_ui()
         self._refresh_buttons()
@@ -822,6 +825,15 @@ class DistributedPSApp:
 
         self._state = self._S_TRAINING
         self._refresh_buttons()
+        self._train_start_time = time.perf_counter()
+        self._train_config = {
+            "epochs": epochs,
+            "hidden": hidden,
+            "learning_rate": lr,
+            "n_train": n_train,
+            "workers": len(self._session_workers),
+            "seed": seed,
+        }
 
         n_workers = len(self._session_workers)
         self._log(
@@ -1041,6 +1053,8 @@ class DistributedPSApp:
         )
 
     def _on_training_done(self, history: dict) -> None:
+        elapsed = time.perf_counter() - self._train_start_time
+
         final_train = history["accuracies"][-1] if history["accuracies"] else 0.0
         best_train = max(history["accuracies"]) if history["accuracies"] else 0.0
         final_loss = history["losses"][-1] if history["losses"] else 0.0
@@ -1049,6 +1063,9 @@ class DistributedPSApp:
         final_test = history["test_accuracies"][-1] if has_test else None
         best_test = max(history["test_accuracies"]) if has_test else None
         final_test_loss = history["test_losses"][-1] if has_test else None
+
+        minutes, seconds = divmod(elapsed, 60)
+        time_str = f"{int(minutes)}m {seconds:.2f}s"
 
         title = (
             f"Completado  |  Mejor Entrenamiento: {best_train:.2f}%  |  "
@@ -1075,14 +1092,47 @@ class DistributedPSApp:
             self._log(f"     Precisión final de prueba  : {final_test:.2f}%")
             self._log(f"     Mejor precisión de prueba  : {best_test:.2f}%")
             self._log(f"     Pérdida final de prueba    : {final_test_loss:.4f}")
+        self._log(f"     Tiempo de ejecución        : {time_str} ({elapsed:.2f}s)")
         self._log("─" * 50)
+
+        # Exportar resultados a JSON
+        results = {
+            "configuracion": getattr(self, "_train_config", {}),
+            "tiempo_ejecucion_segundos": round(elapsed, 2),
+            "resumen": {
+                "precision_final_entrenamiento": round(final_train, 4),
+                "mejor_precision_entrenamiento": round(best_train, 4),
+                "perdida_final_entrenamiento": round(final_loss, 6),
+            },
+            "historial": {
+                "accuracies": [round(v, 4) for v in history["accuracies"]],
+                "losses": [round(v, 6) for v in history["losses"]],
+            },
+        }
+        if has_test:
+            results["resumen"]["precision_final_prueba"] = round(final_test, 4)
+            results["resumen"]["mejor_precision_prueba"] = round(best_test, 4)
+            results["resumen"]["perdida_final_prueba"] = round(final_test_loss, 6)
+            results["historial"]["test_accuracies"] = [
+                round(v, 4) for v in history["test_accuracies"]
+            ]
+            results["historial"]["test_losses"] = [
+                round(v, 6) for v in history["test_losses"]
+            ]
+
+        json_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "resultados.json"
+        )
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump(results, f, indent=2, ensure_ascii=False)
+        self._log(f"[PS] Resultados exportados a: {json_path}")
 
         # Vuelve a LISTENING
         self._state = self._S_LISTENING
         self._refresh_buttons()
 
         status = (
-            f"Entrenamiento completado — "
+            f"Entrenamiento completado en {time_str} — "
             f"Entrenamiento: {final_train:.2f}%  Mejor: {best_train:.2f}%"
         )
         if final_test is not None:
