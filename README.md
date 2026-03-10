@@ -14,6 +14,10 @@ neural-network/
 │   ├── parameter_server.py  # Clase ParameterServer (lógica TCP + entrenamiento)
 │   ├── worker_node.py       # Clase WorkerNode (forward + backward + gradientes)
 │   └── protocol.py          # Serialización de mensajes Pickle sobre TCP
+├── Docker/                  # Contenedores para Workers
+│   ├── Dockerfile.worker    # Imagen Docker del Worker
+│   ├── run_workers.ps1      # Script PowerShell para lanzar N Workers en Docker
+│   └── .dockerignore
 ├── Model/                   # Lógica central de la red neuronal
 │   └── nn.py                # init_params, forward_pass, cross_entropy_loss, apply_gradients
 ├── Utils/
@@ -151,6 +155,57 @@ python worker.py
 
 # Terminal 3 — Worker 1
 python worker.py
+```
+
+---
+
+## Workers con Docker
+
+La carpeta `Docker/` contiene una imagen lista para lanzar Workers en
+contenedores, lo que simplifica ejecutar varios Workers en la misma máquina
+sin gestionar entornos virtuales por separado.
+
+### Requisitos
+
+- [Docker Desktop](https://www.docker.com/products/docker-desktop) instalado y en ejecución.
+- El Parameter Server ya está escuchando en el puerto `9999`.
+
+### Construir la imagen
+
+Ejecutar desde la raíz del proyecto:
+
+```bash
+docker build -f Docker/Dockerfile.worker -t nn-worker .
+```
+
+> La imagen excluye `Data/` (definido en `.dockerignore`) ya que cada
+> contenedor descarga MNIST automáticamente en su primer arranque.
+
+### Lanzar Workers
+
+**Un solo Worker:**
+```bash
+docker run -d nn-worker python worker.py --server-host host.docker.internal --server-port 9999
+```
+
+**N Workers con el script PowerShell:**
+```powershell
+# Lanza 3 Workers en paralelo
+.\Docker\run_workers.ps1 -N 3
+```
+
+`host.docker.internal` resuelve automáticamente a la IP de la máquina anfitriona
+en Docker Desktop (Windows y macOS), permitiendo que los contenedores se conecten
+al PS que corre fuera de Docker.
+
+### Ejemplo completo con Docker (2 terminales)
+
+```bash
+# Terminal 1 — Parameter Server (en el host)
+python ps_terminal.py --workers 3 --epochs 20
+
+# Terminal 2 — 3 Workers en Docker
+.\Docker\run_workers.ps1 -N 3
 ```
 
 ---

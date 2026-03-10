@@ -10,6 +10,7 @@ Data/MNIST/raw
 **/__pycache__/
 
 # Resultados exportados
-Results/*
+Exports/*
 
+# Entorno virtual
 venv/

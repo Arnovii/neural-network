@@ -49,7 +49,6 @@ Tipos de mensaje en la cola:
     ("error",                exc: Exception)
 """
 
-import json
 import os
 import queue
 import sys
@@ -68,10 +67,12 @@ except ImportError as e:
     print("Instala con: pip install matplotlib")
     sys.exit(1)
 
+import numpy as np
 
 from Distributed.parameter_server import ParameterServer
 from Model.nn import init_params
 from Utils.mnist_loader import load_mnist_test
+from Utils.results_exporter import export_results
 
 
 # ================================================================
@@ -155,7 +156,6 @@ class DistributedPSApp:
     _ST_DONE = "✓ Listo"
     _ST_WAITING = "⏳ Esperando sesión"
 
-    # Estados del servidor
     _S_OFFLINE = "OFFLINE"
     _S_LISTENING = "LISTENING"
     _S_TRAINING = "TRAINING"
@@ -185,6 +185,7 @@ class DistributedPSApp:
         self._test_loss_history: list = []
         self._total_epochs: int = 0
         self._train_start_time: float = 0.0
+        self._train_config: dict = {}
 
         self._build_ui()
         self._refresh_buttons()
@@ -314,7 +315,8 @@ class DistributedPSApp:
         scrollbar = ttk.Scrollbar(container, orient="vertical", command=canvas.yview)
         frame = ttk.Frame(canvas, padding="10")
         frame.bind(
-            "<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all")),
         )
         canvas.create_window((0, 0), window=frame, anchor="nw")
         canvas.configure(yscrollcommand=scrollbar.set)
@@ -801,6 +803,9 @@ class DistributedPSApp:
             messagebox.showerror("Parámetro inválido", str(exc))
             return
 
+        if seed is not None:
+            np.random.seed(seed)
+
         # Inicializar pesos
         initial_params = init_params(784, hidden, 10, seed)
 
@@ -1064,9 +1069,6 @@ class DistributedPSApp:
         best_test = max(history["test_accuracies"]) if has_test else None
         final_test_loss = history["test_losses"][-1] if has_test else None
 
-        minutes, seconds = divmod(elapsed, 60)
-        time_str = f"{int(minutes)}m {seconds:.2f}s"
-
         title = (
             f"Completado  |  Mejor Entrenamiento: {best_train:.2f}%  |  "
             f"Entrenamiento Final: {final_train:.2f}%"
@@ -1083,6 +1085,9 @@ class DistributedPSApp:
             self._update_session_column(wid, in_session=False)
             self._update_worker_row(wid)
 
+        minutes, seconds = divmod(elapsed, 60)
+        time_str = f"{int(minutes)}m {seconds:.2f}s"
+
         self._log("─" * 50)
         self._log("[PS] Entrenamiento completado")
         self._log(f"     Precisión final de entrenamiento : {final_train:.2f}%")
@@ -1095,36 +1100,8 @@ class DistributedPSApp:
         self._log(f"     Tiempo de ejecución        : {time_str} ({elapsed:.2f}s)")
         self._log("─" * 50)
 
-        # Exportar resultados a JSON
-        results = {
-            "configuracion": getattr(self, "_train_config", {}),
-            "tiempo_ejecucion_segundos": round(elapsed, 2),
-            "resumen": {
-                "precision_final_entrenamiento": round(final_train, 4),
-                "mejor_precision_entrenamiento": round(best_train, 4),
-                "perdida_final_entrenamiento": round(final_loss, 6),
-            },
-            "historial": {
-                "accuracies": [round(v, 4) for v in history["accuracies"]],
-                "losses": [round(v, 6) for v in history["losses"]],
-            },
-        }
-        if has_test:
-            results["resumen"]["precision_final_prueba"] = round(final_test, 4)
-            results["resumen"]["mejor_precision_prueba"] = round(best_test, 4)
-            results["resumen"]["perdida_final_prueba"] = round(final_test_loss, 6)
-            results["historial"]["test_accuracies"] = [
-                round(v, 4) for v in history["test_accuracies"]
-            ]
-            results["historial"]["test_losses"] = [
-                round(v, 6) for v in history["test_losses"]
-            ]
-
-        json_path = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)), "resultados.json"
-        )
-        with open(json_path, "w", encoding="utf-8") as f:
-            json.dump(results, f, indent=2, ensure_ascii=False)
+        # Exportar resultados
+        json_path = export_results(history, self._train_config, elapsed)
         self._log(f"[PS] Resultados exportados a: {json_path}")
 
         # Vuelve a LISTENING

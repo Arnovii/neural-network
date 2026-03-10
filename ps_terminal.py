@@ -34,28 +34,24 @@ El PS tiene tres fases:
 
     3. train()   → Ejecuta el loop de entrenamiento distribuido:
                        Por cada época:
-                       a. Dividir índices 0..n_train en N chunks.
-                       b. Broadcast: params + índices a cada Worker.
-                       c. Esperar gradientes de TODOS los Workers.
-                       d. Promediar:  ∇θ = (1/N) * Σ ∇θL(Bᵢ)
-                       e. Actualizar: θ ← θ − lr * ∇θ
+                       a. Genera una semilla aleatoria de época.
+                       b. Broadcast: params + semilla a cada Worker.
+                       c. Cada Worker reconstruye su chunk localmente.
+                       d. Esperar gradientes de TODOS los Workers.
+                       e. Promediar:  ∇θ = (1/N) * Σ ∇θL(Bᵢ)
+                       f. Actualizar: θ ← θ − lr * ∇θ
 
     4. shutdown() → Envía STOP a los Workers y cierra el servidor.
 
-Las etiquetas MNIST se cargan aquí (solo Y_train, ~240 KB) para
-pasar al PS la información necesaria para la partición estratificada.
-Los datos (imágenes) nunca salen de cada Worker.
-
-Al finalizar imprime el historial de precisión y pérdida por época.
+Al finalizar el entrenamiento, imprime el historial de precisión y pérdida
+por época y exporta los resultados a ``Exports/`` vía ``Utils/results_exporter``.
 """
 
 import argparse
-import json
 import os
 import sys
 import threading
 import time
-
 
 # Asegura que los módulos del proyecto sean importables
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -63,6 +59,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from Distributed.parameter_server import ParameterServer
 from Model.nn import init_params
 from Utils.mnist_loader import load_mnist_test
+from Utils.results_exporter import export_results
 
 
 # ================================================================
@@ -258,7 +255,9 @@ def main() -> None:
         print(f"  Pérdida final de prueba     : {history['test_losses'][-1]:.4f}")
 
     minutes, seconds = divmod(elapsed, 60)
-    print(f"\n  Tiempo de ejecución         : {int(minutes)}m {seconds:.2f}s ({elapsed:.2f}s)")
+    print(
+        f"\n  Tiempo de ejecución         : {int(minutes)}m {seconds:.2f}s ({elapsed:.2f}s)"
+    )
 
     print("\n  Evolución por época:")
     has_test = bool(history["test_accuracies"])
@@ -273,47 +272,16 @@ def main() -> None:
             f"    Época {i:3d}: precisión={acc:5.2f}%  pérdida={loss:.4f}{test_str}  {bar}"
         )
 
-    # Exportar resultados a JSON
-    results = {
-        "configuracion": {
-            "epochs": args.epochs,
-            "hidden": args.hidden,
-            "learning_rate": args.lr,
-            "n_train": args.n_train,
-            "workers": args.workers,
-            "seed": args.seed,
-        },
-        "tiempo_ejecucion_segundos": round(elapsed, 2),
-        "resumen": {
-            "precision_final_entrenamiento": round(history["accuracies"][-1], 4),
-            "mejor_precision_entrenamiento": round(max(history["accuracies"]), 4),
-            "perdida_final_entrenamiento": round(history["losses"][-1], 6),
-        },
-        "historial": {
-            "accuracies": [round(v, 4) for v in history["accuracies"]],
-            "losses": [round(v, 6) for v in history["losses"]],
-        },
+    # Exportar resultados
+    config = {
+        "epochs": args.epochs,
+        "hidden": args.hidden,
+        "learning_rate": args.lr,
+        "n_train": args.n_train,
+        "workers": args.workers,
+        "seed": args.seed,
     }
-    if history["test_accuracies"]:
-        results["resumen"]["precision_final_prueba"] = round(
-            history["test_accuracies"][-1], 4
-        )
-        results["resumen"]["mejor_precision_prueba"] = round(
-            max(history["test_accuracies"]), 4
-        )
-        results["resumen"]["perdida_final_prueba"] = round(
-            history["test_losses"][-1], 6
-        )
-        results["historial"]["test_accuracies"] = [
-            round(v, 4) for v in history["test_accuracies"]
-        ]
-        results["historial"]["test_losses"] = [
-            round(v, 6) for v in history["test_losses"]
-        ]
-
-    json_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "resultados.json")
-    with open(json_path, "w", encoding="utf-8") as f:
-        json.dump(results, f, indent=2, ensure_ascii=False)
+    json_path = export_results(history, config, elapsed)
     print(f"\n  Resultados exportados a: {json_path}")
 
 
