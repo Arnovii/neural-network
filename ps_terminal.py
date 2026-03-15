@@ -13,7 +13,8 @@ Opciones:
     --port          Puerto TCP                           (default: 9999)
     --workers       Número de Workers a esperar          (default: 2)
     --epochs        Épocas de entrenamiento              (default: 10)
-    --hidden        Neuronas en la capa oculta           (default: 30)
+    --hidden1       Neuronas en la primera capa oculta   (default: 256)
+    --hidden2       Neuronas en la segunda capa oculta   (default: 128)
     --lr            Tasa de aprendizaje                  (default: 0.1)
     --n-train       Total de ejemplos de entrenamiento   (default: 10000)
     --seed          Semilla aleatoria                    (default: ninguna)
@@ -43,8 +44,9 @@ El PS tiene tres fases:
 
     4. shutdown() → Envía STOP a los Workers y cierra el servidor.
 
-Al finalizar el entrenamiento, imprime el historial de precisión y pérdida
-por época y exporta los resultados a ``Exports/`` vía ``Utils/results_exporter``.
+Los datos de entrenamiento (imágenes) nunca salen de cada Worker.
+Al finalizar imprime el historial de precisión y pérdida por época
+y exporta los resultados a ``Results/`` vía ``Utils/results_exporter``.
 """
 
 import argparse
@@ -57,8 +59,9 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from Distributed.parameter_server import ParameterServer
-from Model.nn import init_params
-from Utils.mnist_loader import load_mnist_test
+from Model.cnn_extractor import CNNExtractor
+from Model.mlp import init_params
+from Utils.cifar_loader import NUM_CLASSES, load_cifar10_test
 from Utils.results_exporter import export_results
 
 
@@ -144,10 +147,16 @@ def main() -> None:
         "--epochs", type=int, default=10, help="Épocas de entrenamiento (default: 10)"
     )
     parser.add_argument(
-        "--hidden",
+        "--hidden1",
         type=int,
-        default=30,
-        help="Neuronas en la capa oculta (default: 30)",
+        default=256,
+        help="Neuronas en la primera capa oculta (default: 256)",
+    )
+    parser.add_argument(
+        "--hidden2",
+        type=int,
+        default=128,
+        help="Neuronas en la segunda capa oculta (default: 128)",
     )
     parser.add_argument(
         "--lr", type=float, default=0.1, help="Tasa de aprendizaje (default: 0.1)"
@@ -155,24 +164,44 @@ def main() -> None:
     parser.add_argument(
         "--n-train",
         type=int,
-        default=10_000,
-        help="Total de ejemplos de entrenamiento (default: 10000)",
+        default=50_000,
+        help="Total de ejemplos de entrenamiento (default: 50000)",
     )
     parser.add_argument(
         "--seed", type=int, default=None, help="Semilla aleatoria (default: ninguna)"
     )
+    parser.add_argument(
+        "--cnn-arch",
+        type=str,
+        default="simple",
+        choices=["simple", "resnet18"],
+        help="Arquitectura del extractor CNN (default: simple)",
+    )
+    parser.add_argument(
+        "--cnn-pretrained",
+        action="store_true",
+        help="Usar pesos ImageNet para ResNet-18 (requiere descarga)",
+    )
+    parser.add_argument(
+        "--cnn-device",
+        type=str,
+        default="cpu",
+        help="Dispositivo PyTorch para la CNN: cpu, cuda, mps (default: cpu)",
+    )
     args = parser.parse_args()
 
-    INPUT_SIZE = 784
-    OUTPUT_SIZE = 10
+    OUTPUT_SIZE = NUM_CLASSES
 
     print("=" * 70)
-    print("PARAMETER SERVER — Configuración")
+    print("PARAMETER SERVER — Configuración (CIFAR-10)")
     print("=" * 70)
     print(f"  Host            : {args.host}:{args.port}")
     print(f"  Workers         : {args.workers}")
     print(f"  Épocas          : {args.epochs}")
-    print(f"  Arquitectura    : {INPUT_SIZE} → {args.hidden} → {OUTPUT_SIZE}")
+    print(f"  CNN arch        : {args.cnn_arch}")
+    print(
+        f"  MLP arquitectura: features → {args.hidden1} → {args.hidden2} → {OUTPUT_SIZE}"
+    )
     print(f"  Learning rate   : {args.lr}")
     print(f"  Ejemplos train  : {args.n_train}")
     print(f"  Semilla         : {args.seed if args.seed is not None else 'aleatoria'}")
@@ -218,15 +247,30 @@ def main() -> None:
     ready_event.wait()
     print()
 
-    # Inicializa pesos
-    initial_params = init_params(INPUT_SIZE, args.hidden, OUTPUT_SIZE, args.seed)
+    # Construye el extractor CNN con la misma semilla que usarán los Workers,
+    # garantizando que todos partan de los mismos pesos convolucionales.
+    print("\nConstruyendo extractor CNN...")
+    cnn = CNNExtractor(
+        arch=args.cnn_arch,
+        pretrained=args.cnn_pretrained,
+        device=args.cnn_device,
+        seed=args.seed if args.seed is not None else 42,
+    )
+    feature_dim = cnn.feature_dim
+    print(f"CNN lista — arch={args.cnn_arch}  feature_dim={feature_dim}\n")
 
-    # Carga datos de prueba para evaluación por época en el PS
-    print("Cargando datos de prueba MNIST (10 000 ejemplos)...")
-    X_test, Y_test = load_mnist_test(verbose=False)
-    print(f"Datos de prueba listos ({len(X_test)} ejemplos).\n")
+    # MLP: la entrada es el vector de features de la CNN, no la imagen raw
+    initial_params = init_params(
+        feature_dim, args.hidden1, args.hidden2, OUTPUT_SIZE, args.seed
+    )
 
-    # Entrenamiento
+    # El PS evalúa sobre features extraídos, no sobre imágenes raw.
+    # Se extrae una sola vez aquí; los features son fijos (CNN congelada).
+    print("Cargando y extrayendo features de prueba CIFAR-10 (10 000 imágenes)...")
+    X_test_raw, Y_test = load_cifar10_test(verbose=False)
+    X_test = cnn.extract_batched(X_test_raw)
+    print(f"Features de prueba listos: {X_test.shape}\n")
+
     t_start = time.perf_counter()
 
     history = server.train(
@@ -275,7 +319,9 @@ def main() -> None:
     # Exportar resultados
     config = {
         "epochs": args.epochs,
-        "hidden": args.hidden,
+        "cnn_arch": args.cnn_arch,
+        "hidden1": args.hidden1,
+        "hidden2": args.hidden2,
         "learning_rate": args.lr,
         "n_train": args.n_train,
         "workers": args.workers,

@@ -44,11 +44,13 @@ Tipos de mensaje en la cola:
                               "loss": float, "accuracy": float})
     ("epoch_end",            {"epoch": int, "total": int,
                               "accuracy": float, "loss": float,
-                              "test_accuracy": float | None, "test_loss": float | None})
+                              "test_accuracy": float | None,
+                              "test_loss": float | None})
     ("training_done",        history: dict)
     ("error",                exc: Exception)
 """
 
+import json
 import os
 import queue
 import sys
@@ -70,8 +72,9 @@ except ImportError as e:
 import numpy as np
 
 from Distributed.parameter_server import ParameterServer
-from Model.nn import init_params
-from Utils.mnist_loader import load_mnist_test
+from Model.cnn_extractor import CNNExtractor
+from Model.mlp import init_params
+from Utils.cifar_loader import NUM_CLASSES, load_cifar10_test
 from Utils.results_exporter import export_results
 
 
@@ -186,6 +189,7 @@ class DistributedPSApp:
         self._total_epochs: int = 0
         self._train_start_time: float = 0.0
         self._train_config: dict = {}
+        self._cnn: CNNExtractor | None = None
 
         self._build_ui()
         self._refresh_buttons()
@@ -331,10 +335,12 @@ class DistributedPSApp:
         self._v_host = tk.StringVar(value="0.0.0.0")
         self._v_port = tk.IntVar(value=9999)
         self._v_epochs = tk.IntVar(value=50)
-        self._v_hidden = tk.IntVar(value=30)
+        self._v_hidden1 = tk.IntVar(value=256)
+        self._v_hidden2 = tk.IntVar(value=128)
         self._v_lr = tk.StringVar(value="0.1")
         self._v_n_train = tk.StringVar(value="60000")
         self._v_seed = tk.StringVar(value="")
+        self._v_cnn_arch = tk.StringVar(value="simple")
 
         # ── Sección: Conexión TCP ─────────────────────────────────
         ttk.Label(frame, text="Conexión TCP", font=("Helvetica", 11, "bold")).pack(
@@ -352,7 +358,15 @@ class DistributedPSApp:
         ttk.Separator(frame, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=4)
 
         _add_slider(frame, "Épocas (50 – 1000):", self._v_epochs, 50, 1000)
-        _add_slider(frame, "Neuronas ocultas (10 – 100):", self._v_hidden, 10, 100)
+        ttk.Label(frame, text="CNN Extractor:").pack(anchor=tk.W, pady=(10, 0))
+        cnn_frame = ttk.Frame(frame)
+        cnn_frame.pack(fill=tk.X, pady=(0, 6))
+        for arch in ("simple", "resnet18"):
+            ttk.Radiobutton(
+                cnn_frame, text=arch.capitalize(), variable=self._v_cnn_arch, value=arch
+            ).pack(side=tk.LEFT, padx=4)
+        _add_slider(frame, "Neuronas ocultas 1 (32 – 1024):", self._v_hidden1, 32, 1024)
+        _add_slider(frame, "Neuronas ocultas 2 (32 – 512):", self._v_hidden2, 32, 512)
         _add_float_input(
             frame, "Tasa de aprendizaje\n(0.0001 - 10):", self._v_lr, 0.0001, 10.0
         )
@@ -410,13 +424,8 @@ class DistributedPSApp:
             frame, text="Limpiar gráficas", command=self._clear_plots
         )
         btn_clear.pack(fill=tk.X, pady=4)
-        ToolTip(
-            btn_clear,
-            "Borra todas las gráficas actuales",
-        )
-
+        ToolTip(btn_clear, "Borra todas las gráficas actuales")
     # ── Panel derecho ─────────────────────────────────────────────
-
     def _build_right_panel(self) -> None:
         right = ttk.Frame(self.root)
         right.grid(row=0, column=1, sticky="nsew", padx=5, pady=5)
@@ -794,7 +803,8 @@ class DistributedPSApp:
         # Recoger parámetros de entrenamiento
         try:
             epochs = int(self._v_epochs.get())
-            hidden = int(self._v_hidden.get())
+            hidden1 = int(self._v_hidden1.get())
+            hidden2 = int(self._v_hidden2.get())
             lr = float(self._v_lr.get())
             n_train = int(self._v_n_train.get())
             seed_str = self._v_seed.get().strip()
@@ -803,13 +813,21 @@ class DistributedPSApp:
             messagebox.showerror("Parámetro inválido", str(exc))
             return
 
-        if seed is not None:
-            np.random.seed(seed)
+        cnn_arch = self._v_cnn_arch.get()
 
-        # Inicializar pesos
-        initial_params = init_params(784, hidden, 10, seed)
+        # Construir extractor CNN si no existe o si cambió la arquitectura
+        if self._cnn is None or self._cnn.arch != cnn_arch:
+            self._cnn = CNNExtractor(
+                arch=cnn_arch,
+                device="cpu",
+                seed=seed if seed is not None else 42,
+            )
 
-        # Reinicia historial y barras para esta sesión
+        # Inicializar pesos del MLP con la dimensión correcta
+        initial_params = init_params(
+            self._cnn.feature_dim, hidden1, hidden2, NUM_CLASSES, seed
+        )
+
         self._acc_history.clear()
         self._loss_history.clear()
         self._test_acc_history.clear()
@@ -833,7 +851,9 @@ class DistributedPSApp:
         self._train_start_time = time.perf_counter()
         self._train_config = {
             "epochs": epochs,
-            "hidden": hidden,
+            "cnn_arch": cnn_arch,
+            "hidden1": hidden1,
+            "hidden2": hidden2,
             "learning_rate": lr,
             "n_train": n_train,
             "workers": len(self._session_workers),
@@ -859,11 +879,14 @@ class DistributedPSApp:
             self._refresh_buttons()
             return
 
+        # Captura el CNN verificado en una variable local
+        # para que el type checker reconozca que no es None
+        cnn = self._cnn
+
         def _train_thread() -> None:
             try:
-                # Carga el conjunto de prueba completo para evaluación por época
-                X_test, Y_test = load_mnist_test(verbose=False)
-
+                X_test_raw, Y_test = load_cifar10_test(verbose=False)
+                X_test = cnn.extract_batched(X_test_raw)
                 history = server.train(
                     epochs=epochs,
                     initial_params=initial_params,

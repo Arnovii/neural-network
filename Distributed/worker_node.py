@@ -1,10 +1,11 @@
 """
 Distributed/worker_node.py
 
-Implementación del Worker para el algoritmo de Diego distribuido.
+Implementación del Worker para el Algoritmo de Diego distribuido
+con pipeline CNN (extractor) + MLP (clasificador).
 
 ──────────────────────────────────────────────────────────────────
-ROL DEL WORKER
+ROL DEL WORKER EN LA PIPELINE CNN + MLP
 ──────────────────────────────────────────────────────────────────
 Cada Worker es un proceso persistente que:
 
@@ -21,6 +22,19 @@ El Worker nunca se desconecta entre sesiones de entrenamiento.
 Permanece activo hasta que el PS envíe STOP o el proceso se
 interrumpa manualmente.
 
+El Worker ejecuta dos etapas en cada época:
+
+    1. EXTRACCIÓN (CNN — PyTorch, pesos fijos):
+       X_batch (N, 3, 32, 32) ──► CNN ──► features (N, feature_dim)
+       La CNN no se entrena: sus pesos son idénticos en todos los
+       Workers y no cambian durante el entrenamiento.
+
+    2. FORWARD + BACKWARD (MLP — NumPy):
+       features (N, feature_dim) ──► MLP ──► gradientes
+       Solo los gradientes del MLP viajan por la red al PS.
+
+Esta separación mantiene el Algoritmo de Diego intacto.
+
 ──────────────────────────────────────────────────────────────────
 POR QUÉ ÍNDICES Y NO DATOS
 ──────────────────────────────────────────────────────────────────
@@ -30,17 +44,15 @@ En cambio, enviar los índices cuesta < 1 KB. Cada Worker tiene MNIST
 localmente y extrae su batch en microsegundos.
 
 ──────────────────────────────────────────────────────────────────
-CÁLCULO DE GRADIENTES
+EXTRACCIÓN PREPROCESADA UNA SOLA VEZ
 ──────────────────────────────────────────────────────────────────
-El Worker NO actualiza sus pesos. Solo calcula gradientes y los
-envía. La actualización θ ← θ − lr * ∇θ la hace exclusivamente el PS.
+Al arrancar, el Worker extrae los features de las 50 000 imágenes
+una sola vez y los almacena en self._X_features (50000, feature_dim).
+En cada época solo se indexan las filas correspondientes al chunk.
+Esto es correcto porque la CNN es fija: los features no cambian.
 
-Forward:   Z1=W1@X.T+b1  ->  A1=σ(Z1)  ->  Z2=W2@A1+b2  ->  A2=softmax(Z2)
-Backward:  δ2=A2−Y_hot  ->  dW2=(1/n)δ2@A1.T  ->  db2=(1/n)Σδ2
-           δ1=(W2.T@δ2)⊙σ'(A1)  ->  dW1=(1/n)δ1@X  ->  db1=(1/n)Σδ1
-
-Las funciones de activación se importan de Utils/math_utils.py,
-compartidas con el resto del proyecto.
+Coste único: ~50 000 forward passes CNN al arrancar (~segundos).
+Coste por época: indexación + MLP forward/backward (puro NumPy).
 """
 
 import socket
@@ -50,75 +62,85 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 
 from Distributed.protocol import MsgType, receive_message, send_message
-from Model.nn import cross_entropy_loss, forward_pass
-from Utils.math_utils import sigmoid_derivative_from_activation
+from Model.cnn_extractor import CNNExtractor
+from Model.mlp import forward_and_gradients
 
 
 class WorkerNode:
     """
-    Nodo Worker persistente para el entrenamiento distribuido.
+    Nodo Worker persistente para entrenamiento distribuido con CNN + MLP.
 
-    Se conecta al PS, recibe su ID asignado, y permanece activo
-    esperando sesiones de entrenamiento hasta recibir STOP.
-
-    :param server_host: Dirección IP del Parameter Server.
-    :type server_host: str
-
+    :param server_host: IP del Parameter Server.
     :param server_port: Puerto TCP del Parameter Server.
-    :type server_port: int
-
-    :param X_train: Dataset completo de entrenamiento, forma ``(N, 784)``.
-    :type X_train: np.ndarray
-
-    :param Y_train: Etiquetas de entrenamiento, forma ``(N,)``.
-    :type Y_train: np.ndarray
-
-    :param input_size: Neuronas de entrada (784 para MNIST).
-    :type input_size: int
-
-    :param hidden_size: Neuronas en la capa oculta.
-    :type hidden_size: int
-
-    :param output_size: Número de clases (10 para MNIST).
-    :type output_size: int
-
-    :param verbose: Si True imprime progreso por época.
-    :type verbose: bool
+    :param X_train: Imágenes (N, 3, 32, 32) float32 NCHW normalizadas.
+    :param Y_train: Etiquetas (N,) int32.
+    :param cnn_arch: Arquitectura CNN: "simple" o "resnet18".
+    :param cnn_pretrained: Cargar pesos ImageNet (solo resnet18).
+    :param cnn_device: Dispositivo PyTorch: "cpu", "cuda", "mps".
+    :param cnn_seed: Semilla para inicialización CNN (reproducibilidad entre Workers).
+    :param hidden1: Neuronas capa oculta 1 del MLP.
+    :param hidden2: Neuronas capa oculta 2 del MLP.
+    :param cnn_batch_size: Batch size para extracción inicial de features.
+    :param verbose: Imprime progreso por época.
     """
 
     def __init__(
         self,
         server_host: str,
         server_port: int,
-        X_train: np.ndarray,
-        Y_train: np.ndarray,
-        input_size: int = 784,
-        hidden_size: int = 30,
-        output_size: int = 10,
+        X_train: "np.ndarray",
+        Y_train: "np.ndarray",
+        cnn_arch: str = "simple",
+        cnn_pretrained: bool = False,
+        cnn_device: str = "cpu",
+        cnn_seed: int | None = 42,
+        hidden1: int = 256,
+        hidden2: int = 128,
+        cnn_batch_size: int = 512,
         verbose: bool = True,
     ) -> None:
         self.server_host = server_host
         self.server_port = server_port
-        self.X_train = X_train
         self.Y_train = Y_train
-        self.input_size = input_size
-        self.hidden_size = hidden_size
-        self.output_size = output_size
+        self.hidden1 = hidden1
+        self.hidden2 = hidden2
         self.verbose = verbose
+        self.worker_id: Optional[int] = None
+        self._sock: Optional[socket.socket] = None
 
-        # Índices por clase precalculados una sola vez al arrancar.
+        # ── Extractor CNN (pesos fijos) ───────────────────────────
+        self._log("Construyendo extractor CNN...")
+        self._cnn = CNNExtractor(
+            arch=cnn_arch,
+            pretrained=cnn_pretrained,
+            device=cnn_device,
+            seed=cnn_seed,
+        )
+
+        # ── Extracción única de todos los features ────────────────
+        self._log(
+            f"Extrayendo features de {len(X_train)} imágenes "
+            f"(arch={cnn_arch}, batch={cnn_batch_size})..."
+        )
+        t0 = time.perf_counter()
+        self._X_features: np.ndarray = self._cnn.extract_batched(
+            X_train, batch_size=cnn_batch_size
+        )
+        elapsed = time.perf_counter() - t0
+        self._log(
+            f"Features listos: shape={self._X_features.shape}  "
+            f"dtype={self._X_features.dtype}  ({elapsed:.2f}s)"
+        )
+
+        # ── Índices por clase precalculados ───────────────────────
+        # np.where se ejecuta una sola vez por clase al arrancar.
         # _reconstruct_indices los reutiliza cada época sin recalcularlos.
         self._class_indices: List[np.ndarray] = [
             np.where(Y_train == digit)[0] for digit in range(10)
         ]
 
-        # Asignado por el PS durante el handshake
-        self.worker_id: Optional[int] = None
-
-        self._sock: Optional[socket.socket] = None
-
     # ================================================================
-    # PUNTO DE ENTRADA PRINCIPAL
+    # PUNTO DE ENTRADA
     # ================================================================
 
     def run(self) -> None:
@@ -131,15 +153,16 @@ class WorkerNode:
         self._connect()
         self._log(
             f"Conectado a {self.server_host}:{self.server_port}  "
-            f"| ID asignado: {self.worker_id}  "
-            f"| Dataset: {len(self.X_train)} ejemplos"
+            f"| ID={self.worker_id}  "
+            f"| features={self._X_features.shape}  "
+            f"| MLP hidden=({self.hidden1},{self.hidden2})"
         )
         self._log("Esperando sesión de entrenamiento del Parameter Server...")
         self._main_loop()
         self._disconnect()
 
     # ================================================================
-    # CONEXIÓN Y HANDSHAKE
+    # CONEXIÓN
     # ================================================================
 
     def _connect(self) -> None:
@@ -159,7 +182,7 @@ class WorkerNode:
 
         msg = receive_message(self._sock)
         if msg["type"] != MsgType.WORKER_ID:
-            raise ConnectionError(f"Se esperaba WORKER_ID, llegó: {msg['type']}")
+            raise ConnectionError(f"Esperaba WORKER_ID, llegó: {msg['type']}")
         self.worker_id = msg["payload"]["worker_id"]
 
     def _disconnect(self) -> None:
@@ -170,10 +193,10 @@ class WorkerNode:
             except Exception:
                 pass
             self._sock = None
-        self._log("Conexión cerrada. Worker finalizado.")
+        self._log("Conexión cerrada.")
 
     # ================================================================
-    # BUCLE PRINCIPAL PERSISTENTE
+    # BUCLE PRINCIPAL
     # ================================================================
 
     def _main_loop(self) -> None:
@@ -195,16 +218,14 @@ class WorkerNode:
                 break
 
             if msg["type"] == MsgType.TRAIN_START:
-                epochs = msg["payload"]["epochs"]
-                n_train = msg["payload"]["n_train"]
-                n_workers = msg["payload"]["n_workers"]
-                worker_rank = msg["payload"]["worker_rank"]
+                p = msg["payload"]
                 self._log(
-                    f"TRAIN_START recibido — "
-                    f"{epochs} épocas  |  n_train={n_train}  "
-                    f"|  rank={worker_rank}/{n_workers}"
+                    f"TRAIN_START — {p['epochs']} épocas  "
+                    f"n_train={p['n_train']}  rank={p['worker_rank']}/{p['n_workers']}"
                 )
-                self._run_training_session(epochs, n_train, n_workers, worker_rank)
+                self._run_training_session(
+                    p["epochs"], p["n_train"], p["n_workers"], p["worker_rank"]
+                )
 
     def _run_training_session(
         self,
@@ -253,8 +274,11 @@ class WorkerNode:
         worker_rank: int,
     ) -> None:
         """
-        Procesa un mensaje PARAMS: reconstruye los índices localmente
-        a partir de la semilla, calcula gradientes y los envía.
+        Recibe PARAMS (pesos MLP + semilla), reconstruye los índices localmente
+        a partir de la semilla, calcula gradientes y envía GRADIENTS.
+
+        No hay forward CNN aquí: self._X_features ya tiene todos los features.
+        Solo se indexan las filas correspondientes al chunk de este Worker.
 
         La partición es un Round Robin estratificado por clase (0-9)
         con la misma semilla, es decir, mismo resultado. Esto significa
@@ -270,16 +294,12 @@ class WorkerNode:
         seed = payload["seed"]
 
         indices = self._reconstruct_indices(seed, n_train, n_workers, worker_rank)
-
-        self._log(f"Época {epoch} — batch {len(indices)} ejemplos")
+        self._log(f"Época {epoch} — {len(indices)} ejemplos")
 
         t_start = time.perf_counter()
-
-        X_batch = self.X_train[indices]
+        F_batch = self._X_features[indices]
         Y_batch = self.Y_train[indices]
-
-        gradients, loss, accuracy = self._compute_gradients(params, X_batch, Y_batch)
-
+        gradients, loss, accuracy = forward_and_gradients(params, F_batch, Y_batch)
         elapsed = time.perf_counter() - t_start
         self._log(f"  loss={loss:.4f}  acc={accuracy:.2f}%  ({elapsed:.3f}s)")
 
@@ -297,7 +317,7 @@ class WorkerNode:
         )
 
     # ================================================================
-    # FORWARD + BACKWARD
+    # RECONSTRUCCIÓN DE ÍNDICES
     # ================================================================
 
     def _reconstruct_indices(
@@ -357,8 +377,8 @@ class WorkerNode:
             shuffled = class_idx.copy()
             rng.shuffle(shuffled)
 
-            # Define cuántos ejemplos de esta clase usar
-            # max(1, ...) evita que desaparezcan clases si n_train es pequeño
+            # Define cuántos ejemplos de esta clase usar.
+            # max(1, ...) evita que desaparezcan clases si n_train es pequeño.
             n_class = max(1, round(len(class_idx) * ratio))
 
             # Round Robin: este Worker toma 1 de cada n_workers elementos
@@ -367,57 +387,6 @@ class WorkerNode:
         my_indices = np.concatenate(my_indices)
         rng.shuffle(my_indices)
         return my_indices
-
-    def _compute_gradients(
-        self,
-        params: Dict[str, np.ndarray],
-        X: np.ndarray,
-        Y: np.ndarray,
-    ) -> Tuple[Dict[str, np.ndarray], float, float]:
-        """
-        Forward pass y backward pass sobre el batch.
-
-        No modifica los parámetros: devuelve gradientes, loss y accuracy.
-
-        :param params: Parámetros globales (W1, b1, W2, b2).
-        :type params: Dict[str, np.ndarray]
-
-        :param X: Batch de imágenes ``(n, input_size)``.
-        :type X: np.ndarray
-
-        :param Y: Etiquetas del batch ``(n,)``.
-        :type Y: np.ndarray
-
-        :return: ``(gradients, loss, accuracy)``
-        """
-        W2 = params["W2"]
-        num_imagenes = len(X)
-
-        # Forward
-        A1, A2 = forward_pass(params, X)
-
-        # Métricas
-        predictions = np.argmax(A2, axis=0)  # (N,)
-        correct = int(np.sum(predictions == Y))
-        mean_loss = cross_entropy_loss(A2, Y)
-
-        # Backward
-        Y_onehot = np.zeros((self.output_size, num_imagenes))
-        Y_onehot[Y, np.arange(num_imagenes)] = 1.0
-
-        delta2 = A2 - Y_onehot  # (output, N)
-        dW2 = (1.0 / num_imagenes) * (delta2 @ A1.T)  # (output, hidden)
-        db2 = (1.0 / num_imagenes) * np.sum(delta2, axis=1)  # (output,)
-
-        delta1 = (W2.T @ delta2) * sigmoid_derivative_from_activation(A1)  # (hidden, N)
-        dW1 = (1.0 / num_imagenes) * (delta1 @ X)  # (hidden, input)
-        db1 = (1.0 / num_imagenes) * np.sum(delta1, axis=1)  # (hidden,)
-
-        return (
-            {"dW1": dW1, "db1": db1, "dW2": dW2, "db2": db2},
-            mean_loss,
-            100.0 * correct / num_imagenes,
-        )
 
     # ================================================================
     # LOG
