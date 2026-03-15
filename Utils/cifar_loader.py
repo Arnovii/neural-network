@@ -40,23 +40,9 @@ import numpy as np
 
 # ── Constantes exportadas ─────────────────────────────────────────
 NUM_CLASSES = 10
-INPUT_SHAPE = (3, 32, 32)  # NCHW sin dimensión de batch
 
 _MEAN = np.array([0.4914, 0.4822, 0.4465], dtype=np.float32)
 _STD = np.array([0.2470, 0.2435, 0.2616], dtype=np.float32)
-
-CIFAR10_CLASSES = [
-    "avión",
-    "automóvil",
-    "pájaro",
-    "gato",
-    "ciervo",
-    "perro",
-    "rana",
-    "caballo",
-    "barco",
-    "camión",
-]
 
 
 # ================================================================

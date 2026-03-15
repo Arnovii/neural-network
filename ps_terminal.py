@@ -46,7 +46,7 @@ El PS tiene tres fases:
 
 Los datos de entrenamiento (imágenes) nunca salen de cada Worker.
 Al finalizar imprime el historial de precisión y pérdida por época
-y exporta los resultados a ``Results/`` vía ``Utils/results_exporter``.
+y exporta los resultados a ``Exports/`` vía ``Utils/results_exporter``.
 """
 
 import argparse
