@@ -3,17 +3,22 @@ Model — Lógica central de la red neuronal.
 
 Módulos
 -------
-nn    Inicialización, forward pass, pérdida y actualización de pesos.
+cnn_extractor    CNN (PyTorch) para extracción de features de imágenes.
+mlp              MLP (NumPy) para clasificación sobre features.
+nn               Red neuronal simple (NumPy, sin uso de CNN).
 
 Uso rápido
 ----------
-    from Model.nn import init_params, forward_pass, cross_entropy_loss, apply_gradients
+    from Model import CNNExtractor, init_params, forward_and_gradients, evaluate
 """
 
-from Model.nn import init_params, forward_pass, cross_entropy_loss
+from Model.cnn_extractor import CNNExtractor
+from Model.mlp import init_params, forward_and_gradients, evaluate, apply_gradients
 
 __all__ = [
+    "CNNExtractor",
     "init_params",
-    "forward_pass",
-    "cross_entropy_loss",
+    "forward_and_gradients",
+    "evaluate",
+    "apply_gradients",
 ]

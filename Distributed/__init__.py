@@ -9,7 +9,10 @@ protocol            Protocolo de mensajes Pickle sobre TCP (MsgType, send/receiv
 
 Uso rápido
 ----------
-    from Distributed import ParameterServer, WorkerNode, MsgType
+    from Distributed import (
+        ParameterServer, WorkerNode, MsgType,
+        send_message, receive_message
+    )
 """
 
 from Distributed.parameter_server import ParameterServer

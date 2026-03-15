@@ -1,5 +1,5 @@
 # Archivos comprimidos
-Data/MNIST/raw
+Data/*
 *.zip
 *.gz
 
