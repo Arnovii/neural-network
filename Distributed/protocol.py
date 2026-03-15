@@ -33,67 +33,73 @@ ventajas frente a JSON son:
   • Más rápido: no hay llamadas a .tolist() ni parsing de texto.
 
 ──────────────────────────────────────────────────────────────────
-TIPOS DE MENSAJE Y FLUJO
+FLUJO COMPLETO
 ──────────────────────────────────────────────────────────────────
 
   Worker                          Parameter Server
   ──────                          ────────────────
-  READY ─────────────────────────►  (se conecta; PS asigna ID)
-        ◄──────────────────────── WORKER_ID  (PS envía ID asignado)
+  READY ─────────────────────────►  (PS asigna ID)
+        ◄──────────────────────── WORKER_ID
+        ◄──────────────────────── CNN_WEIGHTS  (PS envía pesos CNN)
+  CNN_READY ─────────────────────►  (Worker confirmó extracción)
 
-  [en espera...]
+  [en espera de TRAIN_START...]
 
-        ◄──────────────────────── TRAIN_START  (PS inicia entrenamiento)
-
+        ◄──────────────────────── TRAIN_START
   [por cada época:]
-        ◄──────────────────────── PARAMS  (params + semilla de época)
+        ◄──────────────────────── PARAMS  (pesos MLP + semilla)
   GRADIENTS ─────────────────────►
+  [vuelve a esperar TRAIN_START]
 
-  [vuelve a esperar TRAIN_START para el siguiente entrenamiento]
-
-        ◄──────────────────────── STOP  (PS se apaga)
-  [Worker cierra conexión]
+        ◄──────────────────────── STOP
 
 ──────────────────────────────────────────────────────────────────
 DESCRIPCIÓN DE CADA MENSAJE
 ──────────────────────────────────────────────────────────────────
 READY
-    Worker → PS  |  El worker está conectado y listo.
-    payload: {}   (sin datos; el PS asigna el ID)
+    Worker → PS  |  El Worker está listo. PS asigna ID.
+    payload: {}
 
 WORKER_ID
-    PS → Worker  |  ID asignado por el PS a este Worker.
+    PS → Worker  |  ID asignado por el PS.
+    payload: {"worker_id": int}
+
+CNN_WEIGHTS
+    PS → Worker  |  El PS envía los pesos de su CNN preentrenada.
+                    El Worker los carga y extrae sus features de train.
+                    Esto garantiza que TODOS los Workers usan exactamente
+                    la misma CNN, independientemente de su hardware.
+    payload: {
+        "arch":          str,    # "simple" o "resnet18"
+        "weights_bytes": bytes,  # state_dict serializado con torch.save
+    }
+
+CNN_READY
+    Worker → PS  |  El Worker terminó de extraer sus features de train
+                    con la CNN recibida. El PS espera este mensaje de
+                    todos los Workers antes de enviar TRAIN_START.
     payload: {"worker_id": int}
 
 TRAIN_START
-    PS → Worker (broadcast)  |  Comienza una sesión de entrenamiento.
+    PS → Worker  |  Inicia una sesión de entrenamiento.
     payload: {"epochs": int, "n_train": int, "n_workers": int, "worker_rank": int}
-              n_workers y worker_rank permiten al Worker reconstruir
-              su chunk de índices localmente sin recibirlos por red.
 
 PARAMS
-    PS → Worker (broadcast)  |  Pesos globales actualizados + semilla de época.
-    payload: {
-        "epoch":  int,
-        "params": Dict[str, np.ndarray],   # W1, b1, W2, b2
-        "seed":   int,
-    }
-    El Worker usa seed + n_train + n_workers + worker_rank (del TRAIN_START)
-    para reproducir la misma partición estratificada. Tráfico: 8 bytes
-    por época en lugar de ~80 KB de índices.
+    PS → Worker  |  Pesos MLP globales + semilla de época.
+    payload: {"epoch": int, "params": Dict[str, ndarray], "seed": int}
 
 GRADIENTS
     Worker → PS  |  Gradientes calculados sobre el batch asignado.
     payload: {
         "worker_id": int,
         "epoch":     int,
-        "gradients": Dict[str, np.ndarray], # dW1, db1, dW2, db2
+        "gradients": Dict[str, ndarray],
         "loss":      float,
         "accuracy":  float,
     }
 
 STOP
-    PS → Worker (broadcast)  |  El PS se apaga; el Worker debe cerrar.
+    PS → Worker  |  El PS se apaga.
     payload: None
 """
 
@@ -119,6 +125,8 @@ class MsgType(str, Enum):
 
     READY = "READY"
     WORKER_ID = "WORKER_ID"
+    CNN_WEIGHTS = "CNN_WEIGHTS"
+    CNN_READY = "CNN_READY"
     TRAIN_START = "TRAIN_START"
     PARAMS = "PARAMS"
     GRADIENTS = "GRADIENTS"

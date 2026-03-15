@@ -67,8 +67,8 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 import numpy as np
 
 from Distributed.protocol import MsgType, receive_message, send_message
-from Model.nn import cross_entropy_loss, forward_pass
-from Utils.math_utils import average_arrays_dict
+from Model.cnn_extractor import CNNExtractor
+from Model.mlp import apply_gradients, evaluate
 
 
 class ParameterServer:
@@ -119,6 +119,7 @@ class ParameterServer:
         on_gradients_received: Optional[Callable] = None,
         on_epoch_end: Optional[Callable] = None,
         on_worker_joined_late: Optional[Callable] = None,
+        on_cnn_ready: Optional[Callable] = None,
     ) -> None:
         self.host = host
         self.port = port
@@ -128,6 +129,13 @@ class ParameterServer:
         self.on_gradients_received = on_gradients_received
         self.on_epoch_end = on_epoch_end
         self.on_worker_joined_late = on_worker_joined_late
+        self.on_cnn_ready = on_cnn_ready
+
+        # CNN del PS — preentrenada por el PS y distribuida a los Workers
+        self._cnn: Optional[CNNExtractor] = None
+        # Evento y contador para la barrera CNN_READY
+        self._cnn_ready_event = threading.Event()
+        self._cnn_ready_count: int = 0
 
         # Sockets y metadatos de Workers activos
         self._worker_sockets: Dict[int, socket.socket] = {}
@@ -148,6 +156,35 @@ class ParameterServer:
         self._epoch_metrics: Dict[int, Tuple[float, float]] = {}
 
     # ================================================================
+    # CONFIGURACIÓN DE LA CNN
+    # ================================================================
+
+    def set_cnn(self, cnn: CNNExtractor) -> None:
+        """
+        Establece la CNN preentrenada que el PS distribuirá a los Workers.
+
+        Debe llamarse ANTES de train(). La CNN se envía a todos los
+        Workers al inicio de cada sesión via el mensaje CNN_WEIGHTS,
+        garantizando que todos usen exactamente los mismos pesos.
+
+        :param cnn: CNNExtractor con pesos ya entrenados o cargados.
+        """
+        self._cnn = cnn
+        print(f"[PS] CNN configurada: arch={cnn.arch}, hash={cnn._weights_hash()}")
+
+    def _handle_cnn_ready(self, worker_id: int, n_expected: int) -> None:
+        """
+        Registra que un Worker confirmó haber extraído sus features (CNN_READY).
+        Cuando todos los Workers confirman, activa el evento de barrera.
+        """
+        with self._lock:
+            self._cnn_ready_count += 1
+            if self.on_cnn_ready:
+                self.on_cnn_ready(worker_id)
+            if self._cnn_ready_count >= n_expected:
+                self._cnn_ready_event.set()
+
+    # ================================================================
     # CICLO DE VIDA DEL SERVIDOR
     # ================================================================
 
@@ -164,17 +201,13 @@ class ParameterServer:
 
         self._shutdown_flag.clear()
 
-        # AF_INET = IPv4
-        # SOCK_STREAM = TCP
+        # AF_INET = IPv4  /  SOCK_STREAM = TCP
         self._server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-
-        # Permite reiniciar el servidor inmediatamente sin tener que esperar
-        # a que el sistema operativo libere el puerto.
         self._server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self._server_sock.bind((self.host, self.port))  # Asocia IP y puerto
-        self._server_sock.listen(32)  # Permite hasta 32 conexiones en cola.
-        # Timeout corto para que el hilo de aceptación pueda comprobar
-        # el flag de apagado sin bloquearse indefinidamente en accept().
+        self._server_sock.bind((self.host, self.port))
+        self._server_sock.listen(32)
+        # Timeout corto para que el hilo pueda comprobar el flag de apagado
+        # sin bloquearse indefinidamente en accept().
         self._server_sock.settimeout(1.0)
 
         self._accept_thread = threading.Thread(target=self._accept_loop, daemon=True)
@@ -223,9 +256,6 @@ class ParameterServer:
         """
         Acepta conexiones entrantes indefinidamente hasta que se activa
         el flag de apagado.
-
-        Por cada conexión: lee READY, asigna un ID, responde con
-        WORKER_ID y llama al callback on_worker_connected.
         """
         while not self._shutdown_flag.is_set():
             if self._server_sock is None:
@@ -315,6 +345,7 @@ class ParameterServer:
         n_train: int,
         X_test: Optional[np.ndarray] = None,
         Y_test: Optional[np.ndarray] = None,
+        momentum: float = 0.0,
     ) -> Dict[str, List[float]]:
         """
         Ejecuta una sesión de entrenamiento con los Workers conectados.
@@ -335,13 +366,18 @@ class ParameterServer:
         :type n_train: int
 
 
-        :param X_test: Imágenes del conjunto de prueba, forma ``(N_test, 784)``.
+        :param X_test: Imágenes del conjunto de prueba, forma ``(N_test, input_size)``.
                        Si se proporciona junto con ``Y_test``, el PS evaluará
                        el modelo global después de cada época.
         :type X_test: np.ndarray | None
 
         :param Y_test: Etiquetas del conjunto de prueba, forma ``(N_test,)``.
         :type Y_test: np.ndarray | None
+
+        :param momentum: Coeficiente de momentum para SGD (0.0 = SGD puro,
+                         0.9 = valor típico). El PS mantiene el estado de
+                         velocidades internamente entre épocas.
+        :type momentum: float
 
         :return: Historial con ``"accuracies"``, ``"losses"``,
                  ``"test_accuracies"`` y ``"test_losses"`` por época.
@@ -362,7 +398,69 @@ class ParameterServer:
         # callback on_worker_joined_late en lugar de on_worker_connected.
         self._active_training_workers = worker_ids
 
+        # ── Distribuir CNN a los Workers ──────────────────────────────
+        # El PS envía sus pesos CNN (preentrenados) a todos los Workers.
+        # Cada Worker carga esos pesos, extrae sus features de train y
+        # confirma con CNN_READY. El PS espera todas las confirmaciones
+        # antes de continuar — garantiza que el entrenamiento empieza
+        # solo cuando todos los Workers están listos con la misma CNN.
+        if self._cnn is not None:
+            weights_bytes = self._cnn._get_weights_bytes()
+            arch = self._cnn.arch
+            print(
+                f"[PS] Distribuyendo CNN a {len(worker_ids)} Worker(s) (arch={arch})..."
+            )
+            self._cnn_ready_event.clear()
+            self._cnn_ready_count = 0
+
+            for wid in worker_ids:
+                with self._lock:
+                    sock = self._worker_sockets.get(wid)
+                if sock is None:
+                    continue
+                try:
+                    send_message(
+                        sock,
+                        MsgType.CNN_WEIGHTS,
+                        {
+                            "arch": arch,
+                            "weights_bytes": weights_bytes,
+                        },
+                    )
+                except Exception as exc:
+                    print(f"[PS] Error enviando CNN a Worker {wid}: {exc}")
+                    self._remove_worker(wid)
+
+            def _wait_cnn_ready(wid: int) -> None:
+                try:
+                    msg = receive_message(self._worker_sockets[wid])
+                    if msg["type"] == MsgType.CNN_READY:
+                        print(f"[PS] Worker {wid}: CNN_READY ✓")
+                        self._handle_cnn_ready(wid, len(worker_ids))
+                except Exception as exc:
+                    print(f"[PS] Worker {wid}: error esperando CNN_READY: {exc}")
+                    self._handle_cnn_ready(wid, len(worker_ids))
+
+            ready_threads = [
+                threading.Thread(target=_wait_cnn_ready, args=(wid,), daemon=True)
+                for wid in worker_ids
+                if wid in self._worker_sockets
+            ]
+            for t in ready_threads:
+                t.start()
+            self._cnn_ready_event.wait()
+            for t in ready_threads:
+                t.join()
+            print("[PS] Todos los Workers listos con la CNN distribuida.\n")
+
+            # Si X_test son imágenes raw (4 dims), extraer features ahora
+            if X_test is not None and X_test.ndim == 4:
+                print("[PS] Extrayendo features de prueba...")
+                X_test = self._cnn.extract_batched(X_test)
+                print(f"[PS] Features de prueba listos: {X_test.shape}\n")
+
         params = {tipo: datos.copy() for tipo, datos in initial_params.items()}
+        velocities: Dict[str, np.ndarray] = {}  # estado de momentum entre épocas
 
         history: Dict[str, List[float]] = {
             "accuracies": [],
@@ -377,6 +475,7 @@ class ParameterServer:
         print(f"  Workers activos : {worker_ids}")
         print(f"  Épocas          : {epochs}")
         print(f"  Learning rate   : {learning_rate}")
+        print(f"  Momentum        : {momentum if momentum > 0 else 'desactivado'}")
         print(f"  Ejemplos train  : {n_train}")
         print("=" * 70)
 
@@ -486,8 +585,10 @@ class ParameterServer:
                 print("[PS] Sin gradientes — todos los Workers fallaron.")
                 break
 
-            avg_grads = average_arrays_dict(list(self._epoch_gradients.values()))
-            self._apply_gradients(params, avg_grads, learning_rate)
+            avg_grads = self._average_gradients(list(self._epoch_gradients.values()))
+            self._apply_gradients(
+                params, avg_grads, learning_rate, momentum, velocities
+            )
 
             # Promedia métricas
             losses = [m[0] for m in self._epoch_metrics.values()]
@@ -584,46 +685,26 @@ class ParameterServer:
         if self.on_worker_disconnected is not None:
             self.on_worker_disconnected(worker_id)
 
+    def _average_gradients(
+        self, gradients_list: List[Dict[str, np.ndarray]]
+    ) -> Dict[str, np.ndarray]:
+        """∇θ = (1/N) * Σᵢ ∇θ L(Bᵢ)"""
+        averaged: Dict[str, np.ndarray] = {}
+        for key in gradients_list[0]:
+            stacked = np.array([g[key] for g in gradients_list])
+            averaged[key] = np.mean(stacked, axis=0)
+        return averaged
+
     def _apply_gradients(
         self,
         params: Dict[str, np.ndarray],
         gradients: Dict[str, np.ndarray],
         learning_rate: float,
+        momentum: float = 0.0,
+        velocities: Dict[str, np.ndarray] | None = None,
     ) -> None:
-        """
-        Actualiza los parámetros del modelo  usando los gradientes proporcionados.
-
-        Implementa la regla de actualización:
-
-            θ ← θ − lr * ∇θ
-
-        donde:
-            θ   = parámetros del modelo
-            lr  = learning rate
-            ∇θ  = gradientes promediados
-
-        La actualización se realiza in-place sobre el diccionario ``params``.
-
-        :param params: Diccionario de parámetros del modelo a actualizar
-                    (por ejemplo, ``"W1"``, ``"b1"``, ``"W2"``, ``"b2"``).
-        :type params: Dict[str, np.ndarray]
-
-        :param gradients: Diccionario con los gradientes correspondientes
-                        a cada parámetro (por ejemplo, ``"dW1"``,
-                        ``"db1"``, etc.).
-        :type gradients: Dict[str, np.ndarray]
-
-        :param learning_rate: Tasa de aprendizaje utilizada para escalar
-                            el gradiente antes de aplicarlo.
-        :type learning_rate: float
-
-        :return: None
-        :rtype: None
-        """
-        params["W1"] -= learning_rate * gradients["dW1"]
-        params["b1"] -= learning_rate * gradients["db1"]
-        params["W2"] -= learning_rate * gradients["dW2"]
-        params["b2"] -= learning_rate * gradients["db2"]
+        """Delega en Model.mlp.apply_gradients — agnóstico al número de capas."""
+        apply_gradients(params, gradients, learning_rate, momentum, velocities)
 
     def _evaluate(
         self,
@@ -632,24 +713,15 @@ class ParameterServer:
         Y: np.ndarray,
     ) -> Tuple[float, float]:
         """
-        Forward pass sobre ``X`` con los parámetros actuales.
-        Devuelve ``(accuracy_pct, mean_loss)``. No modifica ``params``.
+        Delega en ``Model.mlp.evaluate``.
 
-        :param params: Parámetros globales actualizados (W1, b1, W2, b2).
-        :type params: Dict[str, np.ndarray]
+        El PS nunca implementa la arquitectura directamente: solo
+        coordina. Centralizar el forward en Model/nn.py garantiza
+        que PS y Workers evalúen exactamente con la misma arquitectura MLP.
 
-        :param X: Imágenes de evaluación, forma ``(N, 784)``.
-        :param Y: Etiquetas, forma ``(N,)``.
-        :type Y: np.ndarray
-
-        :return: ``(accuracy_pct, mean_loss)``
-        :rtype: Tuple[float, float]
+        :param params: Pesos del MLP (W1, b1, …, W3, b3).
+        :param X:      Imágenes de evaluación.
+        :param Y:      Etiquetas.
+        :return:       ``(accuracy_pct, mean_loss)``
         """
-        n = X.shape[0]
-        _, A2 = forward_pass(params, X)
-
-        predictions = np.argmax(A2, axis=0)
-        accuracy = 100.0 * float(np.sum(predictions == Y)) / n
-        loss = cross_entropy_loss(A2, Y)
-
-        return accuracy, loss
+        return evaluate(params, X, Y)

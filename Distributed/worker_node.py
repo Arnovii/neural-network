@@ -36,14 +36,6 @@ El Worker ejecuta dos etapas en cada época:
 Esta separación mantiene el Algoritmo de Diego intacto.
 
 ──────────────────────────────────────────────────────────────────
-POR QUÉ ÍNDICES Y NO DATOS
-──────────────────────────────────────────────────────────────────
-Enviar los datos de entrenamiento por red en cada época sería muy
-costoso: 60 000 imágenes × 784 floats × 8 bytes ≈ 376 MB por época.
-En cambio, enviar los índices cuesta < 1 KB. Cada Worker tiene MNIST
-localmente y extrae su batch en microsegundos.
-
-──────────────────────────────────────────────────────────────────
 EXTRACCIÓN PREPROCESADA UNA SOLA VEZ
 ──────────────────────────────────────────────────────────────────
 Al arrancar, el Worker extrae los features de las 50 000 imágenes
@@ -81,6 +73,8 @@ class WorkerNode:
     :param hidden1: Neuronas capa oculta 1 del MLP.
     :param hidden2: Neuronas capa oculta 2 del MLP.
     :param cnn_batch_size: Batch size para extracción inicial de features.
+    :param cnn_pretrain_epochs: Épocas de preentrenamiento CNN simple (0 = no pretrain).
+    :param cnn_pretrain_lr: Learning rate para el preentrenamiento CNN.
     :param verbose: Imprime progreso por época.
     """
 
@@ -96,7 +90,9 @@ class WorkerNode:
         cnn_seed: int | None = 42,
         hidden1: int = 256,
         hidden2: int = 128,
-        cnn_batch_size: int = 512,
+        cnn_batch_size: int = 2048,
+        cnn_pretrain_epochs: int = 10,
+        cnn_pretrain_lr: float = 1e-3,
         verbose: bool = True,
     ) -> None:
         self.server_host = server_host
@@ -107,6 +103,8 @@ class WorkerNode:
         self.verbose = verbose
         self.worker_id: Optional[int] = None
         self._sock: Optional[socket.socket] = None
+        self._cnn_pretrain_epochs = cnn_pretrain_epochs
+        self._cnn_pretrain_lr = cnn_pretrain_lr
 
         # ── Extractor CNN (pesos fijos) ───────────────────────────
         self._log("Construyendo extractor CNN...")
@@ -117,19 +115,22 @@ class WorkerNode:
             seed=cnn_seed,
         )
 
-        # ── Extracción única de todos los features ────────────────
-        self._log(
-            f"Extrayendo features de {len(X_train)} imágenes "
-            f"(arch={cnn_arch}, batch={cnn_batch_size})..."
-        )
-        t0 = time.perf_counter()
-        self._X_features: np.ndarray = self._cnn.extract_batched(
-            X_train, batch_size=cnn_batch_size
-        )
-        elapsed = time.perf_counter() - t0
-        self._log(
-            f"Features listos: shape={self._X_features.shape}  "
-            f"dtype={self._X_features.dtype}  ({elapsed:.2f}s)"
+        # Guardar los datos raw para poder re-extraer features cuando
+        # el PS envíe una nueva CNN (mensaje CNN_WEIGHTS).
+        self._X_raw: np.ndarray = X_train
+        self._Y_raw: np.ndarray = Y_train
+
+        # Extracción inicial con pesos locales (si los hay en caché).
+        # Cuando llegue CNN_WEIGHTS del PS, se re-extraerán con la CNN definitiva.
+        self._X_features: np.ndarray
+        self._X_features, self.Y_train = self._cnn.prepare(
+            X_train,
+            Y_train,
+            split="train",
+            pretrain_epochs=cnn_pretrain_epochs,
+            pretrain_lr=cnn_pretrain_lr,
+            batch_size=cnn_batch_size,
+            verbose=verbose,
         )
 
         # ── Índices por clase precalculados ───────────────────────
@@ -214,10 +215,16 @@ class WorkerNode:
             msg = receive_message(self._sock)
 
             if msg["type"] == MsgType.STOP:
-                self._log("Señal STOP recibida. Finalizando.")
+                self._log("STOP recibido. Finalizando.")
                 break
 
-            if msg["type"] == MsgType.TRAIN_START:
+            if msg["type"] == MsgType.CNN_WEIGHTS:
+                # El PS envía sus pesos CNN antes de TRAIN_START.
+                # El Worker los carga, extrae sus features de train
+                # con esa CNN, y confirma con CNN_READY.
+                self._handle_cnn_weights(msg["payload"])
+
+            elif msg["type"] == MsgType.TRAIN_START:
                 p = msg["payload"]
                 self._log(
                     f"TRAIN_START — {p['epochs']} épocas  "
@@ -226,6 +233,45 @@ class WorkerNode:
                 self._run_training_session(
                     p["epochs"], p["n_train"], p["n_workers"], p["worker_rank"]
                 )
+
+    def _handle_cnn_weights(self, payload: dict) -> None:
+        """
+        Procesa CNN_WEIGHTS del PS: carga los pesos, regenera features
+        de entrenamiento con esa CNN y confirma con CNN_READY.
+
+        Este paso garantiza que todos los Workers usan exactamente la
+        misma CNN, independientemente de su hardware o historial local.
+        La caché local sigue funcionando: si los features ya están
+        guardados con el hash de estos pesos, se cargan sin re-extraer.
+        """
+        arch = payload["arch"]
+        weights_bytes = payload["weights_bytes"]
+
+        self._log(f"CNN_WEIGHTS recibido del PS (arch={arch}). Cargando pesos...")
+        self._cnn.load_weights_from_bytes(weights_bytes)
+        wh = self._cnn._weights_hash()
+        self._log(f"Pesos cargados (hash={wh}). Preparando features de train...")
+
+        # Regenerar features con la CNN del PS.
+        # prepare() comprueba la caché local primero — si ya existe
+        # simple_{wh}_train_50000_X.npy, la carga sin re-extraer.
+        self._X_features, self.Y_train = self._cnn.prepare(
+            self._X_raw,
+            self._Y_raw,
+            split="train",
+            pretrain_epochs=0,  # pesos ya vienen del PS, no reentrenar
+            batch_size=2048,
+            verbose=self.verbose,
+        )
+
+        # Reconstruir índices por clase con el Y_train actualizado
+        self._class_indices = [
+            np.where(self.Y_train == digit)[0] for digit in range(10)
+        ]
+
+        self._log("Features listos. Enviando CNN_READY al PS.")
+        assert self._sock is not None
+        send_message(self._sock, MsgType.CNN_READY, {"worker_id": self.worker_id})
 
     def _run_training_session(
         self,

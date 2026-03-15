@@ -15,7 +15,7 @@ Opciones:
     --epochs        Épocas de entrenamiento              (default: 10)
     --hidden1       Neuronas en la primera capa oculta   (default: 256)
     --hidden2       Neuronas en la segunda capa oculta   (default: 128)
-    --lr            Tasa de aprendizaje                  (default: 0.1)
+    --lr            Tasa de aprendizaje                  (default: 0.01)
     --n-train       Total de ejemplos de entrenamiento   (default: 10000)
     --seed          Semilla aleatoria                    (default: ninguna)
 
@@ -159,7 +159,7 @@ def main() -> None:
         help="Neuronas en la segunda capa oculta (default: 128)",
     )
     parser.add_argument(
-        "--lr", type=float, default=0.1, help="Tasa de aprendizaje (default: 0.1)"
+        "--lr", type=float, default=0.01, help="Tasa de aprendizaje (default: 0.01)"
     )
     parser.add_argument(
         "--n-train",
@@ -169,6 +169,12 @@ def main() -> None:
     )
     parser.add_argument(
         "--seed", type=int, default=None, help="Semilla aleatoria (default: ninguna)"
+    )
+    parser.add_argument(
+        "--momentum",
+        type=float,
+        default=0.9,
+        help="Momentum SGD para el MLP (0.0=SGD puro, 0.9=default)",
     )
     parser.add_argument(
         "--cnn-arch",
@@ -259,17 +265,22 @@ def main() -> None:
     feature_dim = cnn.feature_dim
     print(f"CNN lista — arch={args.cnn_arch}  feature_dim={feature_dim}\n")
 
-    # MLP: la entrada es el vector de features de la CNN, no la imagen raw
+    # Preentrenar o cargar CNN desde caché, luego extraer features de prueba
+    print("Cargando datos de prueba CIFAR-10 (10 000 imágenes)...")
+    X_test_raw, Y_test = load_cifar10_test(verbose=False)
+    X_test_feat, Y_test = cnn.prepare(
+        X_test_raw,
+        Y_test,
+        split="test",
+        pretrain_epochs=10 if args.cnn_arch == "simple" else 0,
+        verbose=True,
+    )
+    # Registrar la CNN en el server para que la distribuya a los Workers
+    server.set_cnn(cnn)
+
     initial_params = init_params(
         feature_dim, args.hidden1, args.hidden2, OUTPUT_SIZE, args.seed
     )
-
-    # El PS evalúa sobre features extraídos, no sobre imágenes raw.
-    # Se extrae una sola vez aquí; los features son fijos (CNN congelada).
-    print("Cargando y extrayendo features de prueba CIFAR-10 (10 000 imágenes)...")
-    X_test_raw, Y_test = load_cifar10_test(verbose=False)
-    X_test = cnn.extract_batched(X_test_raw)
-    print(f"Features de prueba listos: {X_test.shape}\n")
 
     t_start = time.perf_counter()
 
@@ -278,8 +289,9 @@ def main() -> None:
         initial_params=initial_params,
         learning_rate=args.lr,
         n_train=args.n_train,
-        X_test=X_test,
+        X_test=X_test_raw,  # imágenes raw — el server extrae features con su CNN
         Y_test=Y_test,
+        momentum=args.momentum,
     )
 
     elapsed = time.perf_counter() - t_start
@@ -323,6 +335,7 @@ def main() -> None:
         "hidden1": args.hidden1,
         "hidden2": args.hidden2,
         "learning_rate": args.lr,
+        "momentum": args.momentum,
         "n_train": args.n_train,
         "workers": args.workers,
         "seed": args.seed,

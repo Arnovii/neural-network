@@ -112,6 +112,18 @@ def main() -> None:
         help="Semilla para inicialización CNN (default: 42)",
     )
     parser.add_argument(
+        "--cnn-pretrain-epochs",
+        type=int,
+        default=0,
+        help="Épocas de preentrenamiento local CNN (default: 0, el PS la distribuye)",
+    )
+    parser.add_argument(
+        "--cnn-pretrain-lr",
+        type=float,
+        default=1e-3,
+        help="Learning rate del preentrenamiento CNN (default: 0.001)",
+    )
+    parser.add_argument(
         "--quiet", action="store_true", help="Suprime mensajes de progreso"
     )
     args = parser.parse_args()
@@ -128,6 +140,13 @@ def main() -> None:
     print(f"  CNN device       : {args.cnn_device}")
     print(f"  CNN seed         : {args.cnn_seed}")
     print(f"  MLP hidden       : {args.hidden1} → {args.hidden2} → {NUM_CLASSES}")
+    if args.cnn_arch == "simple":
+        if args.cnn_pretrain_epochs > 0:
+            print(
+                f"  CNN pretrain     : local {args.cnn_pretrain_epochs} épocas (el PS sobreescribirá con la suya)"
+            )
+        else:
+            print(f"  CNN pretrain     : ninguno (recibirá CNN del PS al conectarse)")
     print("=" * 70)
 
     # Carga CIFAR-10 completo en formato NCHW (3, 32, 32) listo para la CNN
@@ -154,6 +173,8 @@ def main() -> None:
         cnn_pretrained=args.cnn_pretrained,
         cnn_device=args.cnn_device,
         cnn_seed=args.cnn_seed,
+        cnn_pretrain_epochs=args.cnn_pretrain_epochs,
+        cnn_pretrain_lr=args.cnn_pretrain_lr,
         hidden1=args.hidden1,
         hidden2=args.hidden2,
         verbose=not args.quiet,

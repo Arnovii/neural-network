@@ -325,21 +325,46 @@ def apply_gradients(
     params: Dict[str, np.ndarray],
     gradients: Dict[str, np.ndarray],
     learning_rate: float,
+    momentum: float = 0.0,
+    velocities: Dict[str, np.ndarray] | None = None,
 ) -> None:
     """
-    Actualiza los pesos del MLP in-place: θ ← θ − lr × ∇θ.
+    Actualiza los pesos del MLP in-place con SGD (+ momentum opcional).
 
-    El PS llama esta función después de promediar los gradientes
-    de todos los Workers. Centralizar la actualización en Model/mlp.py
-    mantiene el PS agnóstico al número de capas.
+    SGD puro (momentum=0):
+        θ ← θ − lr × ∇θ
+
+    SGD con momentum (momentum > 0):
+        v ← μ × v + ∇θ
+        θ ← θ − lr × v
+
+    El momentum acumula gradientes de épocas anteriores, dando al
+    optimizador "inercia" en la dirección correcta y amortiguando
+    las oscilaciones. Valores típicos: 0.9 – 0.99.
+
+    Cuando se usa momentum, el PS mantiene el dict ``velocities``
+    entre épocas y lo pasa en cada llamada. Si ``velocities`` es None
+    se inicializa a ceros automáticamente la primera vez.
 
     :param params: Pesos del MLP a actualizar.
     :param gradients: Gradientes promediados (dW1, db1, …, dW3, db3).
     :param learning_rate: Tasa de aprendizaje.
+    :param momentum: Coeficiente de momentum (0.0 = SGD puro, 0.9 = típico).
+    :param velocities: Dict mutable con velocidades acumuladas.
+                       Debe persistir entre llamadas. Ignorado si momentum=0.
     """
-    params["W1"] -= learning_rate * gradients["dW1"]
-    params["b1"] -= learning_rate * gradients["db1"]
-    params["W2"] -= learning_rate * gradients["dW2"]
-    params["b2"] -= learning_rate * gradients["db2"]
-    params["W3"] -= learning_rate * gradients["dW3"]
-    params["b3"] -= learning_rate * gradients["db3"]
+    keys = ["W1", "b1", "W2", "b2", "W3", "b3"]
+    grad_keys = ["dW1", "db1", "dW2", "db2", "dW3", "db3"]
+
+    if momentum == 0.0 or velocities is None:
+        # SGD puro — camino rápido sin estado adicional
+        for k, dk in zip(keys, grad_keys):
+            params[k] -= learning_rate * gradients[dk]
+        return
+
+    # SGD con momentum — actualiza velocidades in-place
+    for k, dk in zip(keys, grad_keys):
+        if k not in velocities:
+            velocities[k] = np.zeros_like(params[k])
+        velocities[k] = momentum * velocities[k] + gradients[dk]
+        params[k] -= learning_rate * velocities[k]

@@ -6,72 +6,53 @@ Extractor de características convolucional para CIFAR-10 basado en PyTorch.
 ──────────────────────────────────────────────────────────────────
 ROL EN LA ARQUITECTURA DISTRIBUIDA
 ──────────────────────────────────────────────────────────────────
-La red completa se divide en dos etapas con responsabilidades distintas:
-
-    ┌─────────────────────────────────────────────────────────────┐
-    │  CIFAR-10 image  (3 × 32 × 32)                              │
-    │         │                                                   │
-    │         ▼                                                   │
-    │  ┌─────────────────┐                                        │
-    │  │  CNN Extractor  │  ← Este módulo (PyTorch)               │
-    │  │  (convolucional)│    Pesos FIJOS durante el distribuido  │
-    │  └────────┬────────┘                                        │
-    │           │  feature vector  (feature_dim,)                 │
-    │           ▼                                                 │
-    │  ┌─────────────────┐                                        │
-    │  │   MLP NumPy     │  ← Model/mlp.py                        │
-    │  │  (clasificador) │    Pesos entrenados por el PS/Workers  │
-    │  └────────┬────────┘                                        │
-    │           │                                                 │
-    │           ▼                                                 │
-    │   10 clases CIFAR-10                                        │
-    └─────────────────────────────────────────────────────────────┘
+    imagen (3×32×32)
+        │
+        ▼  CNN Extractor — PyTorch, pesos FIJOS tras preentrenamiento
+        │
+        ▼  feature vector (feature_dim,)
+        │
+        ▼  MLP NumPy — pesos DISTRIBUIDOS por el Algoritmo de Diego
 
 ──────────────────────────────────────────────────────────────────
-¿POR QUÉ CONGELAR LA CNN Y ENTRENAR SOLO EL MLP?
+CACHÉ EN DOS NIVELES
 ──────────────────────────────────────────────────────────────────
-El Algoritmo de Diego distribuye el cálculo de gradientes entre
-Workers y promedia en el PS. Esto funciona directamente sobre el
-MLP (NumPy puro, gradientes serializables con Pickle).
+Data/feature_cache/
 
-Para la CNN, propagar gradientes por red en cada época multiplicaría
-el tráfico ×100 (pesos convolucionales >> pesos MLP) y añadiría
-complejidad al protocolo sin beneficio pedagógico.
+  Nivel 1 — Pesos CNN:
+    {arch}_{seed}_weights.pt
 
-En cambio, usar la CNN como extractor de features fijos es una
-práctica real de ingeniería (transfer learning) y permite mantener
-el principio pedagógico del Algoritmo de Diego: los Workers calculan
-gradientes del MLP sobre sus chunks, el PS los promedia y actualiza.
+  Nivel 2 — Features extraídos:
+    {arch}_{weights_hash8}_{split}_{n}_X.npy
+    {arch}_{weights_hash8}_{split}_{n}_Y.npy
 
-──────────────────────────────────────────────────────────────────
-ARQUITECTURAS DISPONIBLES
-──────────────────────────────────────────────────────────────────
-  "simple"   → CNN diseñada desde cero, 3 bloques conv.
-               Sin pesos pretrained. Pedagógicamente transparente.
-               feature_dim = 512
+La clave de features incluye un hash MD5 (8 hex) de los pesos CNN
+actuales. Esto garantiza que si la CNN tiene pesos distintos (aleatorios
+vs preentrenados), los archivos de caché son distintos y nunca se mezclan.
 
-  "resnet18" → ResNet-18 de torchvision, pesos ImageNet opcionales.
-               feature_dim = 512
-
-La arquitectura se especifica al construir el extractor y queda
-fija para toda la sesión. Los Workers no la negocian con el PS;
-simplemente deben usar la misma al iniciar.
+Flujo en prepare():
+    ¿Features en caché (con hash actual)? → carga instantánea  (< 0.3 s)
+    ¿No? → ¿Pesos en caché?               → carga pesos        (< 0.5 s)
+         → ¿No, arch=simple?              → pretrain           (~1-2 min)
+    → extrae features + guarda caché                           (~30 s)
 
 ──────────────────────────────────────────────────────────────────
-PREPROCESO DE IMÁGENES
+ARQUITECTURAS
 ──────────────────────────────────────────────────────────────────
-La CNN espera imágenes de forma (N, 3, 32, 32), normalizadas
-canal a canal con la media y std estándar de CIFAR-10:
+  "simple"   → CNN propia, 3 bloques Conv→BN→ReLU→MaxPool.
+               feature_dim = 512. Preentrenamiento local la 1ª vez.
 
-    μ = [0.4914, 0.4822, 0.4465]
-    σ = [0.2470, 0.2435, 0.2616]
-
-El loader (Utils/cifar_loader.py) devuelve los datos en ese formato.
+  "resnet18" → ResNet-18 torchvision.
+               Con pretrained=True: pesos ImageNet.
+               feature_dim = 512.
 """
 
 from __future__ import annotations
 
-from typing import Tuple
+import hashlib
+import os
+import time
+from typing import Optional, Tuple
 
 import numpy as np
 import torch
@@ -84,7 +65,7 @@ FEATURE_DIM = 512
 
 
 # ================================================================
-# CNN "SIMPLE" — diseñada desde cero, sin pretraining
+# CNN SIMPLE — diseñada desde cero
 # ================================================================
 
 
@@ -162,27 +143,19 @@ class CNNExtractor:
     """
     Envuelve una CNN PyTorch y expone una interfaz NumPy pura.
 
-    El Worker la instancia una vez al arrancar. A partir de ese
-    momento llama a ``extract(X_raw)`` en cada época para obtener
-    el vector de features que alimenta al MLP NumPy.
+    Uso típico en el Worker:
+        cnn = CNNExtractor(arch="simple", seed=42)
+        X_feat, Y = cnn.prepare(X_train, Y_train, split="train")
 
-    :param arch: Arquitectura CNN. ``"simple"`` (default) o ``"resnet18"``.
-    :type arch: str
+    Uso típico en el PS (evaluación, sin reentrenar):
+        cnn = CNNExtractor(arch="simple", seed=42)
+        X_feat, Y = cnn.prepare(X_test, Y_test, split="test", pretrain_epochs=0)
 
-    :param pretrained: Solo relevante con ``arch="resnet18"``. Si True,
-                       descarga pesos ImageNet. Default False para no
-                       requerir conexión en cada arranque de Worker.
-    :type pretrained: bool
-
-    :param device: Dispositivo PyTorch: ``"cpu"``, ``"cuda"``, ``"mps"``.
-                   Default ``"cpu"``; la CNN es pequeña y el cuello de
-                   botella real está en la comunicación TCP, no en la extracción.
-    :type device: str
-
-    :param seed: Semilla para inicialización aleatoria de la CNN simple.
-                 Garantiza que todos los Workers usen exactamente los
-                 mismos pesos del extractor (crítico para reproducibilidad).
-    :type seed: int | None
+    :param arch: ``"simple"`` o ``"resnet18"``.
+    :param pretrained: Pesos ImageNet para resnet18 (ignorado para simple).
+    :param device: ``"cpu"``, ``"cuda"`` o ``"mps"``.
+    :param seed: Semilla de inicialización. Misma en PS y Workers.
+    :param cache_dir: Directorio de caché. None = Data/feature_cache/.
     """
 
     ARCHITECTURES = ("simple", "resnet18")
@@ -192,17 +165,23 @@ class CNNExtractor:
         arch: str = "simple",
         pretrained: bool = False,
         device: str = "cpu",
-        seed: int | None = None,
+        seed: int | None = 42,
+        cache_dir: str | None = None,
     ) -> None:
         if arch not in self.ARCHITECTURES:
             raise ValueError(
-                f"Arquitectura desconocida: {arch!r}. Opciones: {self.ARCHITECTURES}"
+                f"Arch debe ser uno de {self.ARCHITECTURES}, recibido: {arch!r}"
             )
 
         self.arch = arch
+        self.pretrained = pretrained
+        self.seed = seed
 
         # Convierte el string en un objeto PyTorch que controla dónde correr la CNN
         self.device = torch.device(device)
+
+        self._cache_dir = cache_dir or self._default_cache_dir()
+        os.makedirs(self._cache_dir, exist_ok=True)
 
         # Semilla antes de construir la red para reproducibilidad
         if seed is not None:
@@ -215,10 +194,9 @@ class CNNExtractor:
         # PS promedia. Esto mantiene el Algoritmo de Diego intacto.
         for param in self._model.parameters():
             param.requires_grad_(False)
-
         self._model.eval()  # BatchNorm en modo inferencia desde el inicio
 
-    # ── Construcción de modelos ───────────────────────────────────
+    # ── Construcción ─────────────────────────────────────────────
 
     @staticmethod
     def _build(arch: str, pretrained: bool) -> nn.Module:
@@ -242,70 +220,294 @@ class CNNExtractor:
         model.fc = nn.Identity()  # type: ignore
         return model
 
-    # ── Interfaz pública ──────────────────────────────────────────
+    @staticmethod
+    def _default_cache_dir() -> str:
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        return os.path.join(root, "Data", "feature_cache")
+
+    # ── hash de pesos actuales ────────────────────────────────────
+
+    def _weights_hash(self) -> str:
+        """
+        MD5 (8 hex) de los pesos CNN actuales.
+
+        Se usa como parte de la clave de caché de features para garantizar
+        que features extraídos con distintos pesos (aleatorios vs preentrenados)
+        nunca se mezclen. Calcular el hash de ~2 MB tarda < 5 ms.
+        """
+        h = hashlib.md5()
+        for tensor in self._model.state_dict().values():
+            h.update(tensor.cpu().numpy().tobytes())
+        return h.hexdigest()[:8]
+
+    # ── rutas de caché ────────────────────────────────────────────
+
+    def _weights_cache_path(self) -> str:
+        seed_str = str(self.seed) if self.seed is not None else "none"
+        return os.path.join(self._cache_dir, f"{self.arch}_{seed_str}_weights.pt")
+
+    def _feature_cache_paths(self, split: str, n: int) -> Tuple[str, str]:
+        """
+        Ruta de caché que incluye el hash de los pesos actuales.
+
+        Garantiza que features de una CNN con pesos distintos nunca
+        se sobreescriben ni se confunden con features de otra CNN.
+        """
+        wh = self._weights_hash()
+        key = f"{self.arch}_{wh}_{split}_{n}"
+        return (
+            os.path.join(self._cache_dir, f"{key}_X.npy"),
+            os.path.join(self._cache_dir, f"{key}_Y.npy"),
+        )
+
+    # ── guardado / carga de pesos ─────────────────────────────────
+
+    def _save_weights(self) -> None:
+        torch.save(self._model.state_dict(), self._weights_cache_path())
+
+    def _get_weights_bytes(self) -> bytes:
+        """
+        Serializa el state_dict a bytes para enviarlo por TCP.
+
+        El PS llama este método para distribuir sus pesos CNN a los
+        Workers via el mensaje CNN_WEIGHTS del protocolo. Los Workers
+        llaman a load_weights_from_bytes() con los bytes recibidos.
+        Tamaño aproximado: ~2 MB para simple, ~44 MB para resnet18.
+
+        :return: Bytes del state_dict (torch.save sobre buffer en memoria).
+        """
+        import io as _io
+
+        buf = _io.BytesIO()
+        torch.save(self._model.state_dict(), buf)
+        return buf.getvalue()
+
+    def load_weights_from_bytes(self, weights_bytes: bytes) -> None:
+        """
+        Carga pesos CNN desde bytes recibidos por TCP.
+
+        El Worker llama este método al recibir CNN_WEIGHTS del PS.
+        Garantiza que PS y Worker usan exactamente la misma CNN sin
+        necesitar filesystem compartido entre máquinas.
+
+        :param weights_bytes: Bytes generados por _get_weights_bytes().
+        """
+        import io as _io
+
+        buf = _io.BytesIO(weights_bytes)
+        state = torch.load(buf, map_location=self.device, weights_only=True)
+        self._model.load_state_dict(state)
+        self._model.eval()
+
+    def _load_weights_if_cached(self) -> bool:
+        """Carga pesos desde caché. Devuelve True si había caché."""
+        path = self._weights_cache_path()
+        if not os.path.exists(path):
+            return False
+        self._model.load_state_dict(
+            torch.load(path, map_location=self.device, weights_only=True)
+        )
+        self._model.eval()
+        return True
+
+    # ── guardado / carga de features ─────────────────────────────
+
+    def _load_features_if_cached(
+        self, split: str, n: int
+    ) -> Optional[Tuple[np.ndarray, np.ndarray]]:
+        px, py = self._feature_cache_paths(split, n)
+        if os.path.exists(px) and os.path.exists(py):
+            return np.load(px), np.load(py)
+        return None
+
+    def _save_features(self, split: str, X_feat: np.ndarray, Y: np.ndarray) -> None:
+        px, py = self._feature_cache_paths(split, len(X_feat))
+        np.save(px, X_feat)
+        np.save(py, Y)
+
+    # ── preentrenamiento ──────────────────────────────────────────
+
+    def pretrain(
+        self,
+        X_train: np.ndarray,
+        Y_train: np.ndarray,
+        epochs: int = 10,
+        lr: float = 1e-3,
+        batch_size: int = 256,
+        verbose: bool = True,
+    ) -> None:
+        """
+        Preentrenamiento supervisado de la CNN simple en CIFAR-10.
+
+        Solo aplica para arch="simple". Guarda los pesos en caché al
+        terminar para que los arranques posteriores sean instantáneos.
+
+        :param X_train: (N, 3, 32, 32) float32 normalizado.
+        :param Y_train: (N,) int32.
+        :param epochs: Épocas de preentrenamiento.
+        :param lr: Tasa de aprendizaje Adam.
+        :param batch_size: Ejemplos por batch.
+        :param verbose: Imprime progreso.
+        """
+        if self.arch != "simple":
+            return
+
+        if verbose:
+            print(f"[CNN] Preentrenando CNN simple ({epochs} épocas, lr={lr})...")
+
+        for p in self._model.parameters():
+            p.requires_grad_(True)
+        self._model.train()
+
+        classifier = nn.Linear(FEATURE_DIM, 10).to(self.device)
+        optimizer = torch.optim.Adam(
+            list(self._model.parameters()) + list(classifier.parameters()), lr=lr
+        )
+        criterion = nn.CrossEntropyLoss()
+        N = len(X_train)
+        rng = np.random.RandomState(self.seed if self.seed is not None else 0)
+
+        for epoch in range(1, epochs + 1):
+            idx = rng.permutation(N)
+            total_loss, correct = 0.0, 0
+
+            for start in range(0, N, batch_size):
+                b = idx[start : start + batch_size]
+                xb = torch.from_numpy(X_train[b]).to(self.device)
+                yb = torch.from_numpy(Y_train[b].astype(np.int64)).to(self.device)
+
+                optimizer.zero_grad()
+                feats = self._model(xb)
+                logits = classifier(feats)
+                loss = criterion(logits, yb)
+                loss.backward()
+                optimizer.step()
+
+                total_loss += loss.item() * len(b)
+                correct += (logits.argmax(1) == yb).sum().item()
+
+            if verbose:
+                print(
+                    f"  Época {epoch:2d}/{epochs}  "
+                    f"loss={total_loss / N:.4f}  acc={100.0 * correct / N:.1f}%"
+                )
+
+        for p in self._model.parameters():
+            p.requires_grad_(False)
+        self._model.eval()
+        self._save_weights()
+
+        if verbose:
+            print(
+                f"[CNN] Pesos guardados en caché ({self._weights_cache_path()}).\n"
+                f"      Hash de pesos: {self._weights_hash()}\n"
+            )
+
+    # ── método principal: prepare() ───────────────────────────────
+
+    def prepare(
+        self,
+        X: np.ndarray,
+        Y: np.ndarray,
+        split: str = "train",
+        pretrain_epochs: int = 10,
+        pretrain_lr: float = 1e-3,
+        batch_size: int = 2048,
+        verbose: bool = True,
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Prepara los features con máxima reutilización de caché.
+
+        Orden de decisión:
+
+            1. ¿Caché de features (con hash de pesos actuales)?
+               → carga instantánea.
+            2. ¿Caché de pesos? → carga pesos (el hash cambia).
+               → volver a buscar caché de features con nuevo hash.
+            3. ¿No hay nada? → pretrain (arch=simple) o usar pesos tal cual.
+            4. Extraer features y guardar caché.
+
+        El PS llama con pretrain_epochs=0 para nunca reentrenar.
+
+        :param X: Imágenes (N, 3, 32, 32) float32.
+        :param Y: Etiquetas (N,) int32.
+        :param split: ``"train"`` o ``"test"``.
+        :param pretrain_epochs: Épocas de pretrain (0 = nunca reentrenar).
+        :param pretrain_lr: LR para el pretrain.
+        :param batch_size: Batch size para extracción.
+        :param verbose: Imprime progreso.
+        :return: (X_features, Y), X_features shape (N, feature_dim).
+        """
+        # ── Paso 1: ¿features ya en caché con los pesos actuales? ─
+        cached = self._load_features_if_cached(split, len(X))
+        if cached is not None:
+            X_feat, Y_cached = cached
+            if verbose:
+                print(
+                    f"[CNN] Features '{split}' en caché "
+                    f"(hash={self._weights_hash()}): {X_feat.shape}"
+                )
+            return X_feat, Y_cached
+
+        # ── Paso 2: ¿pesos en caché? → cargarlos y volver a buscar ─
+        if self._load_weights_if_cached():
+            if verbose:
+                print(
+                    f"[CNN] Pesos cargados desde caché "
+                    f"(hash={self._weights_hash()}, no se reentrenará)."
+                )
+            # Con los pesos cargados el hash cambia → comprobar features
+            cached = self._load_features_if_cached(split, len(X))
+            if cached is not None:
+                X_feat, Y_cached = cached
+                if verbose:
+                    print(f"[CNN] Features '{split}' en caché tras cargar pesos.")
+                return X_feat, Y_cached
+
+        # ── Paso 3: ni features ni pesos → pretrain si corresponde ─
+        elif self.arch == "simple" and pretrain_epochs > 0:
+            self.pretrain(
+                X,
+                Y,
+                epochs=pretrain_epochs,
+                lr=pretrain_lr,
+                batch_size=batch_size,
+                verbose=verbose,
+            )
+        # resnet18 sin pretrained o pretrain_epochs=0: usar pesos actuales
+
+        # ── Paso 4: extraer features con los pesos definitivos ─────
+        if verbose:
+            print(
+                f"[CNN] Extrayendo features '{split}' "
+                f"({len(X)} imgs, hash={self._weights_hash()})..."
+            )
+        t0 = time.perf_counter()
+        X_feat = self.extract_batched(X, batch_size=batch_size)
+        elapsed = time.perf_counter() - t0
+        self._save_features(split, X_feat, Y)
+
+        if verbose:
+            print(
+                f"[CNN] Features guardados en caché: {X_feat.shape}  ({elapsed:.1f}s)\n"
+            )
+        return X_feat, Y
+
+    # ── extracción directa ────────────────────────────────────────
 
     @property
     def feature_dim(self) -> int:
-        """Dimensión del vector de features producido por la CNN."""
         return FEATURE_DIM
 
     def extract(self, X: np.ndarray) -> np.ndarray:
-        """
-        Extrae features de un batch de imágenes CIFAR-10.
-
-        :param X: Imágenes normalizadas, forma ``(N, 3, 32, 32)``, float32.
-        :type X: np.ndarray
-
-        :return: Matriz de features ``(N, feature_dim)``, float32.
-        :rtype: np.ndarray
-        """
-        # torch.no_grad() evita reservar memoria para el grafo de cómputo,
-        # reduciendo el uso de RAM a la mitad durante la inferencia.
+        """Forward pass sin gradientes sobre un batch."""
         with torch.no_grad():
             t = torch.from_numpy(X).to(self.device)
-            features = self._model(t)  # Ejecuta la CNN sin gradientes
-            return features.cpu().numpy()
+            return self._model(t).cpu().numpy()
 
-    def extract_batched(
-        self,
-        X: np.ndarray,
-        batch_size: int = 512,
-    ) -> np.ndarray:
-        """
-        Extrae features en mini-batches para no saturar la RAM/VRAM.
-
-        Para CIFAR-10 completo (50 000 imágenes × 3×32×32) el tensor
-        pesa ~590 MB en float32. Procesarlo en chunks de 512 imágenes
-        mantiene el pico de memoria por debajo de 12 MB por batch.
-
-        :param X: Imágenes ``(N, 3, 32, 32)``, float32.
-        :type X: np.ndarray
-
-        :param batch_size: Número de imágenes por paso.
-        :type batch_size: int = 512
-
-        :return: Features ``(N, feature_dim)``, float32.
-        """
-        parts = []
-        for i in range(0, len(X), batch_size):
-            parts.append(self.extract(X[i : i + batch_size]))
-
-        # Devuelve el mismo resultado que extract, pero por partes y concatenado
-        return np.concatenate(parts, axis=0)
-
-    def get_state(self) -> bytes:
-        """
-        Serializa los pesos de la CNN como bytes.
-
-        Útil para que el PS verifique que todos los Workers usan
-        exactamente el mismo extractor (mismo hash de estado).
-        No forma parte del protocolo mínimo pero facilita debugging.
-
-        :return: Bytes del state_dict serializado con torch.save.
-        :rtype: bytes
-        """
-        import io
-
-        buf = io.BytesIO()
-        torch.save(self._model.state_dict(), buf)
-        return buf.getvalue()
+    def extract_batched(self, X: np.ndarray, batch_size: int = 2048) -> np.ndarray:
+        """Extrae features en mini-batches para controlar el uso de RAM."""
+        return np.concatenate(
+            [self.extract(X[i : i + batch_size]) for i in range(0, len(X), batch_size)],
+            axis=0,
+        )

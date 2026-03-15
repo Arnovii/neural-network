@@ -190,6 +190,7 @@ class DistributedPSApp:
         self._train_start_time: float = 0.0
         self._train_config: dict = {}
         self._cnn: CNNExtractor | None = None
+        self._cnn: CNNExtractor | None = None
 
         self._build_ui()
         self._refresh_buttons()
@@ -334,13 +335,15 @@ class DistributedPSApp:
         # ── Variables ─────────────────────────────────────────────
         self._v_host = tk.StringVar(value="0.0.0.0")
         self._v_port = tk.IntVar(value=9999)
-        self._v_epochs = tk.IntVar(value=50)
+        self._v_epochs = tk.IntVar(value=100)
         self._v_hidden1 = tk.IntVar(value=256)
         self._v_hidden2 = tk.IntVar(value=128)
-        self._v_lr = tk.StringVar(value="0.1")
+        self._v_lr = tk.StringVar(value="0.01")
         self._v_n_train = tk.StringVar(value="60000")
         self._v_seed = tk.StringVar(value="")
         self._v_cnn_arch = tk.StringVar(value="simple")
+        self._v_cnn_pretrained = tk.BooleanVar(value=True)
+        self._v_momentum = tk.StringVar(value="0.9")
 
         # ── Sección: Conexión TCP ─────────────────────────────────
         ttk.Label(frame, text="Conexión TCP", font=("Helvetica", 11, "bold")).pack(
@@ -358,17 +361,49 @@ class DistributedPSApp:
         ttk.Separator(frame, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=4)
 
         _add_slider(frame, "Épocas (50 – 1000):", self._v_epochs, 50, 1000)
-        ttk.Label(frame, text="CNN Extractor:").pack(anchor=tk.W, pady=(10, 0))
+        ttk.Label(frame, text="CNN Extractor:", font=("Helvetica", 10, "bold")).pack(
+            anchor=tk.W, pady=(14, 0)
+        )
+        ttk.Separator(frame, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=4)
         cnn_frame = ttk.Frame(frame)
-        cnn_frame.pack(fill=tk.X, pady=(0, 6))
-        for arch in ("simple", "resnet18"):
-            ttk.Radiobutton(
-                cnn_frame, text=arch.capitalize(), variable=self._v_cnn_arch, value=arch
-            ).pack(side=tk.LEFT, padx=4)
+        cnn_frame.pack(fill=tk.X, pady=(0, 2))
+        ttk.Radiobutton(
+            cnn_frame,
+            text="simple  (preentrenada localmente)",
+            variable=self._v_cnn_arch,
+            value="simple",
+        ).pack(anchor=tk.W)
+        ttk.Radiobutton(
+            cnn_frame,
+            text="resnet18  (pesos ImageNet)",
+            variable=self._v_cnn_arch,
+            value="resnet18",
+        ).pack(anchor=tk.W)
+        ttk.Checkbutton(
+            frame,
+            text="Usar pesos ImageNet (resnet18)",
+            variable=self._v_cnn_pretrained,
+        ).pack(anchor=tk.W, pady=(4, 0))
+        ttk.Label(
+            frame,
+            text="⚠ El Worker debe coincidir: mismo arch, pretrained y seed.\n"
+            "  simple: preentrenamiento local al 1er arranque.\n"
+            "  resnet18 + ImageNet: --cnn-pretrained en el Worker.",
+            font=("Helvetica", 8),
+            foreground="#666666",
+            justify=tk.LEFT,
+        ).pack(anchor=tk.W, pady=(0, 6))
+        ttk.Label(frame, text="Clasificador MLP:", font=("Helvetica", 10, "bold")).pack(
+            anchor=tk.W, pady=(14, 0)
+        )
+        ttk.Separator(frame, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=4)
         _add_slider(frame, "Neuronas ocultas 1 (32 – 1024):", self._v_hidden1, 32, 1024)
         _add_slider(frame, "Neuronas ocultas 2 (32 – 512):", self._v_hidden2, 32, 512)
         _add_float_input(
             frame, "Tasa de aprendizaje\n(0.0001 - 10):", self._v_lr, 0.0001, 10.0
+        )
+        _add_float_input(
+            frame, "Momentum SGD\n(0.0 = desactivado):", self._v_momentum, 0.0, 0.99
         )
         _add_integer_input(
             frame,
@@ -425,6 +460,7 @@ class DistributedPSApp:
         )
         btn_clear.pack(fill=tk.X, pady=4)
         ToolTip(btn_clear, "Borra todas las gráficas actuales")
+
     # ── Panel derecho ─────────────────────────────────────────────
     def _build_right_panel(self) -> None:
         right = ttk.Frame(self.root)
@@ -809,6 +845,7 @@ class DistributedPSApp:
             n_train = int(self._v_n_train.get())
             seed_str = self._v_seed.get().strip()
             seed = int(seed_str) if seed_str else None
+            momentum = float(self._v_momentum.get())
         except ValueError as exc:
             messagebox.showerror("Parámetro inválido", str(exc))
             return
@@ -816,11 +853,18 @@ class DistributedPSApp:
         cnn_arch = self._v_cnn_arch.get()
 
         # Construir extractor CNN si no existe o si cambió la arquitectura
-        if self._cnn is None or self._cnn.arch != cnn_arch:
+        # Reconstruir si cambió arch o seed
+        cnn_seed = seed if seed is not None else 42
+        if (
+            self._cnn is None
+            or self._cnn.arch != cnn_arch
+            or self._cnn.seed != cnn_seed
+        ):
             self._cnn = CNNExtractor(
                 arch=cnn_arch,
+                pretrained=self._v_cnn_pretrained.get(),
                 device="cpu",
-                seed=seed if seed is not None else 42,
+                seed=cnn_seed,
             )
 
         # Inicializar pesos del MLP con la dimensión correcta
@@ -855,6 +899,7 @@ class DistributedPSApp:
             "hidden1": hidden1,
             "hidden2": hidden2,
             "learning_rate": lr,
+            "momentum": momentum,
             "n_train": n_train,
             "workers": len(self._session_workers),
             "seed": seed,
@@ -885,15 +930,24 @@ class DistributedPSApp:
 
         def _train_thread() -> None:
             try:
+                # PS preentrenó su CNN y la distribuye a los Workers.
                 X_test_raw, Y_test = load_cifar10_test(verbose=False)
-                X_test = cnn.extract_batched(X_test_raw)
+                cnn.prepare(
+                    X_test_raw,
+                    Y_test,
+                    split="test",
+                    pretrain_epochs=10 if cnn_arch == "simple" else 0,
+                    verbose=False,
+                )
+                server.set_cnn(cnn)
                 history = server.train(
                     epochs=epochs,
                     initial_params=initial_params,
                     learning_rate=lr,
                     n_train=n_train,
-                    X_test=X_test,
+                    X_test=X_test_raw,  # imágenes raw — server extrae features
                     Y_test=Y_test,
+                    momentum=momentum,
                 )
                 q.put(("training_done", history))
             except Exception as exc:
