@@ -52,7 +52,7 @@ from __future__ import annotations
 import hashlib
 import os
 import time
-from typing import Optional, Tuple
+from typing import Callable, Optional, Tuple
 
 import numpy as np
 import torch
@@ -467,6 +467,7 @@ class CNNExtractor:
         lr: float = 1e-3,
         batch_size: int = 256,
         verbose: bool = True,
+        on_epoch: "Callable[[int, int, float, float], None] | None" = None,
     ) -> None:
         """
         Preentrenamiento supervisado de la CNN simple en CIFAR-10.
@@ -548,11 +549,15 @@ class CNNExtractor:
                 total_loss += loss.item() * len(b)
                 correct += (logits.argmax(1) == yb).sum().item()
 
+            epoch_loss = total_loss / N
+            epoch_acc  = 100.0 * correct / N
             if verbose:
                 print(
                     f"  Época {epoch:2d}/{epochs}  "
-                    f"loss={total_loss / N:.4f}  acc={100.0 * correct / N:.1f}%"
+                    f"loss={epoch_loss:.4f}  acc={epoch_acc:.1f}%"
                 )
+            if on_epoch is not None:
+                on_epoch(epoch, epochs, epoch_loss, epoch_acc)
 
         # Congela la CNN para desactivar el aprendizaje
         for param in self._model.parameters():
@@ -579,6 +584,7 @@ class CNNExtractor:
         pretrain_lr: float = 1e-3,
         batch_size: int = 2048,
         verbose: bool = True,
+        on_epoch: "Callable[[int, int, float, float], None] | None" = None,
     ) -> Tuple[np.ndarray, np.ndarray]:
         """
         Prepara los features con máxima reutilización de caché.
@@ -653,6 +659,7 @@ class CNNExtractor:
                 lr=pretrain_lr,
                 batch_size=batch_size,
                 verbose=verbose,
+                on_epoch=on_epoch,
             )
         # resnet18 sin pretrained o pretrain_epochs=0: usar pesos actuales
 

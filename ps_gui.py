@@ -970,12 +970,21 @@ class DistributedPSApp:
                 # Para resnet18: los pesos ImageNet ya se cargaron al construir.
                 # En ambos casos NO extraemos features aquí — eso lo hace el Worker.
                 if cnn_arch == "simple":
+                    def _on_pretrain_epoch(
+                        epoch: int, total: int, loss: float, acc: float
+                    ) -> None:
+                        bar = "█" * int(acc / 5)
+                        _gui_log(
+                            f"[CNN] Preentrenando {epoch}/{total} — "
+                            f"loss={loss:.4f}  acc={acc:.1f}%  {bar}"
+                        )
                     cnn.prepare(
                         X_test_raw,
                         Y_test,
                         split="test",
                         pretrain_epochs=10,
                         verbose=False,
+                        on_epoch=_on_pretrain_epoch,
                     )
                 _gui_log(
                     f"[PS] CNN lista (hash={cnn._weights_hash()}). Distribuyendo a Workers..."
