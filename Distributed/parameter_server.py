@@ -452,17 +452,28 @@ class ParameterServer:
                     if msg["type"] == MsgType.CNN_READY:
                         print(f"[PS] Worker {wid}: CNN_READY ✓")
                         self._handle_cnn_ready(wid, len(worker_ids))
-                    # Recibir TEST_FEATURES si el Worker los envía (Worker 0)
-                    if wid == 0:
+                    # Cualquier Worker puede enviar TEST_FEATURES.
+                    # El PS acepta el primero que llegue e ignora los demás.
+                    # Así el Worker con GPU más rápida siempre gana.
+                    if msg["type"] == MsgType.TEST_FEATURES:
+                        # Llegó TEST_FEATURES en lugar de CNN_READY — re-procesar
+                        self._handle_cnn_ready(wid, len(worker_ids))
+                    # Intentar recibir TEST_FEATURES después del CNN_READY
+                    try:
                         msg2 = receive_message(self._worker_sockets[wid])
                         if msg2["type"] == MsgType.TEST_FEATURES:
-                            p = msg2["payload"]
-                            self._X_test_features = p["X_test_features"]
-                            self._Y_test_from_worker = p["Y_test"]
-                            print(
-                                f"[PS] Features de prueba recibidos del Worker 0: "
-                                f"{self._X_test_features.shape}"  # type: ignore[union-attr]
-                            )
+                            with self._lock:
+                                if self._X_test_features is None:
+                                    p = msg2["payload"]
+                                    self._X_test_features = p["X_test_features"]
+                                    self._Y_test_from_worker = p["Y_test"]
+                                    print(
+                                        f"[PS] Features de prueba recibidos del "
+                                        f"Worker {wid}: "
+                                        f"{self._X_test_features.shape}"  # type: ignore[union-attr]
+                                    )
+                    except Exception:
+                        pass  # Worker no envió TEST_FEATURES — normal
                 except Exception as exc:
                     print(f"[PS] Worker {wid}: error esperando CNN_READY: {exc}")
                     self._handle_cnn_ready(wid, len(worker_ids))
@@ -485,11 +496,15 @@ class ParameterServer:
             if self._X_test_features is not None:
                 X_test = self._X_test_features
                 Y_test = self._Y_test_from_worker
-                print(f"[PS] Features de prueba recibidos del Worker: {X_test.shape}\n")
+                print(f"[PS] Features de prueba del Worker: {X_test.shape}")
+                # Cachear en disco para no depender del Worker en sesiones futuras.
+                # Usa el mismo sistema de caché que los Workers (hash de pesos CNN).
+                if self._cnn is not None and Y_test is not None:
+                    self._cnn._save_features("test", X_test, Y_test)
+                    print("[PS] Features de prueba guardados en caché local.\n")
             elif X_test is not None and Y_test is not None and X_test.ndim == 4:
                 # Fallback: PS extrae y cachea features localmente.
-                # prepare() guarda en Data/feature_cache/ → segunda sesión
-                # con la misma CNN carga en ~0.3s en lugar de re-extraer.
+                # prepare() usa caché → segunda sesión carga en ~0.3s.
                 print("[PS] Extrayendo y cacheando features de prueba...")
                 X_test, Y_test = self._cnn.prepare(
                     X_test,

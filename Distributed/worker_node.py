@@ -279,14 +279,11 @@ class WorkerNode:
         assert self._sock is not None
         send_message(self._sock, MsgType.CNN_READY, {"worker_id": self.worker_id})
 
-        # El Worker 0 también extrae y envía features de test al PS.
-        # Así el PS nunca necesita hacer forward CNN — usa la GPU del Worker.
-        # Solo el Worker 0 lo hace para evitar envíos redundantes.
-        if (
-            self.worker_id == 0
-            and self._X_test is not None
-            and self._Y_test is not None
-        ):
+        # Todos los Workers envían TEST_FEATURES al PS.
+        # El PS acepta el primero que llega (con lock) y descarta los demás.
+        # Así el Worker con la GPU más rápida determina los features de test,
+        # sin depender de que el Worker 0 tenga GPU o sea el más rápido.
+        if self._X_test is not None and self._Y_test is not None:
             self._log(f"Extrayendo features de prueba ({len(self._X_test)} imgs)...")
             X_test_feat = self._cnn.extract_batched(
                 self._X_test,
