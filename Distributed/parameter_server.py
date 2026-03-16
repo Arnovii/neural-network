@@ -415,6 +415,11 @@ class ParameterServer:
             )
             self._cnn_ready_event.clear()
             self._cnn_ready_count = 0
+            # Resetear features de test: sin esto, features de una sesión
+            # anterior (ej: simple) contaminarían la evaluación de la
+            # sesión actual (ej: resnet18), causando test accuracy ~32%.
+            self._X_test_features    = None
+            self._Y_test_from_worker = None
 
             for wid in worker_ids:
                 with self._lock:

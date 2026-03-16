@@ -935,13 +935,9 @@ class DistributedPSApp:
                 def _gui_log(msg: str) -> None:
                     q.put(("log", msg))
 
-                _gui_log("[PS] Cargando etiquetas de prueba CIFAR-10...")
-                _, Y_test = load_cifar10_test(verbose=False)
-                _gui_log(f"[PS] {len(Y_test)} etiquetas de prueba cargadas.")
-
-                _gui_log("[PS] Cargando datos CIFAR-10...")
+                _gui_log("[PS] Cargando datos de prueba CIFAR-10...")
                 X_test_raw, Y_test = load_cifar10_test(verbose=False)
-                _gui_log(f"[PS] {len(Y_test)} etiquetas de prueba cargadas.")
+                _gui_log(f"[PS] {len(Y_test)} imágenes de prueba cargadas.")
 
                 if cnn_arch == "resnet18":
                     _gui_log(
@@ -987,7 +983,7 @@ class DistributedPSApp:
                     initial_params=initial_params,
                     learning_rate=lr,
                     n_train=n_train,
-                    X_test=None,  # features vienen del Worker via TEST_FEATURES
+                    X_test=X_test_raw,   # fallback si Worker no envía TEST_FEATURES
                     Y_test=Y_test,
                     momentum=momentum,
                 )
