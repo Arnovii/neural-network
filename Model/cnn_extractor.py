@@ -23,8 +23,8 @@ Data/feature_cache/
     {arch}_{seed}_weights.pt
 
   Nivel 2 — Features extraídos:
-    {arch}_{weights_hash8}_{split}_{n}_X.npy
-    {arch}_{weights_hash8}_{split}_{n}_Y.npy
+    {arch}_{weights_hash8}_{split}_X.npy
+    {arch}_{weights_hash8}_{split}_Y.npy
 
 La clave de features incluye un hash MD5 (8 hex) de los pesos CNN
 actuales. Esto garantiza que si la CNN tiene pesos distintos (aleatorios

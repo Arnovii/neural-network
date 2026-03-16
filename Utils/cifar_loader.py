@@ -64,6 +64,10 @@ def _default_data_dir() -> str:
     return path
 
 
+def _cache_path(data_dir: str, name: str) -> str:
+    return os.path.join(data_dir, f"{name}.npz")
+
+
 def _to_nchw_normalized(dataset) -> Tuple[np.ndarray, np.ndarray]:
     """
     Convierte un torchvision CIFAR10 dataset a NumPy NCHW normalizado.
@@ -110,6 +114,17 @@ def load_cifar10_train(
     if data_dir is None:
         data_dir = _default_data_dir()
 
+    cache_file = _cache_path(data_dir, "cifar10_train_nchw")
+
+    # ── Si existe cache, cargar directamente ──
+    if os.path.exists(cache_file):
+        if verbose:
+            print("Cargando CIFAR-10 desde cache...")
+
+        data = np.load(cache_file)
+        return data["X"], data["Y"]
+
+    # ── Carga normal (solo primera vez) ──
     if verbose:
         print("=" * 60)
         print("CARGANDO CIFAR-10 — ENTRENAMIENTO (50 000 imágenes)")
@@ -123,8 +138,11 @@ def load_cifar10_train(
     )
     X, Y = _to_nchw_normalized(dataset)
 
+    # ── Guarda cache ──
+    np.savez_compressed(cache_file, X=X, Y=Y)
+
     if verbose:
-        print(f"✓ {len(X)} imágenes  |  shape {X.shape}  |  dtype {X.dtype}")
+        print("✓ Dataset cacheado para futuras ejecuciones")
 
     return X, Y
 
