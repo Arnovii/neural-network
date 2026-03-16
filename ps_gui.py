@@ -82,27 +82,9 @@ from Utils.results_exporter import export_results
 
 
 class ToolTip:
-    """
-    Muestra un tooltip (recuadro de texto) al pasar el cursor sobre un widget.
-
-    El tooltip aparece después de 500ms de hovering y desaparece al mover
-    el cursor fuera del widget.
-
-    :param widget: Widget sobre el cual mostrar el tooltip.
-    :type widget: tk.Widget.
-    :param text: Texto del tooltip a mostrar.
-    :type text: str.
-    """
+    """Muestra un tooltip al pasar el cursor sobre un widget."""
 
     def __init__(self, widget: tk.Widget, text: str) -> None:
-        """
-        Inicializa el tooltip asociado a un widget.
-
-        :param widget: Widget Tkinter donde se vincula el tooltip.
-        :type widget: tk.Widget.
-        :param text: Texto del tooltip.
-        :type text: str.
-        """
         self.widget = widget
         self.text = text
         self.tip_window = None
@@ -111,12 +93,6 @@ class ToolTip:
         widget.bind("<Leave>", self.hide_tip)
 
     def show_tip(self, event=None):
-        """
-        Programa la aparición del tooltip tras 500ms de hovering.
-
-        :param event: Evento del widget (ignorado, solo para binding).
-        :type event: tk.Event | None.
-        """
         if self.tip_window or not self.text:
             return
         if self._after_id:
@@ -124,12 +100,6 @@ class ToolTip:
         self._after_id = self.widget.after(500, self._show)
 
     def _show(self):
-        """
-        Crea y muestra el tooltip en la posición correcta.
-
-        :return: None
-        :rtype: NoneType.
-        """
         self._after_id = None
         if self.tip_window:
             return
@@ -898,7 +868,11 @@ class DistributedPSApp:
         # Inicializamos los pesos aquí, en el hilo principal, sin necesitar la CNN.
         # La CNN se construye en _train_thread para no bloquear la GUI
         # (con resnet18+ImageNet la descarga ocurre al construir CNNExtractor).
-        cnn_seed = seed if seed is not None else 42
+        # La semilla del usuario controla solo el MLP (init_params).
+        # La CNN usa siempre seed=42 — sus pesos deben ser reproducibles
+        # y consistentes entre sesiones, independientemente de la semilla MLP.
+        # Mezclarlas haría que cambiar la semilla invalide la caché CNN.
+        cnn_seed = 42
         initial_params = init_params(FEATURE_DIM, hidden1, hidden2, NUM_CLASSES, seed)
 
         self._acc_history.clear()
@@ -960,9 +934,13 @@ class DistributedPSApp:
                 def _gui_log(msg: str) -> None:
                     q.put(("log", msg))
 
-                _gui_log("[PS] Cargando datos de prueba CIFAR-10...")
+                _gui_log("[PS] Cargando etiquetas de prueba CIFAR-10...")
+                _, Y_test = load_cifar10_test(verbose=False)
+                _gui_log(f"[PS] {len(Y_test)} etiquetas de prueba cargadas.")
+
+                _gui_log("[PS] Cargando datos CIFAR-10...")
                 X_test_raw, Y_test = load_cifar10_test(verbose=False)
-                _gui_log(f"[PS] {len(Y_test)} imágenes de prueba cargadas.")
+                _gui_log(f"[PS] {len(Y_test)} etiquetas de prueba cargadas.")
 
                 if cnn_arch == "resnet18":
                     _gui_log(
@@ -1008,7 +986,7 @@ class DistributedPSApp:
                     initial_params=initial_params,
                     learning_rate=lr,
                     n_train=n_train,
-                    X_test=X_test_raw,  # fallback si Worker no envía TEST_FEATURES
+                    X_test=None,  # features vienen del Worker via TEST_FEATURES
                     Y_test=Y_test,
                     momentum=momentum,
                 )

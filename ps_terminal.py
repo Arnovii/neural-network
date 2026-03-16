@@ -257,11 +257,13 @@ def main() -> None:
     # Construye el extractor CNN con la misma semilla que usarán los Workers,
     # garantizando que todos partan de los mismos pesos convolucionales.
     print("\nConstruyendo extractor CNN...")
+    # La CNN siempre usa seed=42 — independiente de la semilla MLP.
+    # Mezclarlas haría que --seed invalide la caché CNN.
     cnn = CNNExtractor(
         arch=args.cnn_arch,
         pretrained=cnn_pretrained,
         device=args.cnn_device,
-        seed=args.seed if args.seed is not None else 42,
+        seed=42,
     )
     feature_dim = cnn.feature_dim
     print(f"CNN lista — arch={args.cnn_arch}  feature_dim={feature_dim}\n")
