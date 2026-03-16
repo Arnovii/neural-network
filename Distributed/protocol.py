@@ -42,6 +42,7 @@ FLUJO COMPLETO
         ◄──────────────────────── WORKER_ID
         ◄──────────────────────── CNN_WEIGHTS  (PS envía pesos CNN)
   CNN_READY ─────────────────────►  (Worker confirmó extracción)
+  TEST_FEATURES ─────────────────►  (Worker envía features de prueba al PS)
 
   [en espera de TRAIN_START...]
 
@@ -127,6 +128,7 @@ class MsgType(str, Enum):
     WORKER_ID = "WORKER_ID"
     CNN_WEIGHTS = "CNN_WEIGHTS"
     CNN_READY = "CNN_READY"
+    TEST_FEATURES = "TEST_FEATURES"
     TRAIN_START = "TRAIN_START"
     PARAMS = "PARAMS"
     GRADIENTS = "GRADIENTS"

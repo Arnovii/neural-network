@@ -266,17 +266,10 @@ def main() -> None:
     feature_dim = cnn.feature_dim
     print(f"CNN lista — arch={args.cnn_arch}  feature_dim={feature_dim}\n")
 
-    # Preentrenar o cargar CNN desde caché, luego extraer features de prueba
-    print("Cargando datos de prueba CIFAR-10 (10 000 imágenes)...")
-    X_test_raw, Y_test = load_cifar10_test(verbose=False)
-    X_test_feat, Y_test = cnn.prepare(
-        X_test_raw,
-        Y_test,
-        split="test",
-        pretrain_epochs=10 if args.cnn_arch == "simple" else 0,
-        verbose=True,
-    )
-    # Registrar la CNN en el server para que la distribuya a los Workers
+    # El PS solo carga Y_test (etiquetas). Los features de prueba los
+    # extrae el Worker 0 con su CNN/GPU y los envía al PS via TEST_FEATURES.
+    print("Cargando etiquetas de prueba CIFAR-10...")
+    _, Y_test = load_cifar10_test(verbose=False)
     server.set_cnn(cnn)
 
     initial_params = init_params(
@@ -290,7 +283,7 @@ def main() -> None:
         initial_params=initial_params,
         learning_rate=args.lr,
         n_train=args.n_train,
-        X_test=X_test_raw,  # imágenes raw — el server extrae features con su CNN
+        X_test=None,  # features vienen del Worker 0 via TEST_FEATURES
         Y_test=Y_test,
         momentum=args.momentum,
     )

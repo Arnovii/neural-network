@@ -136,6 +136,9 @@ class ParameterServer:
         # Evento y contador para la barrera CNN_READY
         self._cnn_ready_event = threading.Event()
         self._cnn_ready_count: int = 0
+        # Features de prueba recibidos del Worker 0 (extraídos con su CNN/GPU)
+        self._X_test_features: Optional[np.ndarray] = None
+        self._Y_test_from_worker: Optional[np.ndarray] = None
 
         # Sockets y metadatos de Workers activos
         self._worker_sockets: Dict[int, socket.socket] = {}
@@ -433,10 +436,22 @@ class ParameterServer:
 
             def _wait_cnn_ready(wid: int) -> None:
                 try:
+                    # Primero CNN_READY, luego opcionalmente TEST_FEATURES (Worker 0)
                     msg = receive_message(self._worker_sockets[wid])
                     if msg["type"] == MsgType.CNN_READY:
                         print(f"[PS] Worker {wid}: CNN_READY ✓")
                         self._handle_cnn_ready(wid, len(worker_ids))
+                    # Recibir TEST_FEATURES si el Worker los envía (Worker 0)
+                    if wid == 0:
+                        msg2 = receive_message(self._worker_sockets[wid])
+                        if msg2["type"] == MsgType.TEST_FEATURES:
+                            p = msg2["payload"]
+                            self._X_test_features = p["X_test_features"]
+                            self._Y_test_from_worker = p["Y_test"]
+                            print(
+                                f"[PS] Features de prueba recibidos del Worker 0: "
+                                f"{self._X_test_features.shape}"  # type: ignore[union-attr]
+                            )
                 except Exception as exc:
                     print(f"[PS] Worker {wid}: error esperando CNN_READY: {exc}")
                     self._handle_cnn_ready(wid, len(worker_ids))
@@ -451,11 +466,18 @@ class ParameterServer:
             self._cnn_ready_event.wait()
             for t in ready_threads:
                 t.join()
-            print("[PS] Todos los Workers listos con la CNN distribuida.\n")
+            print("[PS] Todos los Workers listos con la CNN distribuida.")
 
-            # Si X_test son imágenes raw (4 dims), extraer features ahora
-            if X_test is not None and X_test.ndim == 4:
-                print("[PS] Extrayendo features de prueba...")
+            # Recibir features de prueba del Worker 0.
+            # El Worker 0 los extrajo con su CNN/GPU, evitando que el PS
+            # tenga que hacer el forward pass en CPU.
+            if self._X_test_features is not None:
+                X_test = self._X_test_features
+                Y_test = self._Y_test_from_worker
+                print(f"[PS] Features de prueba recibidos del Worker: {X_test.shape}\n")
+            elif X_test is not None and X_test.ndim == 4:
+                # Fallback: PS extrae features si no los recibió del Worker
+                print("[PS] Extrayendo features de prueba en el PS (sin Worker 0)...")
                 X_test = self._cnn.extract_batched(X_test)
                 print(f"[PS] Features de prueba listos: {X_test.shape}\n")
 

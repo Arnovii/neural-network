@@ -49,7 +49,7 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from Distributed.worker_node import WorkerNode
-from Utils.cifar_loader import NUM_CLASSES, load_cifar10_train
+from Utils.cifar_loader import NUM_CLASSES, load_cifar10_train, load_cifar10_test
 
 
 def main() -> None:
@@ -128,11 +128,24 @@ def main() -> None:
         f"Dataset listo: {X_train.shape[0]} imágenes  shape por imagen: {X_train.shape[1:]}\n"
     )
 
+    # Cargar datos de prueba — el Worker 0 los usará para extraer
+    # features con su CNN/GPU y enviarlos al PS, evitando que el PS
+    # tenga que hacer el forward pass en CPU.
+    print("\nCargando CIFAR-10 prueba (10 000 imágenes)...")
+    X_test, Y_test = load_cifar10_test(
+        download_if_missing=True,
+        verbose=not args.quiet,
+    )
+    X_test = X_test.astype(np.float32)
+    Y_test = Y_test.astype(np.int32)
+
     worker = WorkerNode(
         server_host=args.server_host,
         server_port=args.server_port,
         X_train=X_train,
         Y_train=Y_train,
+        X_test=X_test,
+        Y_test=Y_test,
         cnn_device=args.cnn_device,
         cnn_seed=args.cnn_seed,
         hidden1=args.hidden1,

@@ -406,7 +406,7 @@ class DistributedPSApp:
             font=("Helvetica", 8),
             foreground="#1565C0",
             justify=tk.LEFT,
-        ).pack(anchor=tk.W, pady=(0, 6))
+        ).pack(anchor=tk.W, pady=(4, 6))
         ttk.Label(frame, text="Clasificador MLP:", font=("Helvetica", 10, "bold")).pack(
             anchor=tk.W, pady=(14, 0)
         )
@@ -935,11 +935,15 @@ class DistributedPSApp:
                 def _gui_log(msg: str) -> None:
                     q.put(("log", msg))
 
-                _gui_log("[PS] Cargando datos de prueba CIFAR-10...")
-                X_test_raw, Y_test = load_cifar10_test(verbose=False)
-                _gui_log(f"[PS] {len(X_test_raw)} imágenes de prueba cargadas.")
+                _gui_log("[PS] Cargando etiquetas de prueba CIFAR-10...")
+                _, Y_test = load_cifar10_test(verbose=False)
+                _gui_log(f"[PS] {len(Y_test)} etiquetas de prueba cargadas.")
 
-                if cnn_arch == "resnet18" and cnn_pretrained:
+                _gui_log("[PS] Cargando datos CIFAR-10...")
+                X_test_raw, Y_test = load_cifar10_test(verbose=False)
+                _gui_log(f"[PS] {len(Y_test)} etiquetas de prueba cargadas.")
+
+                if cnn_arch == "resnet18":
                     _gui_log(
                         "[PS] Descargando pesos ImageNet (~44 MB, solo la 1ª vez)..."
                     )
@@ -947,8 +951,6 @@ class DistributedPSApp:
                     _gui_log(
                         "[PS] Preentrenando CNN simple (esto solo ocurre la 1ª vez)..."
                     )
-                else:
-                    _gui_log(f"[PS] Preparando CNN {cnn_arch} (pesos aleatorios)...")
 
                 # Construir CNN aquí (no en el hilo principal) para que
                 # la descarga de ImageNet no congele la GUI.
@@ -964,13 +966,18 @@ class DistributedPSApp:
                         seed=cnn_seed,
                     )
                 cnn = self._cnn
-                cnn.prepare(
-                    X_test_raw,
-                    Y_test,
-                    split="test",
-                    pretrain_epochs=10 if cnn_arch == "simple" else 0,
-                    verbose=False,
-                )
+
+                # Para simple: preentrenar con X_test (lo único que tiene el PS).
+                # Para resnet18: los pesos ImageNet ya se cargaron al construir.
+                # En ambos casos NO extraemos features aquí — eso lo hace el Worker.
+                if cnn_arch == "simple":
+                    cnn.prepare(
+                        X_test_raw,
+                        Y_test,
+                        split="test",
+                        pretrain_epochs=10,
+                        verbose=False,
+                    )
                 _gui_log(
                     f"[PS] CNN lista (hash={cnn._weights_hash()}). Distribuyendo a Workers..."
                 )
@@ -980,7 +987,7 @@ class DistributedPSApp:
                     initial_params=initial_params,
                     learning_rate=lr,
                     n_train=n_train,
-                    X_test=X_test_raw,  # imágenes raw — server extrae features
+                    X_test=None,  # features vienen del Worker via TEST_FEATURES
                     Y_test=Y_test,
                     momentum=momentum,
                 )
