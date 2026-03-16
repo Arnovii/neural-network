@@ -165,7 +165,7 @@ def main() -> None:
         "--n-train",
         type=int,
         default=50_000,
-        help="Total de ejemplos de entrenamiento (default: 50000)",
+        help="Total de ejemplos de entrenamiento (default: 50000, máx CIFAR-10 train)",
     )
     parser.add_argument(
         "--seed", type=int, default=None, help="Semilla aleatoria (default: ninguna)"
@@ -186,7 +186,7 @@ def main() -> None:
     parser.add_argument(
         "--cnn-pretrained",
         action="store_true",
-        help="Usar pesos ImageNet para ResNet-18 (requiere descarga)",
+        help="Usar pesos ImageNet para ResNet-18 (descarga ~44 MB la 1ª vez)",
     )
     parser.add_argument(
         "--cnn-device",
@@ -204,7 +204,10 @@ def main() -> None:
     print(f"  Host            : {args.host}:{args.port}")
     print(f"  Workers         : {args.workers}")
     print(f"  Épocas          : {args.epochs}")
-    print(f"  CNN arch        : {args.cnn_arch}")
+    print(
+        f"  CNN arch        : {args.cnn_arch}"
+        + (" + pesos ImageNet" if getattr(args, "cnn_pretrained", False) else "")
+    )
     print(
         f"  MLP arquitectura: features → {args.hidden1} → {args.hidden2} → {OUTPUT_SIZE}"
     )

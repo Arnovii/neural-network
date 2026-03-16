@@ -521,7 +521,7 @@ class CNNExtractor:
                 f"({len(X)} imgs, hash={self._weights_hash()})..."
             )
         t0 = time.perf_counter()
-        X_feat = self.extract_batched(X, batch_size=batch_size)
+        X_feat = self.extract_batched(X, batch_size=batch_size, verbose=verbose)
         elapsed = time.perf_counter() - t0
         self._save_features(split, X_feat, Y)
 
@@ -543,9 +543,40 @@ class CNNExtractor:
             t = torch.from_numpy(X).to(self.device)
             return self._model(t).cpu().numpy()
 
-    def extract_batched(self, X: np.ndarray, batch_size: int = 2048) -> np.ndarray:
-        """Extrae features en mini-batches para controlar el uso de RAM."""
-        return np.concatenate(
-            [self.extract(X[i : i + batch_size]) for i in range(0, len(X), batch_size)],
-            axis=0,
-        )
+    def extract_batched(
+        self,
+        X: np.ndarray,
+        batch_size: int = 2048,
+        verbose: bool = False,
+    ) -> np.ndarray:
+        """
+        Extrae features en mini-batches para controlar el uso de RAM.
+
+        :param X: Imágenes (N, 3, H, W) float32.
+        :param batch_size: Imágenes por batch.
+        :param verbose: Si True imprime una barra de progreso por consola.
+        :return: Features (N, feature_dim) float32.
+        """
+        N = len(X)
+        starts = list(range(0, N, batch_size))
+        n_batch = len(starts)
+        parts = []
+
+        for idx, i in enumerate(starts, 1):
+            parts.append(self.extract(X[i : i + batch_size]))
+
+            if verbose:
+                done = int(20 * idx / n_batch)
+                bar = "█" * done + "░" * (20 - done)
+                n_done = min(i + batch_size, N)
+                print(
+                    f"\r  [CNN] Extrayendo features [{bar}] "
+                    f"{n_done}/{N} imgs  ({idx}/{n_batch} batches)",
+                    end="",
+                    flush=True,
+                )
+
+        if verbose:
+            print()  # salto de línea al terminar
+
+        return np.concatenate(parts, axis=0)

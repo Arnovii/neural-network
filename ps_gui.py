@@ -72,7 +72,7 @@ except ImportError as e:
 import numpy as np
 
 from Distributed.parameter_server import ParameterServer
-from Model.cnn_extractor import CNNExtractor
+from Model.cnn_extractor import CNNExtractor, FEATURE_DIM
 from Model.mlp import init_params
 from Utils.cifar_loader import NUM_CLASSES, load_cifar10_test
 from Utils.results_exporter import export_results
@@ -359,7 +359,7 @@ class DistributedPSApp:
         self._v_hidden1 = tk.IntVar(value=256)
         self._v_hidden2 = tk.IntVar(value=128)
         self._v_lr = tk.StringVar(value="0.01")
-        self._v_n_train = tk.StringVar(value="60000")
+        self._v_n_train = tk.StringVar(value="50000")
         self._v_seed = tk.StringVar(value="")
         self._v_cnn_arch = tk.StringVar(value="simple")
         self._v_cnn_pretrained = tk.BooleanVar(value=True)
@@ -389,7 +389,7 @@ class DistributedPSApp:
         cnn_frame.pack(fill=tk.X, pady=(0, 2))
         ttk.Radiobutton(
             cnn_frame,
-            text="simple  (preentrenada localmente)",
+            text="simple  (preentrenada localmente, recomendada)",
             variable=self._v_cnn_arch,
             value="simple",
         ).pack(anchor=tk.W)
@@ -426,10 +426,10 @@ class DistributedPSApp:
         )
         _add_integer_input(
             frame,
-            "Ejemplos de entrenamiento\n(10 - 60000):",
+            "Ejemplos de entrenamiento\n(10 - 50000):",
             self._v_n_train,
             100,
-            60000,
+            50000,
         )
         _add_text_input(frame, "Semilla (vacío = aleatoria):", self._v_seed)
 
@@ -870,26 +870,14 @@ class DistributedPSApp:
             return
 
         cnn_arch = self._v_cnn_arch.get()
+        cnn_pretrained = self._v_cnn_pretrained.get()
 
-        # Construir extractor CNN si no existe o si cambió la arquitectura
-        # Reconstruir si cambió arch o seed
+        # El MLP siempre tiene feature_dim=512 (salida de cualquier CNNExtractor).
+        # Inicializamos los pesos aquí, en el hilo principal, sin necesitar la CNN.
+        # La CNN se construye en _train_thread para no bloquear la GUI
+        # (con resnet18+ImageNet la descarga ocurre al construir CNNExtractor).
         cnn_seed = seed if seed is not None else 42
-        if (
-            self._cnn is None
-            or self._cnn.arch != cnn_arch
-            or self._cnn.seed != cnn_seed
-        ):
-            self._cnn = CNNExtractor(
-                arch=cnn_arch,
-                pretrained=self._v_cnn_pretrained.get(),
-                device="cpu",
-                seed=cnn_seed,
-            )
-
-        # Inicializar pesos del MLP con la dimensión correcta
-        initial_params = init_params(
-            self._cnn.feature_dim, hidden1, hidden2, NUM_CLASSES, seed
-        )
+        initial_params = init_params(FEATURE_DIM, hidden1, hidden2, NUM_CLASSES, seed)
 
         self._acc_history.clear()
         self._loss_history.clear()
@@ -954,16 +942,31 @@ class DistributedPSApp:
                 X_test_raw, Y_test = load_cifar10_test(verbose=False)
                 _gui_log(f"[PS] {len(X_test_raw)} imágenes de prueba cargadas.")
 
-                if cnn_arch == "simple":
+                if cnn_arch == "resnet18" and cnn_pretrained:
+                    _gui_log(
+                        "[PS] Descargando pesos ImageNet (~44 MB, solo la 1ª vez)..."
+                    )
+                elif cnn_arch == "simple":
                     _gui_log(
                         "[PS] Preentrenando CNN simple (esto solo ocurre la 1ª vez)..."
                     )
                 else:
-                    _gui_log(f"[PS] Preparando CNN {cnn_arch}...")
+                    _gui_log(f"[PS] Preparando CNN {cnn_arch} (pesos aleatorios)...")
 
+                # Construir CNN aquí (no en el hilo principal) para que
+                # la descarga de ImageNet no congele la GUI.
+                if (
+                    self._cnn is None
+                    or self._cnn.arch != cnn_arch
+                    or self._cnn.seed != cnn_seed
+                ):
+                    self._cnn = CNNExtractor(
+                        arch=cnn_arch,
+                        pretrained=cnn_pretrained,
+                        device="cpu",
+                        seed=cnn_seed,
+                    )
                 cnn = self._cnn
-                assert cnn is not None
-
                 cnn.prepare(
                     X_test_raw,
                     Y_test,
