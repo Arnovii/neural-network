@@ -62,16 +62,45 @@ class WorkerNode:
     """
     Nodo Worker persistente para entrenamiento distribuido con CNN + MLP.
 
-    :param server_host: IP del Parameter Server.
+    El Worker se conecta al Parameter Server, recibe una CNN preentrenada,
+    extrae features una sola vez, y luego participa en sesiones de
+    entrenamiento colaborativo recalculando gradientes en cada época.
+
+    :param server_host: Dirección IP del Parameter Server.
+    :type server_host: str.
+
     :param server_port: Puerto TCP del Parameter Server.
-    :param X_train: Imágenes (N, 3, 32, 32) float32 NCHW normalizadas.
-    :param Y_train: Etiquetas (N,) int32.
-    :param cnn_device: Dispositivo PyTorch: "cpu", "cuda", "mps".
-    :param cnn_seed: Semilla para inicialización CNN (no crítica — el PS sobreescribirá los pesos).
-    :param hidden1: Neuronas capa oculta 1 del MLP.
-    :param hidden2: Neuronas capa oculta 2 del MLP.
-    :param cnn_batch_size: Batch size para extracción inicial de features.
-    :param verbose: Imprime progreso por época.
+    :type server_port: int.
+
+    :param X_train: Imágenes de entrenamiento.
+    :type X_train: np.ndarray de shape (N, 3, 32, 32) float32 NCHW normalizadas.
+
+    :param Y_train: Etiquetas de entrenamiento.
+    :type Y_train: np.ndarray de shape (N,) int32 con valores 0-9.
+
+    :param X_test: Imágenes de prueba (opcional, para enviar opcionalmente al PS).
+    :type X_test: np.ndarray | None, default=None.
+
+    :param Y_test: Etiquetas de prueba (opcional).
+    :type Y_test: np.ndarray | None, default=None.
+
+    :param cnn_device: Dispositivo PyTorch para la CNN.
+    :type cnn_device: str, "cpu"|"cuda"|"mps", default="cpu".
+
+    :param cnn_seed: Semilla para inicialización CNN (será sobreescrita por PS).
+    :type cnn_seed: int | None, default=42.
+
+    :param hidden1: Neuronas en la primera capa oculta del MLP.
+    :type hidden1: int, default=256.
+
+    :param hidden2: Neuronas en la segunda capa oculta del MLP.
+    :type hidden2: int, default=128.
+
+    :param cnn_batch_size: Batch size para extracción inicial de features CNN.
+    :type cnn_batch_size: int, default=2048.
+
+    :param verbose: Si True, imprime mensajes de progreso por época.
+    :type verbose: bool, default=True.
     """
 
     def __init__(
@@ -136,10 +165,14 @@ class WorkerNode:
 
     def run(self) -> None:
         """
-        Conecta al PS, recibe el ID asignado y entra en el bucle
-        persistente de espera de sesiones de entrenamiento.
+        Conecta al PS, recibe el ID asignado y entra en el bucle persistente.
 
-        Bloquea hasta recibir STOP o hasta que la conexión se pierda.
+        Bloquea indefinidamente hasta recibir STOP del PS o hasta que la
+        conexión se pierda inesperadamente. No retorna hasta que la sesión
+        finaliza.
+
+        :return: None
+        :rtype: NoneType.
         """
         self._connect()
         self._log(
@@ -160,7 +193,12 @@ class WorkerNode:
         """
         Establece la conexión TCP y completa el handshake con el PS.
 
-        Envía READY (sin ID) y espera WORKER_ID con el ID asignado.
+        Envía READY (sin ID) y espera WORKER_ID para recibir el ID asignado
+        por el PS. Si no recibe WORKER_ID, lanza ConnectionError.
+
+        :return: None
+        :rtype: NoneType.
+        :raises ConnectionError: Si no se recibe WORKER_ID del PS.
         """
 
         # AF_INET = IPv4.
@@ -177,7 +215,12 @@ class WorkerNode:
         self.worker_id = msg["payload"]["worker_id"]
 
     def _disconnect(self) -> None:
-        """Cierra la conexión TCP."""
+        """
+        Cierra la conexión TCP con el PS.
+
+        :return: None
+        :rtype: NoneType.
+        """
         if self._sock is not None:
             try:
                 self._sock.close()
@@ -192,12 +235,16 @@ class WorkerNode:
 
     def _main_loop(self) -> None:
         """
-        Bucle persistente que alterna entre:
-            - Esperar TRAIN_START (nueva sesión de entrenamiento)
-            - Procesar épocas de esa sesión (PARAMS → GRADIENTS)
-            - Volver a esperar
+        Bucle persistente que alterna entre esperar sesiones de entrenamiento.
 
-        Sale cuando recibe STOP.
+        Flujo:
+            1. Espera TRAIN_START (nueva sesión de entrenamiento).
+            2. Procesa épocas de esa sesión (recibe PARAMS → envía GRADIENTS).
+            3. Vuelve a esperar TRAIN_START.
+            4. Sale cuando recibe STOP.
+
+        :return: None
+        :rtype: NoneType.
         """
         assert self._sock is not None
 
@@ -226,13 +273,20 @@ class WorkerNode:
 
     def _handle_cnn_weights(self, payload: dict) -> None:
         """
-        Procesa CNN_WEIGHTS del PS: reconstruye la CNN si el arch cambió,
-        carga los pesos, regenera features y confirma con CNN_READY.
+        Procesa CNN_WEIGHTS del PS: reconstruye CNN si cambió de arch.
 
-        El Worker puede haber arrancado con arch=simple y recibir pesos
-        de resnet18 (o viceversa) si el usuario cambió la arquitectura en
-        el PS entre sesiones. En ese caso se reconstruye el modelo antes
-        de cargar los pesos para evitar un RuntimeError de state_dict.
+        Si el Worker arrancó con arch=simple y recibe pesos de resnet18,
+        se reconstruye el modelo antes de cargar los pesos para evitar
+        un RuntimeError de incompatibilidad de state_dict. Luego extrae
+        features de entrenamiento y opcionalmente de prueba, y confirma
+        con CNN_READY.
+
+        :param payload: Diccionario con claves "arch" y "weights_bytes".
+        :type payload: dict con claves{'arch': str, 'weights_bytes': bytes,
+                                       'need_test_features': bool (opcional)}.
+
+        :return: None
+        :rtype: NoneType.
         """
         arch = payload["arch"]
         weights_bytes = payload["weights_bytes"]
@@ -327,9 +381,16 @@ class WorkerNode:
         el siguiente TRAIN_START.
 
         :param epochs: Número de épocas en esta sesión.
+        :type epochs: int
+
         :param n_train: Total de ejemplos de entrenamiento (para estratificación).
+        :type n_train: int
+
         :param n_workers: Número de Workers en esta sesión.
+        :type n_workers: int
+
         :param worker_rank: Posición de este Worker en la sesión (0-based).
+        :type worker_rank: int
         """
         assert self._sock is not None
 

@@ -501,34 +501,50 @@ class CNNExtractor:
         if verbose:
             print(f"[CNN] Preentrenando CNN simple ({epochs} épocas, lr={lr})...")
 
-        for p in self._model.parameters():
-            p.requires_grad_(True)
+        # Activa el entrenamiento de la CNN
+        for param in self._model.parameters():
+            param.requires_grad_(True)
         self._model.train()
 
+        # Crea un clasificador temporal
         classifier = nn.Linear(FEATURE_DIM, 10).to(self.device)
+
+        # El algoritmo Adam es un optimizador variante de SGD con
+        # momentum y learning rate adaptativo.
         optimizer = torch.optim.Adam(
             list(self._model.parameters()) + list(classifier.parameters()), lr=lr
         )
         criterion = nn.CrossEntropyLoss()
         N = len(X_train)
+
+        # Crea un generador aleatorio
         rng = np.random.RandomState(self.seed if self.seed is not None else 0)
 
         for epoch in range(1, epochs + 1):
             idx = rng.permutation(N)
             total_loss, correct = 0.0, 0
 
+            # Divide el entrenamiento en mini-batches
             for start in range(0, N, batch_size):
                 b = idx[start : start + batch_size]
+
+                # Los datos NumPy se convierten a tensores PyTorch
                 xb = torch.from_numpy(X_train[b]).to(self.device)
                 yb = torch.from_numpy(Y_train[b].astype(np.int64)).to(self.device)
 
+                # Esto limpia gradientes acumulados del batch anterior
                 optimizer.zero_grad()
+
+                # Se obtienen las features
                 feats = self._model(xb)
                 logits = classifier(feats)
                 loss = criterion(logits, yb)
                 loss.backward()
+
+                # El optimizador actualiza los pesos usando los gradientes
                 optimizer.step()
 
+                # Se acumula la pérdida total y las predicciones correctas
                 total_loss += loss.item() * len(b)
                 correct += (logits.argmax(1) == yb).sum().item()
 
@@ -538,8 +554,11 @@ class CNNExtractor:
                     f"loss={total_loss / N:.4f}  acc={100.0 * correct / N:.1f}%"
                 )
 
-        for p in self._model.parameters():
-            p.requires_grad_(False)
+        # Congela la CNN para desactivar el aprendizaje
+        for param in self._model.parameters():
+            param.requires_grad_(False)
+
+        # Cambia a modo evaluación
         self._model.eval()
         self._save_weights()
 
@@ -670,7 +689,7 @@ class CNNExtractor:
         :return: Features extraídos del batch.
         :rtype: np.ndarray de shape (batch_size, feature_dim) float32.
         """
-        with torch.no_grad():
+        with torch.inference_mode():
             t = torch.from_numpy(X).to(self.device)
             return self._model(t).cpu().numpy()
 

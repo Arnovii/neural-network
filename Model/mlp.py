@@ -148,14 +148,19 @@ def init_params(
 
     :param feature_dim: Dimensión del vector de entrada (= FEATURE_DIM de la CNN).
     :type feature_dim: int, típicamente 512.
+
     :param hidden1: Neuronas en la primera capa oculta.
     :type hidden1: int, típicamente 256 o 512.
+
     :param hidden2: Neuronas en la segunda capa oculta.
     :type hidden2: int, típicamente 128 o 256.
+
     :param n_classes: Número de clases de salida (10 para CIFAR-10).
     :type n_classes: int.
+
     :param seed: Semilla aleatoria para reproducibilidad.
     :type seed: int | None, default=None.
+
     :return: Diccionario con 6 claves: W1, b1, W2, b2, W3, b3 (todos float32).
     :rtype: Dict[str, np.ndarray].
     """
@@ -201,8 +206,10 @@ def _forward(
 
     :param params: Diccionario con pesos: W1, b1, W2, b2, W3, b3.
     :type params: Dict[str, np.ndarray].
+
     :param X: Features de entrada.
     :type X: np.ndarray de shape (N, feature_dim) float32.
+
     :return: Tupla (Z1, A1, Z2, A2, A3) donde cada componente es:
                 - Z1: pre-activaciones capa 1, shape (hidden1, N).
                 - A1: activaciones capa 1 (ReLU), shape (hidden1, N).
@@ -253,10 +260,13 @@ def forward_and_gradients(
 
     :param params: Pesos actuales del MLP.
     :type params: Dict[str, np.ndarray] con W1, b1, W2, b2, W3, b3.
+
     :param X: Features del batch.
     :type X: np.ndarray de shape (N, feature_dim) float32.
+
     :param Y: Etiquetas del batch.
     :type Y: np.ndarray de shape (N,) int32 con valores 0-9.
+
     :return: Tupla (gradients, mean_loss, accuracy_pct) donde:
                 - gradients: Dict con dW1, db1, dW2, db2, dW3, db3 (mismo shape que pesos).
                 - mean_loss: Cross-entropy loss promediada sobre el batch (float).
@@ -279,10 +289,10 @@ def forward_and_gradients(
 
     # ── Backward ─────────────────────────────────────────────────
     # Capa salida — softmax + cross-entropy se combinan en un gradiente limpio
-    Y_onehot = np.zeros_like(A3)  # (n_classes, N)
-    Y_onehot[Y, np.arange(N)] = 1.0
-
-    delta3 = A3 - Y_onehot  # (n_classes, N)
+    # Copia A3 y resta 1 solo en los índices correctos: evita alocar la
+    # matriz one-hot completa (n_classes, N).
+    delta3 = A3.copy()  # (n_classes, N)
+    delta3[Y, np.arange(N)] -= 1.0
     dW3 = (1.0 / N) * (delta3 @ A2.T)  # (n_classes, hidden2)
     db3 = (1.0 / N) * delta3.sum(axis=1)  # (n_classes,)
 
@@ -327,10 +337,13 @@ def evaluate(
 
     :param params: Pesos del MLP.
     :type params: Dict[str, np.ndarray] con W1, b1, W2, b2, W3, b3.
+
     :param X: Features de prueba.
     :type X: np.ndarray de shape (N, feature_dim) float32.
+
     :param Y: Etiquetas de prueba.
     :type Y: np.ndarray de shape (N,) int32 con valores 0-9.
+
     :return: Tupla (accuracy_pct, mean_loss) donde:
                 - accuracy_pct: Porcentaje de aciertos 0-100 (float).
                 - mean_loss: Cross-entropy loss promediada (float).
@@ -380,12 +393,16 @@ def apply_gradients(
 
     :param params: Pesos del MLP a actualizar in-place.
     :type params: Dict[str, np.ndarray] con W1, b1, W2, b2, W3, b3.
+
     :param gradients: Gradientes promediados por el PS.
     :type gradients: Dict[str, np.ndarray] con dW1, db1, dW2, db2, dW3, db3.
+
     :param learning_rate: Tasa de aprendizaje multiplicada por los gradientes.
     :type learning_rate: float, típicamente 1e-3 a 1e-2.
+
     :param momentum: Coeficiente de momentum (0.0 = SGD puro, 0.9-0.99 = típico).
     :type momentum: float, default=0.0.
+
     :param velocities: Diccionario mutable con velocidades acumuladas.
                        Debe persistir entre llamadas. Ignorado si momentum=0.
                        Inicialización: {'W1': arr, ..., 'b3': arr}.
@@ -396,15 +413,22 @@ def apply_gradients(
     keys = ["W1", "b1", "W2", "b2", "W3", "b3"]
     grad_keys = ["dW1", "db1", "dW2", "db2", "dW3", "db3"]
 
-    if momentum == 0.0 or velocities is None:
+    if momentum == 0.0:
         # SGD puro — camino rápido sin estado adicional
         for k, dk in zip(keys, grad_keys):
             params[k] -= learning_rate * gradients[dk]
         return
 
-    # SGD con momentum — actualiza velocidades in-place
-    for k, dk in zip(keys, grad_keys):
+    if velocities is None:
+        raise ValueError("velocities no puede ser None cuando momentum > 0.")
+
+    # SGD con momentum — inicializa claves ausentes fuera del loop de actualización
+    for k in keys:
         if k not in velocities:
             velocities[k] = np.zeros_like(params[k])
-        velocities[k] = momentum * velocities[k] + gradients[dk]
+
+    # Actualización in-place: evita alocar arrays temporales por param por época
+    for k, dk in zip(keys, grad_keys):
+        velocities[k] *= momentum
+        velocities[k] += gradients[dk]
         params[k] -= learning_rate * velocities[k]

@@ -82,9 +82,27 @@ from Utils.results_exporter import export_results
 
 
 class ToolTip:
-    """Muestra un tooltip al pasar el cursor sobre un widget."""
+    """
+    Muestra un tooltip (recuadro de texto) al pasar el cursor sobre un widget.
+
+    El tooltip aparece después de 500ms de hovering y desaparece al mover
+    el cursor fuera del widget.
+
+    :param widget: Widget sobre el cual mostrar el tooltip.
+    :type widget: tk.Widget.
+    :param text: Texto del tooltip a mostrar.
+    :type text: str.
+    """
 
     def __init__(self, widget: tk.Widget, text: str) -> None:
+        """
+        Inicializa el tooltip asociado a un widget.
+
+        :param widget: Widget Tkinter donde se vincula el tooltip.
+        :type widget: tk.Widget.
+        :param text: Texto del tooltip.
+        :type text: str.
+        """
         self.widget = widget
         self.text = text
         self.tip_window = None
@@ -93,6 +111,12 @@ class ToolTip:
         widget.bind("<Leave>", self.hide_tip)
 
     def show_tip(self, event=None):
+        """
+        Programa la aparición del tooltip tras 500ms de hovering.
+
+        :param event: Evento del widget (ignorado, solo para binding).
+        :type event: tk.Event | None.
+        """
         if self.tip_window or not self.text:
             return
         if self._after_id:
@@ -100,6 +124,12 @@ class ToolTip:
         self._after_id = self.widget.after(500, self._show)
 
     def _show(self):
+        """
+        Crea y muestra el tooltip en la posición correcta.
+
+        :return: None
+        :rtype: NoneType.
+        """
         self._after_id = None
         if self.tip_window:
             return

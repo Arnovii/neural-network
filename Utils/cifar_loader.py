@@ -56,7 +56,11 @@ _STD = np.array([0.2470, 0.2435, 0.2616], dtype=np.float32)
 def _default_data_dir() -> str:
     """
     Devuelve la ruta absoluta al directorio Data/ del proyecto.
+
     Si el directorio no existe, se crea automáticamente.
+
+    :return: Ruta absoluta al directorio Data/.
+    :rtype: str.
     """
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     path = os.path.join(root, "Data")
@@ -65,6 +69,16 @@ def _default_data_dir() -> str:
 
 
 def _cache_path(data_dir: str, name: str) -> str:
+    """
+    Construye la ruta de archivo .npz para cachear un dataset.
+
+    :param data_dir: Directorio raíz de datos.
+    :type data_dir: str.
+    :param name: Nombre del dataset (ej. "cifar10_train_nchw").
+    :type name: str.
+    :return: Ruta completa: data_dir/{name}.npz.
+    :rtype: str.
+    """
     return os.path.join(data_dir, f"{name}.npz")
 
 
@@ -72,12 +86,19 @@ def _to_nchw_normalized(dataset) -> Tuple[np.ndarray, np.ndarray]:
     """
     Convierte un torchvision CIFAR10 dataset a NumPy NCHW normalizado.
 
-    1. dataset.data es uint8 (N, 32, 32, 3) — NHWC.
-    2. float32 / 255 → [0, 1].
-    3. (x − μ) / σ  por canal (broadcast sobre axis=3).
-    4. Transpone NHWC → NCHW y hace copia C-contigua para torch.
+    Pasos:
+        1. dataset.data es uint8 (N, 32, 32, 3) — NHWC.
+        2. float32 / 255 → [0, 1].
+        3. (x − μ) / σ  por canal (broadcast sobre axis=3).
+        4. Transpone NHWC → NCHW y hace copia C-contigua para torch.
 
-    Todo vectorizado; sin bucles por imagen.
+    Todo vectorizado sin bucles por imagen.
+
+    :param dataset: Dataset CIFAR-10 de torchvision.
+    :type dataset: torchvision.datasets.CIFAR10.
+    :return: Tupla (X, Y) normalizada y transpuesta.
+    :rtype: Tuple[np.ndarray, np.ndarray] donde X shape (N, 3, 32, 32) float32
+            y Y shape (N,) int32.
     """
     X = dataset.data.astype(np.float32) / 255.0  # (N, 32, 32, 3)
     X = (X - _MEAN) / _STD  # (N, 32, 32, 3)
@@ -104,10 +125,16 @@ def load_cifar10_train(
     la realiza el Worker con _reconstruct_indices usando la semilla
     del PS — sin transmitir índices por red.
 
+    Usa caché automático en formato .npz.
+
     :param data_dir: Raíz de datos. None → Data/ del proyecto.
-    :param download_if_missing: Descarga si no existe localmente.
-    :param verbose: Imprime progreso.
-    :return: (X_train, Y_train)
+    :type data_dir: str | None, default=None.
+    :param download_if_missing: Descarga desde internet si no existe localmente.
+    :type download_if_missing: bool, default=True.
+    :param verbose: Imprime progreso de carga.
+    :type verbose: bool, default=True.
+    :return: Tupla (X_train, Y_train) con 50000 imágenes.
+    :rtype: Tuple[np.ndarray, np.ndarray].
     """
     from torchvision import datasets as tvd
 
@@ -155,12 +182,17 @@ def load_cifar10_test(
     """
     Carga el conjunto de prueba de CIFAR-10 (10 000 imágenes).
 
-    Solo el PS lo carga, para evaluar el modelo global tras cada época.
+    Solo el PS lo carga para evaluar el modelo global tras cada época.
 
     :param data_dir: Raíz de datos. None → Data/ del proyecto.
-    :param download_if_missing: Descarga si no existe localmente.
-    :param verbose: Imprime progreso.
-    :return: (X_test, Y_test)  shapes (10000, 3, 32, 32) y (10000,)
+    :type data_dir: str | None, default=None.
+    :param download_if_missing: Descarga desde internet si no existe localmente.
+    :type download_if_missing: bool, default=True.
+    :param verbose: Imprime progreso de carga.
+    :type verbose: bool, default=True.
+    :return: Tupla (X_test, Y_test) con 10000 imágenes y etiquetas.
+    :rtype: Tuple[np.ndarray, np.ndarray] con shapes (10000, 3, 32, 32) float32
+            y (10000,) int32.
     """
     from torchvision import datasets as tvd
 

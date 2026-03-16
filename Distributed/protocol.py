@@ -42,7 +42,8 @@ FLUJO COMPLETO
         ◄──────────────────────── WORKER_ID
         ◄──────────────────────── CNN_WEIGHTS  (PS envía pesos CNN)
   CNN_READY ─────────────────────►  (Worker confirmó extracción)
-  TEST_FEATURES ─────────────────►  (Worker envía features de prueba al PS)
+  TEST_FEATURES ─────────────────►  (Worker envía features de prueba al
+                                     PS, si aplica)
 
   [en espera de TRAIN_START...]
 
