@@ -36,7 +36,10 @@ CLASES
 import os
 from typing import Tuple
 
+import warnings
 import numpy as np
+
+warnings.filterwarnings("ignore", category=np.exceptions.VisibleDeprecationWarning)
 
 # ── Constantes exportadas ─────────────────────────────────────────
 NUM_CLASSES = 10
