@@ -81,7 +81,9 @@ def _relu(Z: np.ndarray) -> np.ndarray:
     gradiente desvaneciente en capas sucesivas.
 
     :param Z: Pre-activaciones de cualquier forma.
-    :return: Mismo shape, valores negativos → 0.
+    :type Z: np.ndarray de cualquier shape, dtype float32 o float64.
+    :return: Array con misma forma, valores negativos convertidos a 0.
+    :rtype: np.ndarray de mismo shape y dtype que Z.
     """
     return np.maximum(0.0, Z)
 
@@ -93,8 +95,10 @@ def _relu_grad(Z: np.ndarray) -> np.ndarray:
     Se calcula sobre Z (no sobre la activación A) para evitar recalcular
     la pre-activación en el backward. El caller guarda Z del forward.
 
-    :param Z: Pre-activaciones.
-    :return: Array de 0s y 1s, mismo shape.
+    :param Z: Pre-activaciones de salida de una capa lineal.
+    :type Z: np.ndarray de cualquier shape, dtype float32 o float64.
+    :return: Array de 0s y 1s indicando dónde ReLU transmite gradiente.
+    :rtype: np.ndarray de mismo shape, dtype bool convertido a float.
     """
     return (Z > 0).astype(Z.dtype)
 
@@ -106,8 +110,10 @@ def _softmax(Z: np.ndarray) -> np.ndarray:
     Restar el máximo por columna antes de exp() evita overflow.
     El resultado es matemáticamente idéntico al softmax sin la resta.
 
-    :param Z: Logits, forma (n_classes, N).
-    :return: Probabilidades, misma forma.
+    :param Z: Logits o pre-activaciones.
+    :type Z: np.ndarray de shape (n_classes, N) float32 o float64.
+    :return: Probabilidades normalizadas (suma a 1 por columna).
+    :rtype: np.ndarray de mismo shape, dtype float32 o float64.
     """
     Z_shift = Z - Z.max(axis=0, keepdims=True)
     E = np.exp(Z_shift)
@@ -141,12 +147,17 @@ def init_params(
     y es el tipo nativo de PyTorch — consistente con los features de la CNN.
 
     :param feature_dim: Dimensión del vector de entrada (= FEATURE_DIM de la CNN).
+    :type feature_dim: int, típicamente 512.
     :param hidden1: Neuronas en la primera capa oculta.
+    :type hidden1: int, típicamente 256 o 512.
     :param hidden2: Neuronas en la segunda capa oculta.
+    :type hidden2: int, típicamente 128 o 256.
     :param n_classes: Número de clases de salida (10 para CIFAR-10).
+    :type n_classes: int.
     :param seed: Semilla aleatoria para reproducibilidad.
-
-    :return: Dict con claves W1, b1, W2, b2, W3, b3, todos float32.
+    :type seed: int | None, default=None.
+    :return: Diccionario con 6 claves: W1, b1, W2, b2, W3, b3 (todos float32).
+    :rtype: Dict[str, np.ndarray].
     """
     rng = np.random.RandomState(seed)
 
@@ -180,15 +191,25 @@ def _forward(
     Forward pass vectorizado. Devuelve las pre-activaciones y activaciones
     de cada capa, necesarias para el backward.
 
-    :param params: W1, b1, W2, b2, W3, b3.
-    :param X: Features de entrada, forma (N, feature_dim).
+    Calcula todos los outputs de cada capa en forma vectorizada:
+        Z1 = W1 @ X.T + b1
+        A1 = ReLU(Z1)
+        Z2 = W2 @ A1 + b2
+        A2 = ReLU(Z2)
+        Z3 = W3 @ A2 + b3
+        A3 = Softmax(Z3)
 
-    :return: (Z1, A1, Z2, A2, A3) donde:
-             Z1 (hidden1, N) — pre-activaciones capa 1
-             A1 (hidden1, N) — activaciones capa 1 (ReLU)
-             Z2 (hidden2, N) — pre-activaciones capa 2
-             A2 (hidden2, N) — activaciones capa 2 (ReLU)
-             A3 (n_classes, N) — probabilidades softmax salida
+    :param params: Diccionario con pesos: W1, b1, W2, b2, W3, b3.
+    :type params: Dict[str, np.ndarray].
+    :param X: Features de entrada.
+    :type X: np.ndarray de shape (N, feature_dim) float32.
+    :return: Tupla (Z1, A1, Z2, A2, A3) donde cada componente es:
+                - Z1: pre-activaciones capa 1, shape (hidden1, N).
+                - A1: activaciones capa 1 (ReLU), shape (hidden1, N).
+                - Z2: pre-activaciones capa 2, shape (hidden2, N).
+                - A2: activaciones capa 2 (ReLU), shape (hidden2, N).
+                - A3: probabilidades softmax salida, shape (n_classes, N).
+    :rtype: Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray].
     """
     X_T = X.T  # (feature_dim, N) — orientación columna para @ eficiente
 
@@ -231,11 +252,16 @@ def forward_and_gradients(
     comparables aunque tengan batch sizes distintos.
 
     :param params: Pesos actuales del MLP.
-    :param X: Features del batch, forma (N, feature_dim). float32.
-    :param Y: Etiquetas del batch, forma (N,). int32.
-
-    :return: (gradients, mean_loss, accuracy_pct)
-             gradients: Dict con dW1, db1, dW2, db2, dW3, db3.
+    :type params: Dict[str, np.ndarray] con W1, b1, W2, b2, W3, b3.
+    :param X: Features del batch.
+    :type X: np.ndarray de shape (N, feature_dim) float32.
+    :param Y: Etiquetas del batch.
+    :type Y: np.ndarray de shape (N,) int32 con valores 0-9.
+    :return: Tupla (gradients, mean_loss, accuracy_pct) donde:
+                - gradients: Dict con dW1, db1, dW2, db2, dW3, db3 (mismo shape que pesos).
+                - mean_loss: Cross-entropy loss promediada sobre el batch (float).
+                - accuracy_pct: Porcentaje de predicciones correctas 0-100 (float).
+    :rtype: Tuple[Dict[str, np.ndarray], float, float].
     """
     N = len(X)
     W2, W3 = params["W2"], params["W3"]
@@ -297,12 +323,18 @@ def evaluate(
 
     El PS llama esta función después de actualizar los pesos para
     obtener las métricas de la época sobre el conjunto de prueba.
+    Realiza un forward pass limpio sin retención de gradientes.
 
     :param params: Pesos del MLP.
-    :param X: Features de prueba, forma (N, feature_dim).
-    :param Y: Etiquetas de prueba, forma (N,).
-
-    :return: (accuracy_pct, mean_loss)
+    :type params: Dict[str, np.ndarray] con W1, b1, W2, b2, W3, b3.
+    :param X: Features de prueba.
+    :type X: np.ndarray de shape (N, feature_dim) float32.
+    :param Y: Etiquetas de prueba.
+    :type Y: np.ndarray de shape (N,) int32 con valores 0-9.
+    :return: Tupla (accuracy_pct, mean_loss) donde:
+                - accuracy_pct: Porcentaje de aciertos 0-100 (float).
+                - mean_loss: Cross-entropy loss promediada (float).
+    :rtype: Tuple[float, float].
     """
     N = len(X)
     _, _, _, _, A3 = _forward(params, X)
@@ -346,12 +378,20 @@ def apply_gradients(
     entre épocas y lo pasa en cada llamada. Si ``velocities`` es None
     se inicializa a ceros automáticamente la primera vez.
 
-    :param params: Pesos del MLP a actualizar.
-    :param gradients: Gradientes promediados (dW1, db1, …, dW3, db3).
-    :param learning_rate: Tasa de aprendizaje.
-    :param momentum: Coeficiente de momentum (0.0 = SGD puro, 0.9 = típico).
-    :param velocities: Dict mutable con velocidades acumuladas.
+    :param params: Pesos del MLP a actualizar in-place.
+    :type params: Dict[str, np.ndarray] con W1, b1, W2, b2, W3, b3.
+    :param gradients: Gradientes promediados por el PS.
+    :type gradients: Dict[str, np.ndarray] con dW1, db1, dW2, db2, dW3, db3.
+    :param learning_rate: Tasa de aprendizaje multiplicada por los gradientes.
+    :type learning_rate: float, típicamente 1e-3 a 1e-2.
+    :param momentum: Coeficiente de momentum (0.0 = SGD puro, 0.9-0.99 = típico).
+    :type momentum: float, default=0.0.
+    :param velocities: Diccionario mutable con velocidades acumuladas.
                        Debe persistir entre llamadas. Ignorado si momentum=0.
+                       Inicialización: {'W1': arr, ..., 'b3': arr}.
+    :type velocities: Dict[str, np.ndarray] | None, default=None.
+    :return: None (modifica params y velocities in-place).
+    :rtype: NoneType.
     """
     keys = ["W1", "b1", "W2", "b2", "W3", "b3"]
     grad_keys = ["dW1", "db1", "dW2", "db2", "dW3", "db3"]

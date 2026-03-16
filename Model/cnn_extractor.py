@@ -131,6 +131,15 @@ class _SimpleCNN(nn.Module):
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Forward pass a través de la CNN.
+
+        :param x: Imágenes de entrada.
+        :type x: torch.Tensor de shape (batch_size, 3, 32, 32) float32.
+
+        :return: Vector de características extraído.
+        :rtype: torch.Tensor de shape (batch_size, FEATURE_DIM) float32.
+        """
         return self.fc(self.features(x))
 
 
@@ -205,6 +214,20 @@ class CNNExtractor:
 
     @staticmethod
     def _build(arch: str, pretrained: bool) -> nn.Module:
+        """
+        Construye la arquitectura CNN especificada.
+
+        :param arch: Arquitectura a construir.
+        :type arch: str, debe ser "simple" o "resnet18".
+
+        :param pretrained: Si True, carga pesos ImageNet para ResNet-18.
+        :type pretrained: bool.
+
+        :return: Modelo CNN sin entrenar o con pesos preentrenados.
+        :rtype: nn.Module (_SimpleCNN o ResNet-18 torchvision).
+
+        :raises ValueError: Si arch no es válido (aunque el chequeo está en __init__).
+        """
         if arch == "simple":
             return _SimpleCNN()
 
@@ -238,6 +261,12 @@ class CNNExtractor:
         Redimensionar a 224×224 antes del forward permite que la red
         procese las imágenes en la escala para la que fue entrenada,
         obteniendo features de mayor calidad y pasando de ~60% a ~75-80%.
+
+        :param base: Modelo ResNet-18 base.
+        :type base: nn.Module.
+
+        :return: ResNet-18 envuelto con interpolación automática.
+        :rtype: nn.Module (_ResNetWrapper).
         """
 
         class _ResNetWrapper(nn.Module):
@@ -260,6 +289,12 @@ class CNNExtractor:
 
     @staticmethod
     def _default_cache_dir() -> str:
+        """
+        Obtiene la ruta por defecto del directorio de caché de features.
+
+        :return: Ruta al directorio Data/feature_cache/ en la raíz del proyecto.
+        :rtype: str.
+        """
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         return os.path.join(root, "Data", "feature_cache")
 
@@ -267,11 +302,14 @@ class CNNExtractor:
 
     def _weights_hash(self) -> str:
         """
-        MD5 (8 hex) de los pesos CNN actuales.
+        Calcula el MD5 (8 hex primeros) de los pesos CNN actuales.
 
         Se usa como parte de la clave de caché de features para garantizar
         que features extraídos con distintos pesos (aleatorios vs preentrenados)
         nunca se mezclen. Calcular el hash de ~2 MB tarda < 5 ms.
+
+        :return: Hash MD5 truncado a 8 caracteres hexadecimales de los pesos.
+        :rtype: str.
         """
         h = hashlib.md5()
         for tensor in self._model.state_dict().values():
@@ -281,12 +319,18 @@ class CNNExtractor:
     # ── rutas de caché ────────────────────────────────────────────
 
     def _weights_cache_path(self) -> str:
+        """
+        Obtiene la ruta del archivo de caché de pesos CNN.
+
+        :return: Ruta al archivo {arch}_{seed}_weights.pt.
+        :rtype: str.
+        """
         seed_str = str(self.seed) if self.seed is not None else "none"
         return os.path.join(self._cache_dir, f"{self.arch}_{seed_str}_weights.pt")
 
     def _feature_cache_paths(self, split: str) -> Tuple[str, str]:
         """
-        Ruta de caché que incluye el hash de los pesos actuales.
+        Calcula las rutas de caché para features con hash de pesos actual.
 
         La clave es {arch}_{hash}_{split} — no incluye n porque:
         - train: siempre 50 000 imágenes (el slider n_train solo controla
@@ -294,6 +338,12 @@ class CNNExtractor:
         - test:  siempre 10 000 imágenes en CIFAR-10, sin excepción.
         Incluir n sería ruido que podría causar fallos de caché si se
         llamara con un valor ligeramente distinto.
+
+        :param split: Identificador del conjunto ("train" o "test").
+        :type split: str.
+
+        :return: Tupla (ruta_features_X, ruta_features_Y).
+        :rtype: Tuple[str, str].
         """
         wh = self._weights_hash()
         key = f"{self.arch}_{wh}_{split}"
@@ -305,6 +355,12 @@ class CNNExtractor:
     # ── guardado / carga de pesos ─────────────────────────────────
 
     def _save_weights(self) -> None:
+        """
+        Guarda los pesos CNN actuales en el archivo de caché.
+
+        :return: None
+        :rtype: NoneType.
+        """
         torch.save(self._model.state_dict(), self._weights_cache_path())
 
     def _get_weights_bytes(self) -> bytes:
@@ -316,7 +372,8 @@ class CNNExtractor:
         llaman a load_weights_from_bytes() con los bytes recibidos.
         Tamaño aproximado: ~2 MB para simple, ~44 MB para resnet18.
 
-        :return: Bytes del state_dict (torch.save sobre buffer en memoria).
+        :return: Bytes del state_dict serializados con torch.save.
+        :rtype: bytes.
         """
         import io as _io
 
@@ -333,6 +390,10 @@ class CNNExtractor:
         necesitar filesystem compartido entre máquinas.
 
         :param weights_bytes: Bytes generados por _get_weights_bytes().
+        :type weights_bytes: bytes.
+
+        :return: None
+        :rtype: NoneType.
         """
         import io as _io
 
@@ -342,7 +403,12 @@ class CNNExtractor:
         self._model.eval()
 
     def _load_weights_if_cached(self) -> bool:
-        """Carga pesos desde caché. Devuelve True si había caché."""
+        """
+        Carga pesos CNN desde caché si el archivo existe.
+
+        :return: True si los pesos fueron cargados desde caché, False si no existe.
+        :rtype: bool.
+        """
         path = self._weights_cache_path()
         if not os.path.exists(path):
             return False
@@ -357,12 +423,36 @@ class CNNExtractor:
     def _load_features_if_cached(
         self, split: str
     ) -> Optional[Tuple[np.ndarray, np.ndarray]]:
+        """
+        Carga features extraídos desde caché si existen.
+
+        :param split: Conjunto a cargar ("train" o "test").
+        :type split: str.
+
+        :return: Tupla (X_features, Y) si ambos archivos existen, None si no.
+        :rtype: Optional[Tuple[np.ndarray, np.ndarray]].
+        """
         px, py = self._feature_cache_paths(split)
         if os.path.exists(px) and os.path.exists(py):
             return np.load(px), np.load(py)
         return None
 
     def _save_features(self, split: str, X_feat: np.ndarray, Y: np.ndarray) -> None:
+        """
+        Guarda features extraídos en el caché.
+
+        :param split: Identificador del conjunto ("train" o "test").
+        :type split: str.
+
+        :param X_feat: Features extraídos.
+        :type X_feat: np.ndarray de shape (N, feature_dim) float32.
+
+        :param Y: Etiquetas asociadas.
+        :type Y: np.ndarray de shape (N,) int32.
+
+        :return: None
+        :rtype: NoneType.
+        """
         px, py = self._feature_cache_paths(split)
         np.save(px, X_feat)
         np.save(py, Y)
@@ -384,12 +474,26 @@ class CNNExtractor:
         Solo aplica para arch="simple". Guarda los pesos en caché al
         terminar para que los arranques posteriores sean instantáneos.
 
-        :param X_train: (N, 3, 32, 32) float32 normalizado.
-        :param Y_train: (N,) int32.
-        :param epochs: Épocas de preentrenamiento.
-        :param lr: Tasa de aprendizaje Adam.
-        :param batch_size: Ejemplos por batch.
-        :param verbose: Imprime progreso.
+        :param X_train: Imágenes de entrenamiento.
+        :type X_train: np.ndarray de shape (N, 3, 32, 32) float32 normalizado.
+
+        :param Y_train: Etiquetas de entrenamiento.
+        :type Y_train: np.ndarray de shape (N,) int32.
+
+        :param epochs: Número de épocas de preentrenamiento.
+        :type epochs: int, default=10.
+
+        :param lr: Tasa de aprendizaje del optimizador Adam.
+        :type lr: float, default=1e-3.
+
+        :param batch_size: Número de ejemplos por batch.
+        :type batch_size: int, default=256.
+
+        :param verbose: Si True, imprime el progreso del entrenamiento.
+        :type verbose: bool, default=True.
+
+        :return: None
+        :rtype: NoneType.
         """
         if self.arch != "simple":
             return
@@ -471,14 +575,29 @@ class CNNExtractor:
 
         El PS llama con pretrain_epochs=0 para nunca reentrenar.
 
-        :param X: Imágenes (N, 3, 32, 32) float32.
-        :param Y: Etiquetas (N,) int32.
-        :param split: ``"train"`` o ``"test"``.
+        :param X: Imágenes de entrada.
+        :type X: np.ndarray de shape (N, 3, 32, 32) float32.
+
+        :param Y: Etiquetas de entrada.
+        :type Y: np.ndarray de shape (N,) int32.
+
+        :param split: Identificador del conjunto.
+        :type split: str, "train" o "test", default="train".
+
         :param pretrain_epochs: Épocas de pretrain (0 = nunca reentrenar).
-        :param pretrain_lr: LR para el pretrain.
-        :param batch_size: Batch size para extracción.
-        :param verbose: Imprime progreso.
-        :return: (X_features, Y), X_features shape (N, feature_dim).
+        :type pretrain_epochs: int, default=10.
+
+        :param pretrain_lr: Tasa de aprendizaje para el pretrain.
+        :type pretrain_lr: float, default=1e-3.
+
+        :param batch_size: Tamaño del batch para extracción de features.
+        :type batch_size: int, default=2048.
+
+        :param verbose: Si True, imprime información de progreso.
+        :type verbose: bool, default=True.
+
+        :return: Tupla (X_features, Y) con features extraídos.
+        :rtype: Tuple[np.ndarray, np.ndarray] donde X_features shape (N, feature_dim).
         """
         # ── Paso 1: ¿features ya en caché con los pesos actuales? ─
         cached = self._load_features_if_cached(split)
@@ -542,7 +661,15 @@ class CNNExtractor:
         return FEATURE_DIM
 
     def extract(self, X: np.ndarray) -> np.ndarray:
-        """Forward pass sin gradientes sobre un batch."""
+        """
+        Realiza forward pass sin gradientes sobre un batch de imágenes.
+
+        :param X: Imágenes de entrada.
+        :type X: np.ndarray de shape (batch_size, 3, 32, 32) float32.
+
+        :return: Features extraídos del batch.
+        :rtype: np.ndarray de shape (batch_size, feature_dim) float32.
+        """
         with torch.no_grad():
             t = torch.from_numpy(X).to(self.device)
             return self._model(t).cpu().numpy()
@@ -556,10 +683,20 @@ class CNNExtractor:
         """
         Extrae features en mini-batches para controlar el uso de RAM.
 
-        :param X: Imágenes (N, 3, H, W) float32.
-        :param batch_size: Imágenes por batch.
-        :param verbose: Si True imprime una barra de progreso por consola.
-        :return: Features (N, feature_dim) float32.
+        Procesa el array X dividiéndolo en batches y extrayendo features
+        de cada uno. Útil para datasets grandes que no caben en GPU.
+
+        :param X: Imágenes de entrada.
+        :type X: np.ndarray de shape (N, 3, H, W) float32.
+
+        :param batch_size: Número de imágenes a procesar por batch.
+        :type batch_size: int, default=2048.
+
+        :param verbose: Si True, imprime una barra de progreso por consola.
+        :type verbose: bool, default=False.
+
+        :return: Features de todas las imágenes concatenadas.
+        :rtype: np.ndarray de shape (N, feature_dim) float32.
         """
         N = len(X)
         starts = list(range(0, N, batch_size))
