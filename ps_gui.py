@@ -388,7 +388,7 @@ class DistributedPSApp:
         cnn_frame.pack(fill=tk.X, pady=(0, 2))
         ttk.Radiobutton(
             cnn_frame,
-            text="Simple  - preentrenada localmente (~60% precisión)",
+            text="Simple  — preentrenada localmente (~60% precisión)",
             variable=self._v_cnn_arch,
             value="simple",
         ).pack(anchor=tk.W)
@@ -414,14 +414,14 @@ class DistributedPSApp:
         _add_slider(frame, "Neuronas ocultas 1 (32 – 1024):", self._v_hidden1, 32, 1024)
         _add_slider(frame, "Neuronas ocultas 2 (32 – 512):", self._v_hidden2, 32, 512)
         _add_float_input(
-            frame, "Tasa de aprendizaje\n(0.0001 - 10):", self._v_lr, 0.0001, 10.0
+            frame, "Tasa de aprendizaje (0.0001 - 10):", self._v_lr, 0.0001, 10.0
         )
         _add_float_input(
-            frame, "Momentum SGD\n(0.0 = desactivado):", self._v_momentum, 0.0, 0.99
+            frame, "Momentum SGD (0.0 = desactivado):", self._v_momentum, 0.0, 0.99
         )
         _add_integer_input(
             frame,
-            "Ejemplos de entrenamiento\n(10 - 50000):",
+            "Ejemplos de entrenamiento (10 - 50000):",
             self._v_n_train,
             100,
             50000,
