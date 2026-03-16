@@ -66,15 +66,11 @@ class WorkerNode:
     :param server_port: Puerto TCP del Parameter Server.
     :param X_train: Imágenes (N, 3, 32, 32) float32 NCHW normalizadas.
     :param Y_train: Etiquetas (N,) int32.
-    :param cnn_arch: Arquitectura CNN: "simple" o "resnet18".
-    :param cnn_pretrained: Cargar pesos ImageNet (solo resnet18).
     :param cnn_device: Dispositivo PyTorch: "cpu", "cuda", "mps".
-    :param cnn_seed: Semilla para inicialización CNN (reproducibilidad entre Workers).
+    :param cnn_seed: Semilla para inicialización CNN (no crítica — el PS sobreescribirá los pesos).
     :param hidden1: Neuronas capa oculta 1 del MLP.
     :param hidden2: Neuronas capa oculta 2 del MLP.
     :param cnn_batch_size: Batch size para extracción inicial de features.
-    :param cnn_pretrain_epochs: Épocas de preentrenamiento CNN simple (0 = no pretrain).
-    :param cnn_pretrain_lr: Learning rate para el preentrenamiento CNN.
     :param verbose: Imprime progreso por época.
     """
 
@@ -84,15 +80,11 @@ class WorkerNode:
         server_port: int,
         X_train: "np.ndarray",
         Y_train: "np.ndarray",
-        cnn_arch: str = "simple",
-        cnn_pretrained: bool = False,
         cnn_device: str = "cpu",
         cnn_seed: int | None = 42,
         hidden1: int = 256,
         hidden2: int = 128,
         cnn_batch_size: int = 2048,
-        cnn_pretrain_epochs: int = 10,
-        cnn_pretrain_lr: float = 1e-3,
         verbose: bool = True,
     ) -> None:
         self.server_host = server_host
@@ -103,14 +95,16 @@ class WorkerNode:
         self.verbose = verbose
         self.worker_id: Optional[int] = None
         self._sock: Optional[socket.socket] = None
-        self._cnn_pretrain_epochs = cnn_pretrain_epochs
-        self._cnn_pretrain_lr = cnn_pretrain_lr
-
-        # ── Extractor CNN (pesos fijos) ───────────────────────────
-        self._log("Construyendo extractor CNN...")
+        # ── Extractor CNN — placeholder hasta recibir CNN_WEIGHTS del PS ────
+        # El Worker arranca con una CNN mínima (simple) solo para tener
+        # la estructura en memoria. Al recibir CNN_WEIGHTS del PS,
+        # _handle_cnn_weights() la reconstruirá con la arquitectura
+        # y pesos correctos. El usuario no necesita especificar arch.
+        self._log(
+            "Inicializando extractor CNN (pesos temporales, el PS los sobreescribirá)..."
+        )
         self._cnn = CNNExtractor(
-            arch=cnn_arch,
-            pretrained=cnn_pretrained,
+            arch="simple",  # placeholder — se reconstruye en _handle_cnn_weights
             device=cnn_device,
             seed=cnn_seed,
         )
@@ -120,18 +114,10 @@ class WorkerNode:
         self._X_raw: np.ndarray = X_train
         self._Y_raw: np.ndarray = Y_train
 
-        # Extracción inicial con pesos locales (si los hay en caché).
-        # Cuando llegue CNN_WEIGHTS del PS, se re-extraerán con la CNN definitiva.
-        self._X_features: np.ndarray
-        self._X_features, self.Y_train = self._cnn.prepare(
-            X_train,
-            Y_train,
-            split="train",
-            pretrain_epochs=cnn_pretrain_epochs,
-            pretrain_lr=cnn_pretrain_lr,
-            batch_size=cnn_batch_size,
-            verbose=verbose,
-        )
+        # No extraemos features aquí — el PS enviará CNN_WEIGHTS con sus
+        # pesos antes de TRAIN_START, y _handle_cnn_weights() hará la
+        # extracción completa con la CNN correcta (con caché).
+        self._X_features: np.ndarray = np.empty((0,), dtype=np.float32)
 
         # ── Índices por clase precalculados ───────────────────────
         # np.where se ejecuta una sola vez por clase al arrancar.

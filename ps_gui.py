@@ -406,11 +406,10 @@ class DistributedPSApp:
         ).pack(anchor=tk.W, pady=(4, 0))
         ttk.Label(
             frame,
-            text="⚠ El Worker debe coincidir: mismo arch, pretrained y seed.\n"
-            "  simple: preentrenamiento local al 1er arranque.\n"
-            "  resnet18 + ImageNet: --cnn-pretrained en el Worker.",
+            text="ℹ El PS distribuye la CNN a los Workers automáticamente.\n"
+            "  No es necesario configurar la CNN en el Worker.",
             font=("Helvetica", 8),
-            foreground="#666666",
+            foreground="#2E7D32",
             justify=tk.LEFT,
         ).pack(anchor=tk.W, pady=(0, 6))
         ttk.Label(frame, text="Clasificador MLP:", font=("Helvetica", 10, "bold")).pack(

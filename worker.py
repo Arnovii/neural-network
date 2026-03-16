@@ -14,8 +14,6 @@ Opciones:
     --data-dir      Directorio de datos CIFAR-10         (default: Data/)
     --hidden1       Neuronas en la capa oculta 1 del MLP (default: 256)
     --hidden2       Neuronas en la capa oculta 2 del MLP (default: 128)
-    --cnn-arch      Arquitectura CNN: simple | resnet18  (default: simple)
-    --cnn-pretrained  Usar pesos ImageNet (solo resnet18)
     --cnn-device    Dispositivo PyTorch: cpu|cuda|mps    (default: cpu)
     --cnn-seed      Semilla para pesos CNN               (default: 42)
     --quiet         Suprime mensajes de progreso
@@ -27,8 +25,9 @@ NOTAS IMPORTANTES
   extrae features con la CNN una sola vez y los almacena en RAM.
   En cada época solo se accede al subconjunto correspondiente.
 
-* La CNN debe tener los mismos pesos en todos los Workers.
-  Asegúrate de usar el mismo --cnn-arch y --cnn-seed en todos.
+* La arquitectura CNN y sus pesos los dicta el PS.
+  El Worker los recibe automáticamente al conectarse (CNN_WEIGHTS).
+  No es necesario especificar --cnn-arch.
 
 * El Worker es persistente: permanece activo entre sesiones de
   entrenamiento hasta recibir STOP del PS o ser interrumpido.
@@ -88,18 +87,6 @@ def main() -> None:
         help="Neuronas capa oculta 2 del MLP (default: 128)",
     )
     parser.add_argument(
-        "--cnn-arch",
-        type=str,
-        default="simple",
-        choices=["simple", "resnet18"],
-        help="Arquitectura CNN: simple | resnet18 (default: simple)",
-    )
-    parser.add_argument(
-        "--cnn-pretrained",
-        action="store_true",
-        help="Usar pesos ImageNet para ResNet-18 (requiere descarga)",
-    )
-    parser.add_argument(
         "--cnn-device",
         type=str,
         default="cpu",
@@ -112,18 +99,6 @@ def main() -> None:
         help="Semilla para inicialización CNN (default: 42)",
     )
     parser.add_argument(
-        "--cnn-pretrain-epochs",
-        type=int,
-        default=0,
-        help="Épocas de preentrenamiento local CNN (default: 0, el PS la distribuye)",
-    )
-    parser.add_argument(
-        "--cnn-pretrain-lr",
-        type=float,
-        default=1e-3,
-        help="Learning rate del preentrenamiento CNN (default: 0.001)",
-    )
-    parser.add_argument(
         "--quiet", action="store_true", help="Suprime mensajes de progreso"
     )
     args = parser.parse_args()
@@ -133,24 +108,13 @@ def main() -> None:
     print("=" * 70)
     print(f"  Parameter Server : {args.server_host}:{args.server_port}")
     print(f"  ID               : asignado por el PS al conectarse")
-    print(
-        f"  CNN arch         : {args.cnn_arch}"
-        + (" (pretrained)" if args.cnn_pretrained else "")
-    )
     print(f"  CNN device       : {args.cnn_device}")
     print(f"  CNN seed         : {args.cnn_seed}")
     print(f"  MLP hidden       : {args.hidden1} → {args.hidden2} → {NUM_CLASSES}")
-    if args.cnn_arch == "simple":
-        if args.cnn_pretrain_epochs > 0:
-            print(
-                f"  CNN pretrain     : local {args.cnn_pretrain_epochs} épocas (el PS sobreescribirá con la suya)"
-            )
-        else:
-            print(f"  CNN pretrain     : ninguno (recibirá CNN del PS al conectarse)")
+    print(f"  CNN arch/pesos   : recibidos del PS al conectarse")
     print("=" * 70)
 
     # Carga CIFAR-10 completo en formato NCHW (3, 32, 32) listo para la CNN
-    # El PS decide qué índices usa cada Worker en cada época.
     print("\nCargando CIFAR-10 (50 000 imágenes)...")
     X_train, Y_train = load_cifar10_train(
         data_dir=args.data_dir,
@@ -169,12 +133,8 @@ def main() -> None:
         server_port=args.server_port,
         X_train=X_train,
         Y_train=Y_train,
-        cnn_arch=args.cnn_arch,
-        cnn_pretrained=args.cnn_pretrained,
         cnn_device=args.cnn_device,
         cnn_seed=args.cnn_seed,
-        cnn_pretrain_epochs=args.cnn_pretrain_epochs,
-        cnn_pretrain_lr=args.cnn_pretrain_lr,
         hidden1=args.hidden1,
         hidden2=args.hidden2,
         verbose=not args.quiet,
