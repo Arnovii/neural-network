@@ -107,11 +107,11 @@ def main() -> None:
     print("WORKER NODE — Algoritmo de Diego Distribuido (CIFAR-10 CNN+MLP)")
     print("=" * 70)
     print(f"  Parameter Server : {args.server_host}:{args.server_port}")
-    print(f"  ID               : asignado por el PS al conectarse")
+    print("  ID               : asignado por el PS al conectarse")
     print(f"  CNN device       : {args.cnn_device}")
     print(f"  CNN seed         : {args.cnn_seed}")
     print(f"  MLP hidden       : {args.hidden1} → {args.hidden2} → {NUM_CLASSES}")
-    print(f"  CNN arch/pesos   : recibidos del PS al conectarse")
+    print("  CNN arch/pesos   : recibidos del PS al conectarse")
     print("=" * 70)
 
     # Carga CIFAR-10 completo en formato NCHW (3, 32, 32) listo para la CNN

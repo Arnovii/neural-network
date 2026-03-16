@@ -284,15 +284,19 @@ class CNNExtractor:
         seed_str = str(self.seed) if self.seed is not None else "none"
         return os.path.join(self._cache_dir, f"{self.arch}_{seed_str}_weights.pt")
 
-    def _feature_cache_paths(self, split: str, n: int) -> Tuple[str, str]:
+    def _feature_cache_paths(self, split: str) -> Tuple[str, str]:
         """
         Ruta de caché que incluye el hash de los pesos actuales.
 
-        Garantiza que features de una CNN con pesos distintos nunca
-        se sobreescriben ni se confunden con features de otra CNN.
+        La clave es {arch}_{hash}_{split} — no incluye n porque:
+        - train: siempre 50 000 imágenes (el slider n_train solo controla
+          cuántas usa el round-robin, no cuántas se extraen).
+        - test:  siempre 10 000 imágenes en CIFAR-10, sin excepción.
+        Incluir n sería ruido que podría causar fallos de caché si se
+        llamara con un valor ligeramente distinto.
         """
         wh = self._weights_hash()
-        key = f"{self.arch}_{wh}_{split}_{n}"
+        key = f"{self.arch}_{wh}_{split}"
         return (
             os.path.join(self._cache_dir, f"{key}_X.npy"),
             os.path.join(self._cache_dir, f"{key}_Y.npy"),
@@ -351,15 +355,15 @@ class CNNExtractor:
     # ── guardado / carga de features ─────────────────────────────
 
     def _load_features_if_cached(
-        self, split: str, n: int
+        self, split: str
     ) -> Optional[Tuple[np.ndarray, np.ndarray]]:
-        px, py = self._feature_cache_paths(split, n)
+        px, py = self._feature_cache_paths(split)
         if os.path.exists(px) and os.path.exists(py):
             return np.load(px), np.load(py)
         return None
 
     def _save_features(self, split: str, X_feat: np.ndarray, Y: np.ndarray) -> None:
-        px, py = self._feature_cache_paths(split, len(X_feat))
+        px, py = self._feature_cache_paths(split)
         np.save(px, X_feat)
         np.save(py, Y)
 
@@ -477,7 +481,7 @@ class CNNExtractor:
         :return: (X_features, Y), X_features shape (N, feature_dim).
         """
         # ── Paso 1: ¿features ya en caché con los pesos actuales? ─
-        cached = self._load_features_if_cached(split, len(X))
+        cached = self._load_features_if_cached(split)
         if cached is not None:
             X_feat, Y_cached = cached
             if verbose:
@@ -495,7 +499,7 @@ class CNNExtractor:
                     f"(hash={self._weights_hash()}, no se reentrenará)."
                 )
             # Con los pesos cargados el hash cambia → comprobar features
-            cached = self._load_features_if_cached(split, len(X))
+            cached = self._load_features_if_cached(split)
             if cached is not None:
                 X_feat, Y_cached = cached
                 if verbose:

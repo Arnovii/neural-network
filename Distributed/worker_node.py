@@ -49,7 +49,7 @@ Coste por época: indexación + MLP forward/backward (puro NumPy).
 
 import socket
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 
@@ -236,6 +236,9 @@ class WorkerNode:
         """
         arch = payload["arch"]
         weights_bytes = payload["weights_bytes"]
+        # El PS indica si necesita los features de prueba.
+        # False = ya los tiene en caché → Worker no los extrae ni los envía.
+        need_test_features = payload.get("need_test_features", True)
 
         self._log(f"CNN_WEIGHTS recibido del PS (arch={arch}). Cargando pesos...")
 
@@ -279,14 +282,17 @@ class WorkerNode:
         assert self._sock is not None
         send_message(self._sock, MsgType.CNN_READY, {"worker_id": self.worker_id})
 
-        # Todos los Workers envían TEST_FEATURES al PS.
-        # El PS acepta el primero que llega (con lock) y descarta los demás.
-        # Así el Worker con la GPU más rápida determina los features de test,
-        # sin depender de que el Worker 0 tenga GPU o sea el más rápido.
-        if self._X_test is not None and self._Y_test is not None:
+        # Solo extraer y enviar features de prueba si el PS los necesita.
+        # need_test_features=False significa que el PS ya los tiene en su
+        # caché local → evita extraer 10k imágenes y transferir ~20 MB.
+        if need_test_features and self._X_test is not None and self._Y_test is not None:
             self._log(f"Extrayendo features de prueba ({len(self._X_test)} imgs)...")
-            X_test_feat = self._cnn.extract_batched(
+            # prepare() verifica la caché local primero — segunda sesión: ~0.3s
+            X_test_feat, _ = self._cnn.prepare(
                 self._X_test,
+                self._Y_test,
+                split="test",
+                pretrain_epochs=0,
                 batch_size=2048,
                 verbose=self.verbose,
             )
@@ -302,6 +308,8 @@ class WorkerNode:
                 },
             )
             self._log("Features de prueba enviados.")
+        elif not need_test_features:
+            self._log("PS ya tiene features de prueba en caché — omitiendo extracción.")
 
     def _run_training_session(
         self,

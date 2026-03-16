@@ -418,9 +418,21 @@ class ParameterServer:
             self._X_test_features = None
             self._Y_test_from_worker = None
 
-            # Broadcast CNN_WEIGHTS en paralelo — con ResNet-18 (~44 MB),
-            # enviar secuencial a N Workers hace que el último espere
-            # N × tiempo_envío. En paralelo todos reciben simultáneamente.
+            # Buscar caché de features de test ANTES de enviar CNN_WEIGHTS.
+            # Si los encuentra, indica a los Workers que no los necesita
+            # → Workers no extraen ni transfieren ~20 MB innecesariamente.
+            need_test = True
+            if X_test is not None and Y_test is not None and X_test.ndim == 4:
+                cached = self._cnn._load_features_if_cached("test")
+                if cached is not None:
+                    X_test, Y_test = cached
+                    need_test = False
+                    print(
+                        f"[PS] Features de prueba en caché: {X_test.shape} "
+                        f"— Workers no necesitan enviarlos.\n"
+                    )
+
+            # Broadcast CNN_WEIGHTS en paralelo con el flag need_test_features.
             def _send_cnn_to_worker(wid: int) -> None:
                 with self._lock:
                     sock = self._worker_sockets.get(wid)
@@ -430,7 +442,11 @@ class ParameterServer:
                     send_message(
                         sock,
                         MsgType.CNN_WEIGHTS,
-                        {"arch": arch, "weights_bytes": weights_bytes},
+                        {
+                            "arch": arch,
+                            "weights_bytes": weights_bytes,
+                            "need_test_features": need_test,
+                        },
                     )
                 except Exception as exc:
                     print(f"[PS] Error enviando CNN a Worker {wid}: {exc}")
@@ -452,28 +468,23 @@ class ParameterServer:
                     if msg["type"] == MsgType.CNN_READY:
                         print(f"[PS] Worker {wid}: CNN_READY ✓")
                         self._handle_cnn_ready(wid, len(worker_ids))
-                    # Cualquier Worker puede enviar TEST_FEATURES.
-                    # El PS acepta el primero que llegue e ignora los demás.
-                    # Así el Worker con GPU más rápida siempre gana.
-                    if msg["type"] == MsgType.TEST_FEATURES:
-                        # Llegó TEST_FEATURES en lugar de CNN_READY — re-procesar
-                        self._handle_cnn_ready(wid, len(worker_ids))
-                    # Intentar recibir TEST_FEATURES después del CNN_READY
-                    try:
-                        msg2 = receive_message(self._worker_sockets[wid])
-                        if msg2["type"] == MsgType.TEST_FEATURES:
-                            with self._lock:
-                                if self._X_test_features is None:
-                                    p = msg2["payload"]
-                                    self._X_test_features = p["X_test_features"]
-                                    self._Y_test_from_worker = p["Y_test"]
-                                    print(
-                                        f"[PS] Features de prueba recibidos del "
-                                        f"Worker {wid}: "
-                                        f"{self._X_test_features.shape}"  # type: ignore[union-attr]
-                                    )
-                    except Exception:
-                        pass  # Worker no envió TEST_FEATURES — normal
+                    # Solo esperar TEST_FEATURES si el PS los necesita
+                    if need_test:
+                        try:
+                            msg2 = receive_message(self._worker_sockets[wid])
+                            if msg2["type"] == MsgType.TEST_FEATURES:
+                                with self._lock:
+                                    if self._X_test_features is None:
+                                        p = msg2["payload"]
+                                        self._X_test_features = p["X_test_features"]
+                                        self._Y_test_from_worker = p["Y_test"]
+                                        print(
+                                            f"[PS] Features de prueba recibidos del "
+                                            f"Worker {wid}: "
+                                            f"{self._X_test_features.shape}"  # type: ignore[union-attr]
+                                        )
+                        except Exception:
+                            pass  # Worker no envió TEST_FEATURES
                 except Exception as exc:
                     print(f"[PS] Worker {wid}: error esperando CNN_READY: {exc}")
                     self._handle_cnn_ready(wid, len(worker_ids))
@@ -490,30 +501,25 @@ class ParameterServer:
                 t.join()
             print("[PS] Todos los Workers listos con la CNN distribuida.")
 
-            # Recibir features de prueba del Worker 0.
-            # El Worker 0 los extrajo con su CNN/GPU, evitando que el PS
-            # tenga que hacer el forward pass en CPU.
-            if self._X_test_features is not None:
-                X_test = self._X_test_features
-                Y_test = self._Y_test_from_worker
-                print(f"[PS] Features de prueba del Worker: {X_test.shape}")
-                # Cachear en disco para no depender del Worker en sesiones futuras.
-                # Usa el mismo sistema de caché que los Workers (hash de pesos CNN).
-                if self._cnn is not None and Y_test is not None:
-                    self._cnn._save_features("test", X_test, Y_test)
-                    print("[PS] Features de prueba guardados en caché local.\n")
-            elif X_test is not None and Y_test is not None and X_test.ndim == 4:
-                # Fallback: PS extrae y cachea features localmente.
-                # prepare() usa caché → segunda sesión carga en ~0.3s.
-                print("[PS] Extrayendo y cacheando features de prueba...")
-                X_test, Y_test = self._cnn.prepare(
-                    X_test,
-                    Y_test,
-                    split="test",
-                    pretrain_epochs=0,
-                    verbose=True,
-                )
-                print(f"[PS] Features de prueba listos: {X_test.shape}\n")
+            # Si need_test=True el PS aún no tiene features de prueba.
+            if need_test:
+                if self._X_test_features is not None:
+                    X_test = self._X_test_features
+                    Y_test = self._Y_test_from_worker
+                    print(f"[PS] Features de prueba del Worker: {X_test.shape}")
+                    if Y_test is not None:
+                        self._cnn._save_features("test", X_test, Y_test)
+                        print("[PS] Features de prueba guardados en caché local.\n")
+                elif X_test is not None and Y_test is not None:
+                    print("[PS] Extrayendo y cacheando features de prueba...")
+                    X_test, Y_test = self._cnn.prepare(
+                        X_test,
+                        Y_test,
+                        split="test",
+                        pretrain_epochs=0,
+                        verbose=True,
+                    )
+                    print(f"[PS] Features de prueba listos: {X_test.shape}\n")
 
         params = {tipo: datos.copy() for tipo, datos in initial_params.items()}
         velocities: Dict[str, np.ndarray] = {}  # estado de momentum entre épocas

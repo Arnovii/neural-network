@@ -50,7 +50,6 @@ Tipos de mensaje en la cola:
     ("error",                exc: Exception)
 """
 
-import json
 import os
 import queue
 import sys
@@ -69,7 +68,6 @@ except ImportError as e:
     print("Instala con: pip install matplotlib")
     sys.exit(1)
 
-import numpy as np
 
 from Distributed.parameter_server import ParameterServer
 from Model.cnn_extractor import CNNExtractor, FEATURE_DIM
@@ -803,22 +801,19 @@ class DistributedPSApp:
                     {"worker_id": wid, "epoch": ep, "loss": loss, "accuracy": acc},
                 )
             ),
-            on_epoch_end=lambda ep,
-            tot,
-            train_acc,
-            train_loss,
-            test_acc,
-            test_loss: q.put(
-                (
-                    "epoch_end",
-                    {
-                        "epoch": ep,
-                        "total": tot,
-                        "accuracy": train_acc,
-                        "loss": train_loss,
-                        "test_accuracy": test_acc,
-                        "test_loss": test_loss,
-                    },
+            on_epoch_end=lambda ep, tot, train_acc, train_loss, test_acc, test_loss: (
+                q.put(
+                    (
+                        "epoch_end",
+                        {
+                            "epoch": ep,
+                            "total": tot,
+                            "accuracy": train_acc,
+                            "loss": train_loss,
+                            "test_accuracy": test_acc,
+                            "test_loss": test_loss,
+                        },
+                    )
                 )
             ),
         )
