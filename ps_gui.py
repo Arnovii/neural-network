@@ -167,7 +167,7 @@ class DistributedPSApp:
         self.root = root
         self.root.title("Parameter Server — Algoritmo de Diego Distribuido")
         self.root.state("zoomed")
-        self.root.columnconfigure(0, weight=0)
+        self.root.columnconfigure(0, weight=0, minsize=310)
         self.root.columnconfigure(1, weight=1)
         self.root.rowconfigure(0, weight=1)
 
@@ -220,7 +220,7 @@ class DistributedPSApp:
 
         def _add_slider(parent, label, var, lo, hi):
             max_digits = len(str(hi))
-            ttk.Label(parent, text=label).pack(anchor=tk.W, pady=(10, 0))
+            ttk.Label(parent, text=label).pack(anchor=tk.W, pady=(6, 0))
             ttk.Scale(
                 parent,
                 from_=lo,
@@ -239,7 +239,7 @@ class DistributedPSApp:
                 validate="key",
                 validatecommand=vcmd,
             )
-            entry.pack(pady=(0, 4))
+            entry.pack(pady=(0, 2))
 
             def _commit(event=None):
                 try:
@@ -252,7 +252,7 @@ class DistributedPSApp:
             entry.bind("<FocusOut>", _commit)
 
         def _add_float_input(parent, label, var, lo, hi, max_chars=8):
-            ttk.Label(parent, text=label).pack(anchor=tk.W, pady=(10, 0))
+            ttk.Label(parent, text=label).pack(anchor=tk.W, pady=(6, 0))
 
             def _validate(new_value):
                 return new_value == "" or (
@@ -283,7 +283,7 @@ class DistributedPSApp:
             entry.bind("<FocusOut>", _commit)
 
         def _add_integer_input(parent, label, var, lo, hi, max_digits=6):
-            ttk.Label(parent, text=label).pack(anchor=tk.W, pady=(10, 0))
+            ttk.Label(parent, text=label).pack(anchor=tk.W, pady=(6, 0))
             vcmd = _make_int_validator(parent, max_digits)
             entry = ttk.Entry(
                 parent,
@@ -306,30 +306,51 @@ class DistributedPSApp:
             entry.bind("<FocusOut>", _commit)
 
         def _add_text_input(parent, label, var, max_chars=20):
-            ttk.Label(parent, text=label).pack(anchor=tk.W, pady=(10, 0))
+            ttk.Label(parent, text=label).pack(anchor=tk.W, pady=(6, 0))
             ttk.Entry(parent, textvariable=var, width=max_chars).pack(
                 pady=(0, 6), fill=tk.X
             )
 
         # ── Contenedor scrollable ─────────────────────────────────
-        container = ttk.Frame(self.root, width=270)
+        container = ttk.Frame(self.root, width=300)
         container.grid(row=0, column=0, sticky="ns", padx=5, pady=5)
         container.grid_propagate(False)
 
-        canvas = tk.Canvas(container, width=270, highlightthickness=0)
+        canvas = tk.Canvas(container, highlightthickness=0)
         scrollbar = ttk.Scrollbar(container, orient="vertical", command=canvas.yview)
+
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        def _on_mousewheel(event):
+            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+        def _bind_mousewheel(event):
+            canvas.bind_all("<MouseWheel>", _on_mousewheel)
+
+        def _unbind_mousewheel(event):
+            canvas.unbind_all("<MouseWheel>")
+
+        canvas.bind("<Enter>", _bind_mousewheel)
+        canvas.bind("<Leave>", _unbind_mousewheel)
+
         frame = ttk.Frame(canvas, padding="10")
         frame.bind(
             "<Configure>",
             lambda e: canvas.configure(scrollregion=canvas.bbox("all")),
         )
-        canvas.create_window((0, 0), window=frame, anchor="nw")
+        canvas_window = canvas.create_window((0, 0), window=frame, anchor="nw")
+
+        def _resize_frame(event):
+            canvas.itemconfig(canvas_window, width=event.width)
+
+        canvas.bind("<Configure>", _resize_frame)
+
         canvas.configure(yscrollcommand=scrollbar.set)
-        canvas.pack(side="left", fill="y", expand=True)
+        canvas.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
 
         ttk.Label(frame, text="Parameter Server", font=("Helvetica", 14, "bold")).pack(
-            pady=10
+            pady=6
         )
 
         # ── Variables ─────────────────────────────────────────────
@@ -347,9 +368,9 @@ class DistributedPSApp:
 
         # ── Sección: Conexión TCP ─────────────────────────────────
         ttk.Label(frame, text="Conexión TCP", font=("Helvetica", 11, "bold")).pack(
-            anchor=tk.W, pady=(14, 0)
+            anchor=tk.W, pady=(8, 0)
         )
-        ttk.Separator(frame, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=4)
+        ttk.Separator(frame, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=2)
 
         _add_text_input(frame, "Host (IP de escucha):", self._v_host)
         _add_integer_input(frame, "Puerto:", self._v_port, 1024, 65535, max_digits=5)
@@ -358,13 +379,13 @@ class DistributedPSApp:
         ttk.Label(frame, text="Entrenamiento", font=("Helvetica", 11, "bold")).pack(
             anchor=tk.W, pady=(18, 0)
         )
-        ttk.Separator(frame, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=4)
+        ttk.Separator(frame, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=2)
 
         _add_slider(frame, "Épocas (50 – 1000):", self._v_epochs, 50, 1000)
         ttk.Label(frame, text="CNN Extractor:", font=("Helvetica", 10, "bold")).pack(
             anchor=tk.W, pady=(14, 0)
         )
-        ttk.Separator(frame, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=4)
+        ttk.Separator(frame, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=2)
         cnn_frame = ttk.Frame(frame)
         cnn_frame.pack(fill=tk.X, pady=(0, 2))
         ttk.Radiobutton(
@@ -396,7 +417,7 @@ class DistributedPSApp:
         ttk.Label(frame, text="Clasificador MLP:", font=("Helvetica", 10, "bold")).pack(
             anchor=tk.W, pady=(14, 0)
         )
-        ttk.Separator(frame, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=4)
+        ttk.Separator(frame, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=2)
         _add_slider(frame, "Neuronas ocultas 1 (32 – 1024):", self._v_hidden1, 32, 1024)
         _add_slider(frame, "Neuronas ocultas 2 (32 – 512):", self._v_hidden2, 32, 512)
         _add_float_input(
@@ -924,20 +945,36 @@ class DistributedPSApp:
             self._refresh_buttons()
             return
 
-        # Captura el CNN verificado en una variable local
-        # para que el type checker reconozca que no es None
-        cnn = self._cnn
-
         def _train_thread() -> None:
             try:
-                # PS preentrenó su CNN y la distribuye a los Workers.
+                # Función auxiliar para enviar mensajes al log de la GUI
+                # desde este hilo de fondo (la cola es thread-safe).
+                def _gui_log(msg: str) -> None:
+                    q.put(("log", msg))
+
+                _gui_log("[PS] Cargando datos de prueba CIFAR-10...")
                 X_test_raw, Y_test = load_cifar10_test(verbose=False)
+                _gui_log(f"[PS] {len(X_test_raw)} imágenes de prueba cargadas.")
+
+                if cnn_arch == "simple":
+                    _gui_log(
+                        "[PS] Preentrenando CNN simple (esto solo ocurre la 1ª vez)..."
+                    )
+                else:
+                    _gui_log(f"[PS] Preparando CNN {cnn_arch}...")
+
+                cnn = self._cnn
+                assert cnn is not None
+
                 cnn.prepare(
                     X_test_raw,
                     Y_test,
                     split="test",
                     pretrain_epochs=10 if cnn_arch == "simple" else 0,
                     verbose=False,
+                )
+                _gui_log(
+                    f"[PS] CNN lista (hash={cnn._weights_hash()}). Distribuyendo a Workers..."
                 )
                 server.set_cnn(cnn)
                 history = server.train(
@@ -1011,6 +1048,8 @@ class DistributedPSApp:
                     self._on_epoch_end(payload)
                 elif msg_type == "training_done":
                     self._on_training_done(payload)
+                elif msg_type == "log":
+                    self._log(payload)
                 elif msg_type == "error":
                     self._on_error(payload)
 
@@ -1179,7 +1218,8 @@ class DistributedPSApp:
 
         # Exportar resultados
         json_path = export_results(history, self._train_config, elapsed)
-        self._log(f"[PS] Resultados exportados a: {json_path}")
+        if json_path:
+            self._log(f"[PS] Resultados exportados a: {json_path}")
 
         # Vuelve a LISTENING
         self._state = self._S_LISTENING
@@ -1211,7 +1251,26 @@ class DistributedPSApp:
 
 def main() -> None:
     root = tk.Tk()
-    DistributedPSApp(root)
+    app = DistributedPSApp(root)
+
+    def on_close():
+        if app._state == app._S_TRAINING:
+            if not messagebox.askyesno(
+                "Cerrar aplicación",
+                "Hay un entrenamiento en curso.\n¿Deseas salir igualmente?"
+            ):
+                return
+
+        try:
+            if app._server is not None:
+                app._server.shutdown()
+        except Exception:
+            pass
+
+        root.destroy()
+        os._exit(0)
+
+    root.protocol("WM_DELETE_WINDOW", on_close)
     root.mainloop()
 
 

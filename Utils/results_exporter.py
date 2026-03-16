@@ -30,8 +30,11 @@ ESTRUCTURA DEL JSON GENERADO
 {
   "configuracion": {
     "epochs": int,
-    "hidden": int,
+    "cnn_arch": str,
+    "hidden1": int,
+    "hidden2": int,
     "learning_rate": float,
+    "momentum": float,
     "n_train": int,
     "workers": int,
     "seed": int | null
@@ -84,8 +87,9 @@ def export_results(
     :type history: Dict[str, list]
 
     :param config: Hiperparámetros del experimento. Claves esperadas:
-                   ``"epochs"``, ``"hidden"``, ``"learning_rate"``,
-                   ``"n_train"``, ``"workers"``, ``"seed"``.
+                   ``"epochs"``, ``"cnn_arch"``, ``"hidden1"``, ``"hidden2"``,
+                   ``"learning_rate"``, ``"momentum"``, ``"n_train"``,
+                   ``"workers"``, ``"seed"``.
     :type config: Dict[str, Any]
 
     :param elapsed: Tiempo total de entrenamiento en segundos.
@@ -95,6 +99,11 @@ def export_results(
     :rtype: str
     """
     os.makedirs(_RESULTS_DIR, exist_ok=True)
+
+    # Si el historial está vacío (Worker desconectado antes de completar épocas),
+    # no hay nada que guardar — evita IndexError en history["accuracies"][-1].
+    if not history.get("accuracies"):
+        return ""
 
     has_test = bool(history.get("test_accuracies"))
 
