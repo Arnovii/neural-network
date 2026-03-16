@@ -283,7 +283,7 @@ def main() -> None:
         initial_params=initial_params,
         learning_rate=args.lr,
         n_train=args.n_train,
-        X_test=X_test_raw,   # fallback: PS extrae si Worker no envía TEST_FEATURES
+        X_test=X_test_raw,  # fallback: PS extrae si Worker no envía TEST_FEATURES
         Y_test=Y_test,
         momentum=args.momentum,
     )

@@ -983,7 +983,7 @@ class DistributedPSApp:
                     initial_params=initial_params,
                     learning_rate=lr,
                     n_train=n_train,
-                    X_test=X_test_raw,   # fallback si Worker no envía TEST_FEATURES
+                    X_test=X_test_raw,  # fallback si Worker no envía TEST_FEATURES
                     Y_test=Y_test,
                     momentum=momentum,
                 )

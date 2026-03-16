@@ -418,7 +418,7 @@ class ParameterServer:
             # Resetear features de test: sin esto, features de una sesión
             # anterior (ej: simple) contaminarían la evaluación de la
             # sesión actual (ej: resnet18), causando test accuracy ~32%.
-            self._X_test_features    = None
+            self._X_test_features = None
             self._Y_test_from_worker = None
 
             for wid in worker_ids:
