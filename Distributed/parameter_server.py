@@ -415,29 +415,35 @@ class ParameterServer:
             )
             self._cnn_ready_event.clear()
             self._cnn_ready_count = 0
-            # Resetear features de test: sin esto, features de una sesión
-            # anterior (ej: simple) contaminarían la evaluación de la
-            # sesión actual (ej: resnet18), causando test accuracy ~32%.
             self._X_test_features = None
             self._Y_test_from_worker = None
 
-            for wid in worker_ids:
+            # Broadcast CNN_WEIGHTS en paralelo — con ResNet-18 (~44 MB),
+            # enviar secuencial a N Workers hace que el último espere
+            # N × tiempo_envío. En paralelo todos reciben simultáneamente.
+            def _send_cnn_to_worker(wid: int) -> None:
                 with self._lock:
                     sock = self._worker_sockets.get(wid)
                 if sock is None:
-                    continue
+                    return
                 try:
                     send_message(
                         sock,
                         MsgType.CNN_WEIGHTS,
-                        {
-                            "arch": arch,
-                            "weights_bytes": weights_bytes,
-                        },
+                        {"arch": arch, "weights_bytes": weights_bytes},
                     )
                 except Exception as exc:
                     print(f"[PS] Error enviando CNN a Worker {wid}: {exc}")
                     self._remove_worker(wid)
+
+            send_threads = [
+                threading.Thread(target=_send_cnn_to_worker, args=(wid,), daemon=True)
+                for wid in worker_ids
+            ]
+            for t in send_threads:
+                t.start()
+            for t in send_threads:
+                t.join()
 
             def _wait_cnn_ready(wid: int) -> None:
                 try:
@@ -480,10 +486,18 @@ class ParameterServer:
                 X_test = self._X_test_features
                 Y_test = self._Y_test_from_worker
                 print(f"[PS] Features de prueba recibidos del Worker: {X_test.shape}\n")
-            elif X_test is not None and X_test.ndim == 4:
-                # Fallback: PS extrae features si no los recibió del Worker
-                print("[PS] Extrayendo features de prueba en el PS (sin Worker 0)...")
-                X_test = self._cnn.extract_batched(X_test)
+            elif X_test is not None and Y_test is not None and X_test.ndim == 4:
+                # Fallback: PS extrae y cachea features localmente.
+                # prepare() guarda en Data/feature_cache/ → segunda sesión
+                # con la misma CNN carga en ~0.3s en lugar de re-extraer.
+                print("[PS] Extrayendo y cacheando features de prueba...")
+                X_test, Y_test = self._cnn.prepare(
+                    X_test,
+                    Y_test,
+                    split="test",
+                    pretrain_epochs=0,
+                    verbose=True,
+                )
                 print(f"[PS] Features de prueba listos: {X_test.shape}\n")
 
         params = {tipo: datos.copy() for tipo, datos in initial_params.items()}
@@ -572,22 +586,30 @@ class ParameterServer:
                         if received_count[0] == len(worker_ids):
                             done_event.set()
 
-            # Broadcast: params + semilla. El Worker reconstruye
-            # sus índices localmente a partir de la semilla.
-            for wid in worker_ids:
+            # Broadcast PARAMS en paralelo — todos los Workers reciben
+            # los pesos al mismo tiempo, minimizando la barrera de inicio.
+            def _send_params_to_worker(wid: int) -> None:
                 try:
                     send_message(
                         self._worker_sockets[wid],
                         MsgType.PARAMS,
-                        {
-                            "epoch": epoch,
-                            "params": params,
-                            "seed": epoch_seed,
-                        },
+                        {"epoch": epoch, "params": params, "seed": epoch_seed},
                     )
                 except Exception as exc:
                     print(f"[PS] Error enviando a Worker {wid}: {exc}")
                     self._remove_worker(wid)
+
+            param_threads = [
+                threading.Thread(
+                    target=_send_params_to_worker, args=(wid,), daemon=True
+                )
+                for wid in worker_ids
+                if wid in self._worker_sockets
+            ]
+            for t in param_threads:
+                t.start()
+            for t in param_threads:
+                t.join()
 
             # Lanza receptores
             threads = [
