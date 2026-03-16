@@ -181,12 +181,7 @@ def main() -> None:
         type=str,
         default="simple",
         choices=["simple", "resnet18"],
-        help="Arquitectura del extractor CNN (default: simple)",
-    )
-    parser.add_argument(
-        "--cnn-pretrained",
-        action="store_true",
-        help="Usar pesos ImageNet para ResNet-18 (descarga ~44 MB la 1ª vez)",
+        help="Arquitectura CNN: simple (preentrenada local) | resnet18 (pesos ImageNet, default: simple)",
     )
     parser.add_argument(
         "--cnn-device",
@@ -195,6 +190,9 @@ def main() -> None:
         help="Dispositivo PyTorch para la CNN: cpu, cuda, mps (default: cpu)",
     )
     args = parser.parse_args()
+
+    # resnet18 siempre usa pesos ImageNet — es la única configuración útil.
+    cnn_pretrained = args.cnn_arch == "resnet18"
 
     OUTPUT_SIZE = NUM_CLASSES
 
@@ -206,7 +204,7 @@ def main() -> None:
     print(f"  Épocas          : {args.epochs}")
     print(
         f"  CNN arch        : {args.cnn_arch}"
-        + (" + pesos ImageNet" if getattr(args, "cnn_pretrained", False) else "")
+        + (" (pesos ImageNet)" if cnn_pretrained else " (preentrenada localmente)")
     )
     print(
         f"  MLP arquitectura: features → {args.hidden1} → {args.hidden2} → {OUTPUT_SIZE}"
@@ -261,7 +259,7 @@ def main() -> None:
     print("\nConstruyendo extractor CNN...")
     cnn = CNNExtractor(
         arch=args.cnn_arch,
-        pretrained=args.cnn_pretrained,
+        pretrained=cnn_pretrained,
         device=args.cnn_device,
         seed=args.seed if args.seed is not None else 42,
     )

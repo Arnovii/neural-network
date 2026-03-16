@@ -362,7 +362,6 @@ class DistributedPSApp:
         self._v_n_train = tk.StringVar(value="50000")
         self._v_seed = tk.StringVar(value="")
         self._v_cnn_arch = tk.StringVar(value="simple")
-        self._v_cnn_pretrained = tk.BooleanVar(value=True)
         self._v_momentum = tk.StringVar(value="0.9")
 
         # ── Sección: Conexión TCP ─────────────────────────────────
@@ -389,27 +388,23 @@ class DistributedPSApp:
         cnn_frame.pack(fill=tk.X, pady=(0, 2))
         ttk.Radiobutton(
             cnn_frame,
-            text="simple  (preentrenada localmente, recomendada)",
+            text="Simple  - preentrenada localmente (~60% precisión)",
             variable=self._v_cnn_arch,
             value="simple",
         ).pack(anchor=tk.W)
         ttk.Radiobutton(
             cnn_frame,
-            text="resnet18  (pesos ImageNet)",
+            text="Resnet18  — pesos ImageNet (~75-80% precisión)",
             variable=self._v_cnn_arch,
             value="resnet18",
         ).pack(anchor=tk.W)
-        ttk.Checkbutton(
-            frame,
-            text="Usar pesos ImageNet (resnet18)",
-            variable=self._v_cnn_pretrained,
-        ).pack(anchor=tk.W, pady=(4, 0))
         ttk.Label(
             frame,
-            text="ℹ El PS distribuye la CNN a los Workers automáticamente.\n"
-            "  No es necesario configurar la CNN en el Worker.",
+            text="ℹ El PS distribuye la CNN al Worker automáticamente.\n"
+            "  resnet18: descarga ~44 MB la 1ª vez (se cachea).\n"
+            "  La extracción de features ocurre en el Worker.",
             font=("Helvetica", 8),
-            foreground="#2E7D32",
+            foreground="#1565C0",
             justify=tk.LEFT,
         ).pack(anchor=tk.W, pady=(0, 6))
         ttk.Label(frame, text="Clasificador MLP:", font=("Helvetica", 10, "bold")).pack(
@@ -870,7 +865,9 @@ class DistributedPSApp:
             return
 
         cnn_arch = self._v_cnn_arch.get()
-        cnn_pretrained = self._v_cnn_pretrained.get()
+        # resnet18 siempre usa pesos ImageNet — es la única configuración útil.
+        # simple siempre preentrenada localmente, sin dependencias externas.
+        cnn_pretrained = cnn_arch == "resnet18"
 
         # El MLP siempre tiene feature_dim=512 (salida de cualquier CNNExtractor).
         # Inicializamos los pesos aquí, en el hilo principal, sin necesitar la CNN.
