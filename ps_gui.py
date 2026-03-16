@@ -190,7 +190,6 @@ class DistributedPSApp:
         self._train_start_time: float = 0.0
         self._train_config: dict = {}
         self._cnn: CNNExtractor | None = None
-        self._cnn: CNNExtractor | None = None
 
         self._build_ui()
         self._refresh_buttons()
@@ -1257,7 +1256,7 @@ def main() -> None:
         if app._state == app._S_TRAINING:
             if not messagebox.askyesno(
                 "Cerrar aplicación",
-                "Hay un entrenamiento en curso.\n¿Deseas salir igualmente?"
+                "Hay un entrenamiento en curso.\n¿Deseas salir igualmente?",
             ):
                 return
 

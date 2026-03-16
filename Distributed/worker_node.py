@@ -236,25 +236,41 @@ class WorkerNode:
 
     def _handle_cnn_weights(self, payload: dict) -> None:
         """
-        Procesa CNN_WEIGHTS del PS: carga los pesos, regenera features
-        de entrenamiento con esa CNN y confirma con CNN_READY.
+        Procesa CNN_WEIGHTS del PS: reconstruye la CNN si el arch cambió,
+        carga los pesos, regenera features y confirma con CNN_READY.
 
-        Este paso garantiza que todos los Workers usan exactamente la
-        misma CNN, independientemente de su hardware o historial local.
-        La caché local sigue funcionando: si los features ya están
-        guardados con el hash de estos pesos, se cargan sin re-extraer.
+        El Worker puede haber arrancado con arch=simple y recibir pesos
+        de resnet18 (o viceversa) si el usuario cambió la arquitectura en
+        el PS entre sesiones. En ese caso se reconstruye el modelo antes
+        de cargar los pesos para evitar un RuntimeError de state_dict.
         """
         arch = payload["arch"]
         weights_bytes = payload["weights_bytes"]
 
         self._log(f"CNN_WEIGHTS recibido del PS (arch={arch}). Cargando pesos...")
+
+        # Reconstruir el extractor si la arquitectura es diferente a la actual.
+        # Es necesario porque load_state_dict falla si los pesos no coinciden
+        # con la arquitectura del modelo — por ejemplo, ResNet-18 sobre _SimpleCNN.
+        if self._cnn.arch != arch:
+            self._log(
+                f"Arquitectura cambió ({self._cnn.arch} → {arch}). "
+                f"Reconstruyendo extractor CNN..."
+            )
+            self._cnn = CNNExtractor(
+                arch=arch,
+                device=str(self._cnn.device),
+                seed=self._cnn.seed,
+                cache_dir=self._cnn._cache_dir,
+            )
+
         self._cnn.load_weights_from_bytes(weights_bytes)
         wh = self._cnn._weights_hash()
         self._log(f"Pesos cargados (hash={wh}). Preparando features de train...")
 
         # Regenerar features con la CNN del PS.
         # prepare() comprueba la caché local primero — si ya existe
-        # simple_{wh}_train_50000_X.npy, la carga sin re-extraer.
+        # {arch}_{wh}_train_50000_X.npy, la carga sin re-extraer.
         self._X_features, self.Y_train = self._cnn.prepare(
             self._X_raw,
             self._Y_raw,
@@ -347,6 +363,7 @@ class WorkerNode:
         Y_batch = self.Y_train[indices]
         gradients, loss, accuracy = forward_and_gradients(params, F_batch, Y_batch)
         elapsed = time.perf_counter() - t_start
+
         self._log(f"  loss={loss:.4f}  acc={accuracy:.2f}%  ({elapsed:.3f}s)")
 
         assert self._sock is not None
