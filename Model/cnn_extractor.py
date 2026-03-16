@@ -187,11 +187,16 @@ class CNNExtractor:
         if seed is not None:
             torch.manual_seed(seed)
 
-        self._model = self._build(arch, pretrained).to(self.device)
+        base = self._build(arch, pretrained)
 
-        # Congela todos los parámetros: la CNN es un extractor fijo.
-        # El gradiente solo fluye por el MLP NumPy, que es lo que el
-        # PS promedia. Esto mantiene el Algoritmo de Diego intacto.
+        # ResNet-18 fue diseñado para 224×224 (ImageNet). CIFAR-10 tiene
+        # imágenes de 32×32. Envolver la red con un upscale automático
+        # permite aprovechar los pesos ImageNet correctamente.
+        if arch == "resnet18":
+            self._model = self._make_resnet_wrapper(base).to(self.device)
+        else:
+            self._model = base.to(self.device)
+
         for param in self._model.parameters():
             param.requires_grad_(False)
         self._model.eval()  # BatchNorm en modo inferencia desde el inicio
@@ -217,8 +222,41 @@ class CNNExtractor:
         # La capa fc de ResNet-18 original convierte los 512 features en 1000 clases de ImageNet,
         # nn.Identity() reemplaza esa capa con una función que no hace nada, así la CNN devuelve
         # el vector de 512 features, sin convertirlo en clases
-        model.fc = nn.Identity()  # type: ignore
+        model.fc = nn.Identity()  # type: ignore  — expone el vector de 512 features
         return model
+
+    def _make_resnet_wrapper(self, base: nn.Module) -> nn.Module:
+        """
+        Envuelve ResNet-18 con un upscale 32→224 para CIFAR-10.
+
+        ResNet-18 fue diseñado para imágenes ImageNet de 224×224.
+        Su primera capa es Conv2d(kernel=7, stride=2) seguida de
+        MaxPool(3,2), lo que reduce 224→56→28 px antes del primer bloque.
+        Con imágenes de 32×32, esa reducción produce mapas de 8×8,
+        demasiado pequeños para que los pesos ImageNet sean efectivos.
+
+        Redimensionar a 224×224 antes del forward permite que la red
+        procese las imágenes en la escala para la que fue entrenada,
+        obteniendo features de mayor calidad y pasando de ~60% a ~75-80%.
+        """
+
+        class _ResNetWrapper(nn.Module):
+            def __init__(self, model: nn.Module) -> None:
+                super().__init__()
+                self.model = model
+
+            def forward(self, x: torch.Tensor) -> torch.Tensor:
+                # Upscale de 32×32 a 224×224 con interpolación bilineal.
+                # antialias=True evita artefactos de aliasing al ampliar.
+                x = torch.nn.functional.interpolate(
+                    x,
+                    size=(224, 224),
+                    mode="bilinear",
+                    align_corners=False,
+                )
+                return self.model(x)
+
+        return _ResNetWrapper(base)
 
     @staticmethod
     def _default_cache_dir() -> str:
