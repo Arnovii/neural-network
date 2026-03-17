@@ -349,6 +349,7 @@ class ParameterServer:
         X_test: Optional[np.ndarray] = None,
         Y_test: Optional[np.ndarray] = None,
         momentum: float = 0.0,
+        seed: Optional[int] = None,
     ) -> Dict[str, List[float]]:
         """
         Ejecuta una sesión de entrenamiento con los Workers conectados.
@@ -524,6 +525,12 @@ class ParameterServer:
         params = {tipo: datos.copy() for tipo, datos in initial_params.items()}
         velocities: Dict[str, np.ndarray] = {}  # estado de momentum entre épocas
 
+        # Generador de semillas de época — controla qué datos ve cada Worker
+        # en cada época (round-robin). Con la misma semilla, los epoch_seeds
+        # son idénticos entre sesiones → resultados completamente reproducibles.
+        # Sin semilla (None): aleatorio, diferente en cada sesión.
+        _epoch_rng = np.random.RandomState(seed)
+
         history: Dict[str, List[float]] = {
             "accuracies": [],
             "losses": [],
@@ -574,7 +581,7 @@ class ParameterServer:
 
             # Semilla única para esta época: el Worker la usa para
             # reconstruir exactamente la misma partición estratificada.
-            epoch_seed = int(np.random.randint(0, 2**31))
+            epoch_seed = int(_epoch_rng.randint(0, 2**31))
 
             done_event = threading.Event()
             received_count = [0]

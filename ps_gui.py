@@ -970,6 +970,7 @@ class DistributedPSApp:
                 # Para resnet18: los pesos ImageNet ya se cargaron al construir.
                 # En ambos casos NO extraemos features aquí — eso lo hace el Worker.
                 if cnn_arch == "simple":
+
                     def _on_pretrain_epoch(
                         epoch: int, total: int, loss: float, acc: float
                     ) -> None:
@@ -978,6 +979,7 @@ class DistributedPSApp:
                             f"[CNN] Preentrenando {epoch}/{total} — "
                             f"loss={loss:.4f}  acc={acc:.1f}%  {bar}"
                         )
+
                     cnn.prepare(
                         X_test_raw,
                         Y_test,
@@ -998,6 +1000,7 @@ class DistributedPSApp:
                     X_test=None,  # features vienen del Worker via TEST_FEATURES
                     Y_test=Y_test,
                     momentum=momentum,
+                    seed=seed,  # controla epoch_seeds → reproducibilidad completa
                 )
                 q.put(("training_done", history))
             except Exception as exc:

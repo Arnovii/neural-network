@@ -550,7 +550,7 @@ class CNNExtractor:
                 correct += (logits.argmax(1) == yb).sum().item()
 
             epoch_loss = total_loss / N
-            epoch_acc  = 100.0 * correct / N
+            epoch_acc = 100.0 * correct / N
             if verbose:
                 print(
                     f"  Época {epoch:2d}/{epochs}  "

@@ -288,6 +288,7 @@ def main() -> None:
         X_test=X_test_raw,  # fallback: PS extrae si Worker no envía TEST_FEATURES
         Y_test=Y_test,
         momentum=args.momentum,
+        seed=args.seed,  # controla epoch_seeds → reproducibilidad completa
     )
 
     elapsed = time.perf_counter() - t_start
