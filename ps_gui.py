@@ -974,11 +974,14 @@ class DistributedPSApp:
                     def _on_pretrain_epoch(
                         epoch: int, total: int, loss: float, acc: float
                     ) -> None:
-                        bar = "█" * int(acc / 5)
-                        _gui_log(
-                            f"[CNN] Preentrenando {epoch}/{total} — "
-                            f"loss={loss:.4f}  acc={acc:.1f}%  {bar}"
-                        )
+                        if epoch == 0:
+                            _gui_log(f"[CNN] Preentrenando  0/{total} — iniciando...")
+                        else:
+                            bar = "█" * int(acc / 5)
+                            _gui_log(
+                                f"[CNN] Preentrenando {epoch:2d}/{total} — "
+                                f"loss={loss:.4f}  acc={acc:.1f}%  {bar}"
+                            )
 
                     cnn.prepare(
                         X_test_raw,

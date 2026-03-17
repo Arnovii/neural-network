@@ -521,6 +521,11 @@ class CNNExtractor:
         # Crea un generador aleatorio
         rng = np.random.RandomState(self.seed if self.seed is not None else 0)
 
+        # Notificar época 0 antes de arrancar: indica que el proceso empezó
+        # y evita que el log parezca congelado durante la primera época.
+        if on_epoch is not None:
+            on_epoch(0, epochs, 0.0, 0.0)
+
         for epoch in range(1, epochs + 1):
             idx = rng.permutation(N)
             total_loss, correct = 0.0, 0
