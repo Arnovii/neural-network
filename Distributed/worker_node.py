@@ -271,6 +271,24 @@ class WorkerNode:
                     p["epochs"], p["n_train"], p["n_workers"], p["worker_rank"]
                 )
 
+    def _optimal_batch_size(self, base: int = 2048) -> int:
+        """
+        Devuelve el batch size óptimo según el dispositivo.
+
+        CPU: batch pequeño → menos presión de RAM, mejor uso del
+             cache L3, y la barra de progreso avanza más seguido
+             dando feedback continuo al usuario.
+        GPU: batch grande → maximiza la ocupación de la GPU.
+        """
+
+        device_type = str(self._cnn.device).split(":")[0]  # 'cpu', 'cuda', 'mps'
+        if device_type == "cpu":
+            return 256  # Menor presión, feedback más frecuente
+        elif device_type == "mps":
+            return 512
+        else:  # cuda
+            return base  # GPU: maximizar ocupación
+
     def _handle_cnn_weights(self, payload: dict) -> None:
         """
         Procesa CNN_WEIGHTS del PS: reconstruye CNN si cambió de arch.
@@ -318,12 +336,17 @@ class WorkerNode:
         # Regenerar features con la CNN del PS.
         # prepare() comprueba la caché local primero — si ya existe
         # {arch}_{wh}_train_50000_X.npy, la carga sin re-extraer.
+        _bs = self._optimal_batch_size()
+        self._log(
+            f"Extrayendo features de train (50 000 imgs, "
+            f"batch={_bs}, device={self._cnn.device})..."
+        )
         self._X_features, self.Y_train = self._cnn.prepare(
             self._X_raw,
             self._Y_raw,
             split="train",
             pretrain_epochs=0,  # pesos ya vienen del PS, no reentrenar
-            batch_size=2048,
+            batch_size=_bs,
             verbose=self.verbose,
         )
 
@@ -347,7 +370,7 @@ class WorkerNode:
                 self._Y_test,
                 split="test",
                 pretrain_epochs=0,
-                batch_size=2048,
+                batch_size=self._optimal_batch_size(),
                 verbose=self.verbose,
             )
             self._log(
