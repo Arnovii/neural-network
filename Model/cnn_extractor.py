@@ -326,8 +326,10 @@ class CNNExtractor:
         :return: Ruta al archivo {arch}_{seed}_weights.pt.
         :rtype: str.
         """
-        seed_str = str(self.seed) if self.seed is not None else "none"
-        return os.path.join(self._cache_dir, f"{self.arch}_{seed_str}_weights.pt")
+        return os.path.join(
+            self._cache_dir,
+            f"{self.arch}_{self._weights_hash()}_weights.pt"
+        )
 
     def _feature_cache_paths(self, split: str) -> Tuple[str, str]:
         """
@@ -407,12 +409,13 @@ class CNNExtractor:
         """
         Ruta del archivo JSON de metadata asociado a los pesos CNN.
 
-        El nombre sigue la misma clave que _weights_cache_path():
-        {arch}_{seed}_metadata.json
-        Esto garantiza que pesos y metadata siempre van juntos.
+        Usa el mismo hash que _weights_cache_path() para que pesos
+        y metadata siempre correspondan al mismo modelo.
         """
-        seed_str = str(self.seed) if self.seed is not None else "none"
-        return os.path.join(self._cache_dir, f"{self.arch}_{seed_str}_metadata.json")
+        return os.path.join(
+            self._cache_dir,
+            f"{self.arch}_{self._weights_hash()}_metadata.json"
+        )
 
     def _save_metadata(
         self,
@@ -517,16 +520,17 @@ class CNNExtractor:
 
     def _load_weights_if_cached(self) -> bool:
         """
-        Carga pesos CNN desde caché si el archivo existe.
-
-        :return: True si los pesos fueron cargados desde caché, False si no existe.
-        :rtype: bool.
+        Carga los pesos del modelo más reciente con el mismo arch.
+        Busca {arch}_*_weights.pt en el directorio de caché.
         """
-        path = self._weights_cache_path()
-        if not os.path.exists(path):
+        import glob
+        pattern = os.path.join(self._cache_dir, f"{self.arch}_*_weights.pt")
+        candidates = glob.glob(pattern)
+        if not candidates:
             return False
+        latest = max(candidates, key=os.path.getmtime)
         self._model.load_state_dict(
-            torch.load(path, map_location=self.device, weights_only=True)
+            torch.load(latest, map_location=self.device, weights_only=True)
         )
         self._model.eval()
         return True

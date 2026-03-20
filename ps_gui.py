@@ -194,7 +194,8 @@ class DistributedPSApp:
         self._v_cnn_mode: tk.StringVar = tk.StringVar(value="load")
         self._v_cnn_model_sel: tk.StringVar = tk.StringVar(value="")
         self._v_cnn_epochs: tk.IntVar = tk.IntVar(value=10)
-        self._v_cnn_lr: tk.StringVar = tk.StringVar(value="1e-3")
+        self._v_cnn_lr:   tk.StringVar = tk.StringVar(value="1e-3")
+        self._v_cnn_seed: tk.StringVar = tk.StringVar(value="452")
         self._saved_models: list = []
         # Widgets del panel CNN (se crean en _build_left_panel)
         self._rb_load: ttk.Radiobutton | None = None
@@ -525,6 +526,15 @@ class DistributedPSApp:
             width=10,
             justify="center",
         ).pack(pady=(0, 6))
+
+        ttk.Label(self._frm_train_cnn, text="Semilla CNN (vacío = aleatoria):").pack(
+            anchor=tk.W, pady=(4, 0)
+        )
+        ttk.Entry(
+            self._frm_train_cnn,
+            textvariable=self._v_cnn_seed,
+            width=10, justify="center",
+        ).pack(pady=(0, 6), fill=tk.X)
 
         ttk.Label(
             self._frm_train_cnn,
@@ -1125,11 +1135,10 @@ class DistributedPSApp:
         # Inicializamos los pesos aquí, en el hilo principal, sin necesitar la CNN.
         # La CNN se construye en _train_thread para no bloquear la GUI
         # (con resnet18+ImageNet la descarga ocurre al construir CNNExtractor).
-        # La semilla del usuario controla solo el MLP (init_params).
-        # La CNN usa siempre seed=42 — sus pesos deben ser reproducibles
-        # y consistentes entre sesiones, independientemente de la semilla MLP.
-        # Mezclarlas haría que cambiar la semilla invalide la caché CNN.
-        cnn_seed = 42
+        # La semilla MLP controla init_params. La semilla CNN es independiente
+        # y se lee del campo dedicado en la sección Entrenar.
+        _cnn_seed_str = (self._v_cnn_seed.get() or "").strip()  # type: ignore
+        cnn_seed = int(_cnn_seed_str) if _cnn_seed_str.isdigit() else None
         initial_params = init_params(FEATURE_DIM, hidden1, hidden2, NUM_CLASSES, seed)
 
         self._acc_history.clear()
@@ -1229,7 +1238,7 @@ class DistributedPSApp:
                             f"({cnn_epochs_new} épocas)..."
                         )
 
-                    # Siempre crear CNN nueva con pesos aleatorios frescos.
+                    # Siempre CNN nueva — nunca reutilizar la anterior.
                     self._cnn = CNNExtractor(
                         arch=arch_new,
                         pretrained=cnn_pretrained_new,
@@ -1254,10 +1263,7 @@ class DistributedPSApp:
                                     f"loss={loss:.4f}  acc={acc:.1f}%  {bar}"
                                 )
 
-                        # pretrain() entrena desde cero sin caché.
-                        # Usa X_test_raw porque es lo único que tiene el PS.
-                        # Los features de evaluación vendrán del Worker con
-                        # la CNN ya distribuida, no de estos datos directamente.
+                        # pretrain() directo: entrena desde cero sin caché.
                         cnn.pretrain(
                             X_test_raw,
                             Y_test,
