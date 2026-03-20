@@ -110,6 +110,7 @@ python ps_terminal.py --workers 3 --epochs 500 --hidden1 256 --hidden2 128 --lr 
 | `--momentum` | Momentum SGD (0.0 = SGD puro) | `0.9` |
 | `--n-train` | Total de ejemplos de entrenamiento | `50000` |
 | `--seed` | Semilla aleatoria (reproducibilidad) | ninguna |
+| `--cnn-pretrain-samples` | Imágenes para preentrenar CNN simple | `10000` |
 
 ### Lanzar el servidor (GUI)
 
@@ -423,3 +424,22 @@ for k in keys:
 - `worker_node.py:241`: `payload.get("n_samples", 10000)`
 
 **Beneficio:** El PS ahora recibe 10 000 imágenes para preentrenar la CNN en lugar de 5 000, mejorando la calidad de los features iniciales sin sesgos de evaluación (datos de entrenamiento, no prueba).
+
+---
+
+### 5. Parametrización de Muestras de Preentrenamiento CNN
+
+**Cambios:**
+- `ps_terminal.py`: Nuevo argumento `--cnn-pretrain-samples` (default: 10000)
+- `ps_gui.py`: Campo de entrada "Muestras CNN (100–50000)" en la sección "Entrenar"
+
+**Uso:**
+
+Terminal:
+```bash
+python ps_terminal.py --cnn-pretrain-samples 5000
+```
+
+GUI: Ingresa el valor en el campo "Muestras CNN" antes de iniciar el entrenamiento.
+
+**Beneficio:** Permite controlar la cantidad de imágenes que el PS solicita al Worker para preentrenar la CNN simple, adaptando la calidad del preentrenamiento a las necesidades específicas. Mayor número = mejor calidad pero más tiempo de preentrenamiento.

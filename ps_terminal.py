@@ -9,18 +9,22 @@ USO
     python ps_terminal.py [opciones]
 
 Opciones:
-    --host          IP en la que escucha el servidor     (default: 0.0.0.0)
-    --port          Puerto TCP                           (default: 9999)
-    --workers       Número de Workers a esperar          (default: 2)
-    --epochs        Épocas de entrenamiento              (default: 10)
-    --hidden1       Neuronas en la primera capa oculta   (default: 256)
-    --hidden2       Neuronas en la segunda capa oculta   (default: 128)
-    --lr            Tasa de aprendizaje                  (default: 0.01)
-    --n-train       Total de ejemplos de entrenamiento   (default: 10000)
-    --seed          Semilla aleatoria                    (default: ninguna)
+    --host                  IP en la que escucha el servidor     (default: 0.0.0.0)
+    --port                  Puerto TCP                           (default: 9999)
+    --workers               Número de Workers a esperar          (default: 2)
+    --epochs                Épocas de entrenamiento              (default: 10)
+    --hidden1               Neuronas en la primera capa oculta   (default: 256)
+    --hidden2               Neuronas en la segunda capa oculta   (default: 128)
+    --lr                    Tasa de aprendizaje                  (default: 0.01)
+    --n-train               Total de ejemplos de entrenamiento   (default: 50000)
+    --cnn-arch              Arquitectura CNN: simple o resnet18  (default: simple)
+    --cnn-device            Dispositivo PyTorch: cpu, cuda, mps  (default: cpu)
+    --cnn-pretrain-samples  Imágenes para preentrenar CNN        (default: 10000)
+    --seed                  Semilla aleatoria                    (default: ninguna)
+    --momentum              Momentum SGD para MLP                (default: 0.9)
 
-Ejemplo — servidor esperando 3 workers, 20 épocas:
-    python ps_terminal.py --workers 3 --epochs 20
+Ejemplo — servidor esperando 3 workers, 20 épocas, 5000 muestras para CNN:
+    python ps_terminal.py --workers 3 --epochs 20 --cnn-pretrain-samples 5000
 
 ──────────────────────────────────────────────────────────────────
 ARQUITECTURA
@@ -189,6 +193,12 @@ def main() -> None:
         default="cpu",
         help="Dispositivo PyTorch para la CNN: cpu, cuda, mps (default: cpu)",
     )
+    parser.add_argument(
+        "--cnn-pretrain-samples",
+        type=int,
+        default=10000,
+        help="Número de imágenes para preentrenar la CNN simple (default: 10000)",
+    )
     args = parser.parse_args()
 
     # resnet18 siempre usa pesos ImageNet — es la única configuración útil.
@@ -285,7 +295,7 @@ def main() -> None:
                 "[PS] Solicitando muestra de train al Worker "
                 "para preentrenar CNN sin sesgo..."
             )
-            train_sample = server.request_train_sample(n_samples=10000)
+            train_sample = server.request_train_sample(n_samples=args.cnn_pretrain_samples)
             if train_sample is not None:
                 X_pre, Y_pre = train_sample
                 print(

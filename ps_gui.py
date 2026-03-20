@@ -382,6 +382,7 @@ class DistributedPSApp:
         self._v_seed = tk.StringVar(value="")
         self._v_cnn_arch = tk.StringVar(value="simple")
         self._v_momentum = tk.StringVar(value="0.9")
+        self._v_cnn_pretrain_samples = tk.StringVar(value="10000")
 
         # ── Sección: Conexión TCP ─────────────────────────────────
         ttk.Label(frame, text="Conexión TCP", font=("Helvetica", 11, "bold")).pack(
@@ -533,6 +534,16 @@ class DistributedPSApp:
         ttk.Entry(
             self._frm_train_cnn,
             textvariable=self._v_cnn_lr,
+            width=10,
+            justify="center",
+        ).pack(pady=(0, 6))
+
+        ttk.Label(self._frm_train_cnn, text="Muestras CNN (100–50000):").pack(
+            anchor=tk.W, pady=(4, 0)
+        )
+        ttk.Entry(
+            self._frm_train_cnn,
+            textvariable=self._v_cnn_pretrain_samples,
             width=10,
             justify="center",
         ).pack(pady=(0, 6))
@@ -1278,7 +1289,9 @@ class DistributedPSApp:
                             "[PS] Solicitando muestra de imágenes de train "
                             "al Worker (sin sesgo en evaluación)..."
                         )
-                        train_sample = server.request_train_sample(n_samples=10000)
+                        train_sample = server.request_train_sample(
+                            n_samples=int(self._v_cnn_pretrain_samples.get())
+                        )
 
                         if train_sample is not None:
                             X_pretrain, Y_pretrain = train_sample
