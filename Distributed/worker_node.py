@@ -49,7 +49,7 @@ Coste por época: indexación + MLP forward/backward (puro NumPy).
 
 import socket
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -62,45 +62,16 @@ class WorkerNode:
     """
     Nodo Worker persistente para entrenamiento distribuido con CNN + MLP.
 
-    El Worker se conecta al Parameter Server, recibe una CNN preentrenada,
-    extrae features una sola vez, y luego participa en sesiones de
-    entrenamiento colaborativo recalculando gradientes en cada época.
-
-    :param server_host: Dirección IP del Parameter Server.
-    :type server_host: str.
-
+    :param server_host: IP del Parameter Server.
     :param server_port: Puerto TCP del Parameter Server.
-    :type server_port: int.
-
-    :param X_train: Imágenes de entrenamiento.
-    :type X_train: np.ndarray de shape (N, 3, 32, 32) float32 NCHW normalizadas.
-
-    :param Y_train: Etiquetas de entrenamiento.
-    :type Y_train: np.ndarray de shape (N,) int32 con valores 0-9.
-
-    :param X_test: Imágenes de prueba (opcional, para enviar opcionalmente al PS).
-    :type X_test: np.ndarray | None, default=None.
-
-    :param Y_test: Etiquetas de prueba (opcional).
-    :type Y_test: np.ndarray | None, default=None.
-
-    :param cnn_device: Dispositivo PyTorch para la CNN.
-    :type cnn_device: str, "cpu"|"cuda"|"mps", default="cpu".
-
-    :param cnn_seed: Semilla para inicialización CNN (será sobreescrita por PS).
-    :type cnn_seed: int | None, default=42.
-
-    :param hidden1: Neuronas en la primera capa oculta del MLP.
-    :type hidden1: int, default=256.
-
-    :param hidden2: Neuronas en la segunda capa oculta del MLP.
-    :type hidden2: int, default=128.
-
-    :param cnn_batch_size: Batch size para extracción inicial de features CNN.
-    :type cnn_batch_size: int, default=2048.
-
-    :param verbose: Si True, imprime mensajes de progreso por época.
-    :type verbose: bool, default=True.
+    :param X_train: Imágenes (N, 3, 32, 32) float32 NCHW normalizadas.
+    :param Y_train: Etiquetas (N,) int32.
+    :param cnn_device: Dispositivo PyTorch: "cpu", "cuda", "mps".
+    :param cnn_seed: Semilla para inicialización CNN (no crítica — el PS sobreescribirá los pesos).
+    :param hidden1: Neuronas capa oculta 1 del MLP.
+    :param hidden2: Neuronas capa oculta 2 del MLP.
+    :param cnn_batch_size: Batch size para extracción inicial de features.
+    :param verbose: Imprime progreso por época.
     """
 
     def __init__(
@@ -165,14 +136,10 @@ class WorkerNode:
 
     def run(self) -> None:
         """
-        Conecta al PS, recibe el ID asignado y entra en el bucle persistente.
+        Conecta al PS, recibe el ID asignado y entra en el bucle
+        persistente de espera de sesiones de entrenamiento.
 
-        Bloquea indefinidamente hasta recibir STOP del PS o hasta que la
-        conexión se pierda inesperadamente. No retorna hasta que la sesión
-        finaliza.
-
-        :return: None
-        :rtype: NoneType.
+        Bloquea hasta recibir STOP o hasta que la conexión se pierda.
         """
         self._connect()
         self._log(
@@ -193,12 +160,7 @@ class WorkerNode:
         """
         Establece la conexión TCP y completa el handshake con el PS.
 
-        Envía READY (sin ID) y espera WORKER_ID para recibir el ID asignado
-        por el PS. Si no recibe WORKER_ID, lanza ConnectionError.
-
-        :return: None
-        :rtype: NoneType.
-        :raises ConnectionError: Si no se recibe WORKER_ID del PS.
+        Envía READY (sin ID) y espera WORKER_ID con el ID asignado.
         """
 
         # AF_INET = IPv4.
@@ -215,12 +177,7 @@ class WorkerNode:
         self.worker_id = msg["payload"]["worker_id"]
 
     def _disconnect(self) -> None:
-        """
-        Cierra la conexión TCP con el PS.
-
-        :return: None
-        :rtype: NoneType.
-        """
+        """Cierra la conexión TCP."""
         if self._sock is not None:
             try:
                 self._sock.close()
@@ -235,16 +192,12 @@ class WorkerNode:
 
     def _main_loop(self) -> None:
         """
-        Bucle persistente que alterna entre esperar sesiones de entrenamiento.
+        Bucle persistente que alterna entre:
+            - Esperar TRAIN_START (nueva sesión de entrenamiento)
+            - Procesar épocas de esa sesión (PARAMS → GRADIENTS)
+            - Volver a esperar
 
-        Flujo:
-            1. Espera TRAIN_START (nueva sesión de entrenamiento).
-            2. Procesa épocas de esa sesión (recibe PARAMS → envía GRADIENTS).
-            3. Vuelve a esperar TRAIN_START.
-            4. Sale cuando recibe STOP.
-
-        :return: None
-        :rtype: NoneType.
+        Sale cuando recibe STOP.
         """
         assert self._sock is not None
 
@@ -255,7 +208,12 @@ class WorkerNode:
                 self._log("STOP recibido. Finalizando.")
                 break
 
-            if msg["type"] == MsgType.CNN_WEIGHTS:
+            if msg["type"] == MsgType.TRAIN_SAMPLE:
+                # El PS pide una muestra de imágenes de train para
+                # preentrenar su CNN sin usar datos de prueba.
+                self._handle_train_sample(msg["payload"])
+
+            elif msg["type"] == MsgType.CNN_WEIGHTS:
                 # El PS envía sus pesos CNN antes de TRAIN_START.
                 # El Worker los carga, extrae sus features de train
                 # con esa CNN, y confirma con CNN_READY.
@@ -271,46 +229,48 @@ class WorkerNode:
                     p["epochs"], p["n_train"], p["n_workers"], p["worker_rank"]
                 )
 
-    def _optimal_batch_size(self, base: int = 2048) -> int:
+    def _handle_train_sample(self, payload: dict) -> None:
         """
-        Devuelve el batch size óptimo según el dispositivo.
+        Responde al PS con una muestra aleatoria de imágenes de train.
 
-        CPU: batch pequeño → menos presión de RAM, mejor uso del
-             cache L3, y la barra de progreso avanza más seguido
-             dando feedback continuo al usuario.
-        GPU: batch grande → maximiza la ocupación de la GPU.
+        El PS usa esta muestra para preentrenar la CNN sin necesidad
+        de usar los datos de prueba, eliminando el sesgo de evaluación.
+        Solo se envían imágenes raw (no features) para que el PS
+        pueda preentrenar con distintas CNNs sin re-solicitar datos.
         """
+        n_samples = payload.get("n_samples", 5000)
+        n_samples = min(n_samples, len(self._X_raw))
 
-        device_type = str(self._cnn.device).split(":")[0]  # 'cpu', 'cuda', 'mps'
-        if device_type == "cpu":
-            return 256  # Menor presión, feedback más frecuente
-        elif device_type == "mps":
-            return 512
-        else:  # cuda
-            return base  # GPU: maximizar ocupación
+        rng = np.random.RandomState(42)
+        indices = rng.choice(len(self._X_raw), size=n_samples, replace=False)
+        X_sample = self._X_raw[indices]
+        Y_sample = self._Y_raw[indices]
+
+        self._log(
+            f"Enviando muestra de train al PS "
+            f"({n_samples} imgs, "
+            f"{X_sample.nbytes // 1024 // 1024} MB)..."
+        )
+        assert self._sock is not None
+        send_message(
+            self._sock,
+            MsgType.TRAIN_SAMPLE_DATA,
+            {"X_sample": X_sample, "Y_sample": Y_sample},
+        )
+        self._log("Muestra de train enviada al PS.")
 
     def _handle_cnn_weights(self, payload: dict) -> None:
         """
-        Procesa CNN_WEIGHTS del PS: reconstruye CNN si cambió de arch.
+        Procesa CNN_WEIGHTS del PS: reconstruye la CNN si el arch cambió,
+        carga los pesos, regenera features y confirma con CNN_READY.
 
-        Si el Worker arrancó con arch=simple y recibe pesos de resnet18,
-        se reconstruye el modelo antes de cargar los pesos para evitar
-        un RuntimeError de incompatibilidad de state_dict. Luego extrae
-        features de entrenamiento y opcionalmente de prueba, y confirma
-        con CNN_READY.
-
-        :param payload: Diccionario con claves "arch" y "weights_bytes".
-        :type payload: dict con claves{'arch': str, 'weights_bytes': bytes,
-                                       'need_test_features': bool (opcional)}.
-
-        :return: None
-        :rtype: NoneType.
+        El Worker puede haber arrancado con arch=simple y recibir pesos
+        de resnet18 (o viceversa) si el usuario cambió la arquitectura en
+        el PS entre sesiones. En ese caso se reconstruye el modelo antes
+        de cargar los pesos para evitar un RuntimeError de state_dict.
         """
         arch = payload["arch"]
         weights_bytes = payload["weights_bytes"]
-        # El PS indica si necesita los features de prueba.
-        # False = ya los tiene en caché → Worker no los extrae ni los envía.
-        need_test_features = payload.get("need_test_features", True)
 
         self._log(f"CNN_WEIGHTS recibido del PS (arch={arch}). Cargando pesos...")
 
@@ -336,17 +296,12 @@ class WorkerNode:
         # Regenerar features con la CNN del PS.
         # prepare() comprueba la caché local primero — si ya existe
         # {arch}_{wh}_train_50000_X.npy, la carga sin re-extraer.
-        _bs = self._optimal_batch_size()
-        self._log(
-            f"Extrayendo features de train (50 000 imgs, "
-            f"batch={_bs}, device={self._cnn.device})..."
-        )
         self._X_features, self.Y_train = self._cnn.prepare(
             self._X_raw,
             self._Y_raw,
             split="train",
             pretrain_epochs=0,  # pesos ya vienen del PS, no reentrenar
-            batch_size=_bs,
+            batch_size=2048,
             verbose=self.verbose,
         )
 
@@ -359,18 +314,18 @@ class WorkerNode:
         assert self._sock is not None
         send_message(self._sock, MsgType.CNN_READY, {"worker_id": self.worker_id})
 
-        # Solo extraer y enviar features de prueba si el PS los necesita.
-        # need_test_features=False significa que el PS ya los tiene en su
-        # caché local → evita extraer 10k imágenes y transferir ~20 MB.
-        if need_test_features and self._X_test is not None and self._Y_test is not None:
+        # El Worker 0 también extrae y envía features de test al PS.
+        # Así el PS nunca necesita hacer forward CNN — usa la GPU del Worker.
+        # Solo el Worker 0 lo hace para evitar envíos redundantes.
+        if (
+            self.worker_id == 0
+            and self._X_test is not None
+            and self._Y_test is not None
+        ):
             self._log(f"Extrayendo features de prueba ({len(self._X_test)} imgs)...")
-            # prepare() verifica la caché local primero — segunda sesión: ~0.3s
-            X_test_feat, _ = self._cnn.prepare(
+            X_test_feat = self._cnn.extract_batched(
                 self._X_test,
-                self._Y_test,
-                split="test",
-                pretrain_epochs=0,
-                batch_size=self._optimal_batch_size(),
+                batch_size=2048,
                 verbose=self.verbose,
             )
             self._log(
@@ -385,8 +340,6 @@ class WorkerNode:
                 },
             )
             self._log("Features de prueba enviados.")
-        elif not need_test_features:
-            self._log("PS ya tiene features de prueba en caché — omitiendo extracción.")
 
     def _run_training_session(
         self,
@@ -404,16 +357,9 @@ class WorkerNode:
         el siguiente TRAIN_START.
 
         :param epochs: Número de épocas en esta sesión.
-        :type epochs: int
-
         :param n_train: Total de ejemplos de entrenamiento (para estratificación).
-        :type n_train: int
-
         :param n_workers: Número de Workers en esta sesión.
-        :type n_workers: int
-
         :param worker_rank: Posición de este Worker en la sesión (0-based).
-        :type worker_rank: int
         """
         assert self._sock is not None
 

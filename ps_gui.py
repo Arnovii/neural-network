@@ -195,7 +195,7 @@ class DistributedPSApp:
         self._v_cnn_model_sel: tk.StringVar = tk.StringVar(value="")
         self._v_cnn_epochs: tk.IntVar = tk.IntVar(value=10)
         self._v_cnn_lr:   tk.StringVar = tk.StringVar(value="1e-3")
-        self._v_cnn_seed: tk.StringVar = tk.StringVar(value="452")
+        self._v_cnn_seed: tk.StringVar = tk.StringVar(value="42")
         self._saved_models: list = []
         # Widgets del panel CNN (se crean en _build_left_panel)
         self._rb_load: ttk.Radiobutton | None = None
@@ -534,7 +534,7 @@ class DistributedPSApp:
             self._frm_train_cnn,
             textvariable=self._v_cnn_seed,
             width=10, justify="center",
-        ).pack(pady=(0, 6), fill=tk.X)
+        ).pack(pady=(0, 6))
 
         ttk.Label(
             self._frm_train_cnn,
@@ -1135,8 +1135,6 @@ class DistributedPSApp:
         # Inicializamos los pesos aquí, en el hilo principal, sin necesitar la CNN.
         # La CNN se construye en _train_thread para no bloquear la GUI
         # (con resnet18+ImageNet la descarga ocurre al construir CNNExtractor).
-        # La semilla MLP controla init_params. La semilla CNN es independiente
-        # y se lee del campo dedicado en la sección Entrenar.
         _cnn_seed_str = (self._v_cnn_seed.get() or "").strip()  # type: ignore
         cnn_seed = int(_cnn_seed_str) if _cnn_seed_str.isdigit() else None
         initial_params = init_params(FEATURE_DIM, hidden1, hidden2, NUM_CLASSES, seed)
@@ -1238,7 +1236,7 @@ class DistributedPSApp:
                             f"({cnn_epochs_new} épocas)..."
                         )
 
-                    # Siempre CNN nueva — nunca reutilizar la anterior.
+                    # Siempre crear CNN nueva — nunca reutilizar la anterior.
                     self._cnn = CNNExtractor(
                         arch=arch_new,
                         pretrained=cnn_pretrained_new,
@@ -1248,7 +1246,6 @@ class DistributedPSApp:
                     cnn = self._cnn
 
                     if arch_new == "simple":
-                        # Detectar si el modelo resultante ya existe
                         def _on_pretrain_epoch_check(
                             epoch: int, total: int, loss: float, acc: float
                         ) -> None:
@@ -1263,10 +1260,31 @@ class DistributedPSApp:
                                     f"loss={loss:.4f}  acc={acc:.1f}%  {bar}"
                                 )
 
-                        # pretrain() directo: entrena desde cero sin caché.
+                        # Pedir muestra de train al Worker para preentrenar
+                        # sin usar datos de prueba → elimina el sesgo.
+                        _gui_log(
+                            "[PS] Solicitando muestra de imágenes de train "
+                            "al Worker (sin sesgo en evaluación)..."
+                        )
+                        train_sample = server.request_train_sample(n_samples=5000)
+
+                        if train_sample is not None:
+                            X_pretrain, Y_pretrain = train_sample
+                            _gui_log(
+                                f"[PS] Muestra recibida: {len(X_pretrain)} imgs "
+                                f"de train — preentrenando CNN sin sesgo."
+                            )
+                        else:
+                            # Fallback: sin Workers disponibles, usar X_test
+                            X_pretrain, Y_pretrain = X_test_raw, Y_test
+                            _gui_log(
+                                "[PS] ⚠ Sin Workers disponibles — "
+                                "usando datos de prueba para pretrain (sesgo)."
+                            )
+
                         cnn.pretrain(
-                            X_test_raw,
-                            Y_test,
+                            X_pretrain,
+                            Y_pretrain,
                             epochs=cnn_epochs_new,
                             lr=cnn_lr_new,
                             verbose=False,

@@ -42,8 +42,9 @@ FLUJO COMPLETO
         ◄──────────────────────── WORKER_ID
         ◄──────────────────────── CNN_WEIGHTS  (PS envía pesos CNN)
   CNN_READY ─────────────────────►  (Worker confirmó extracción)
-  TEST_FEATURES ─────────────────►  (Worker envía features de prueba al
-                                     PS, si aplica)
+        ◄──────────────────────── TRAIN_SAMPLE  (PS pide muestra de train)
+  TRAIN_SAMPLE_DATA ─────────────►  (Worker envía N imágenes de train)
+  TEST_FEATURES ─────────────────►  (Worker envía features de prueba al PS)
 
   [en espera de TRAIN_START...]
 
@@ -81,6 +82,21 @@ CNN_READY
                     con la CNN recibida. El PS espera este mensaje de
                     todos los Workers antes de enviar TRAIN_START.
     payload: {"worker_id": int}
+
+TRAIN_SAMPLE
+    PS → Worker  |  El PS pide una muestra de imágenes de entrenamiento
+                    para preentrenar la CNN sin usar datos de prueba.
+                    Elimina el sesgo de usar X_test en el pretrain.
+    payload: {"n_samples": int}  # número de imágenes a enviar
+
+TRAIN_SAMPLE_DATA
+    Worker → PS  |  Respuesta con la muestra de imágenes de train.
+                    El Worker selecciona aleatoriamente n_samples
+                    imágenes de sus X_raw (imágenes originales, no features).
+    payload: {
+        "X_sample": np.ndarray,  # (n_samples, 3, 32, 32) float32
+        "Y_sample": np.ndarray,  # (n_samples,) int32
+    }
 
 TRAIN_START
     PS → Worker  |  Inicia una sesión de entrenamiento.
@@ -130,7 +146,9 @@ class MsgType(str, Enum):
     CNN_WEIGHTS = "CNN_WEIGHTS"
     CNN_READY = "CNN_READY"
     TEST_FEATURES = "TEST_FEATURES"
-    TRAIN_START = "TRAIN_START"
+    TRAIN_SAMPLE      = "TRAIN_SAMPLE"
+    TRAIN_SAMPLE_DATA = "TRAIN_SAMPLE_DATA"
+    TRAIN_START       = "TRAIN_START"
     PARAMS = "PARAMS"
     GRADIENTS = "GRADIENTS"
     STOP = "STOP"
