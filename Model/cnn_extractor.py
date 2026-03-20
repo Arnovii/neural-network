@@ -410,6 +410,9 @@ class CNNExtractor:
 
         Usa el mismo hash que _weights_cache_path() para que pesos
         y metadata siempre correspondan al mismo modelo.
+
+        :return: Ruta al archivo {arch}_{hash}_metadata.json.
+        :rtype: str.
         """
         return os.path.join(
             self._cache_dir, f"{self.arch}_{self._weights_hash()}_metadata.json"
@@ -421,17 +424,28 @@ class CNNExtractor:
         final_loss: float,
         final_acc: float,
         elapsed: float,
+        n_sample: int,
     ) -> None:
         """
         Guarda la metadata del preentrenamiento en JSON.
 
         Se llama al terminar pretrain(). El archivo queda junto
-        al .pt con el mismo prefijo de nombre.
+        al .pt con el mismo prefijo de nombre. Incluye información
+        sobre el dataset (número de muestras) para poder identificar
+        con qué datos se entrenó el modelo.
 
         :param epochs: Épocas de preentrenamiento realizadas.
+        :type epochs: int.
         :param final_loss: Pérdida de la última época.
+        :type final_loss: float.
         :param final_acc: Precisión de la última época (0-100).
+        :type final_acc: float.
         :param elapsed: Tiempo total de entrenamiento en segundos.
+        :type elapsed: float.
+        :param n_sample: Número de muestras de entrenamiento utilizadas.
+        :type n_sample: int.
+        :return: None
+        :rtype: NoneType.
         """
         import datetime
 
@@ -440,6 +454,7 @@ class CNNExtractor:
             "seed": self.seed,
             "weights_hash": self._weights_hash(),
             "epochs": epochs,
+            "n_sample": n_sample,
             "final_loss": round(final_loss, 6),
             "final_acc": round(final_acc, 4),
             "elapsed_s": round(elapsed, 2),
@@ -452,8 +467,10 @@ class CNNExtractor:
         """
         Carga la metadata del modelo actual desde disco.
 
-        :return: Dict con arch, seed, weights_hash, epochs, final_loss,
-                 final_acc, elapsed_s, created_at; o None si no existe.
+        :return: Diccionario con campos: arch, seed, weights_hash, epochs,
+                 n_sample, final_loss, final_acc, elapsed_s, created_at;
+                 o None si no existe el archivo de metadata.
+        :rtype: dict | None.
         """
         path = self._metadata_path()
         if not os.path.exists(path):
@@ -590,6 +607,8 @@ class CNNExtractor:
 
         Solo aplica para arch="simple". Guarda los pesos en caché al
         terminar para que los arranques posteriores sean instantáneos.
+        También guarda metadata con información sobre el entrenamiento
+        (épocas, precisión, pérdida, número de muestras, tiempo).
 
         :param X_train: Imágenes de entrenamiento.
         :type X_train: np.ndarray de shape (N, 3, 32, 32) float32 normalizado.
@@ -608,6 +627,10 @@ class CNNExtractor:
 
         :param verbose: Si True, imprime el progreso del entrenamiento.
         :type verbose: bool, default=True.
+
+        :param on_epoch: Callback opcional llamado al final de cada época.
+                         Firma: (epoch: int, total_epochs: int, loss: float, acc: float).
+        :type on_epoch: Callable[[int, int, float, float], None] | None, default=None.
 
         :return: None
         :rtype: NoneType.
@@ -689,14 +712,14 @@ class CNNExtractor:
         self._model.eval()
         _elapsed = time.perf_counter() - _t_pretrain_start
         self._save_weights()
-        self._save_metadata(epochs, _final_loss, _final_acc, _elapsed)
+        self._save_metadata(epochs, _final_loss, _final_acc, _elapsed, N)
 
         if verbose:
             print(
                 f"[CNN] Pesos guardados en caché ({self._weights_cache_path()}).\n"
                 f"      Hash de pesos: {self._weights_hash()}\n"
                 f"      Metadata guardada: acc={_final_acc:.1f}%  "
-                f"loss={_final_loss:.4f}  tiempo={_elapsed:.1f}s\n"
+                f"loss={_final_loss:.4f}  tiempo={_elapsed:.1f}s  n_muestras={N}\n"
             )
 
     # ── método principal: prepare() ───────────────────────────────

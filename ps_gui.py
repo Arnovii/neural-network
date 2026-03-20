@@ -209,6 +209,8 @@ class DistributedPSApp:
         self._lbl_info_epochs: ttk.Label | None = None
         self._lbl_info_time: ttk.Label | None = None
         self._lbl_info_date: ttk.Label | None = None
+        self._lbl_info_seed: ttk.Label | None = None
+        self._lbl_info_n_sample: ttk.Label | None = None
 
         self._build_ui()
         self._refresh_buttons()
@@ -471,6 +473,12 @@ class DistributedPSApp:
         self._lbl_info_epochs = ttk.Label(
             self._frm_model_info, text="Épocas             : —"
         )
+        self._lbl_info_seed = ttk.Label(
+            self._frm_model_info, text="Semilla             : —"
+        )
+        self._lbl_info_n_sample = ttk.Label(
+            self._frm_model_info, text="Muestras         : —"
+        )
         self._lbl_info_time = ttk.Label(
             self._frm_model_info, text="Tiempo            : —"
         )
@@ -482,6 +490,8 @@ class DistributedPSApp:
             self._lbl_info_acc,
             self._lbl_info_loss,
             self._lbl_info_epochs,
+            self._lbl_info_seed,
+            self._lbl_info_n_sample,
             self._lbl_info_time,
             self._lbl_info_date,
         ):
@@ -1013,6 +1023,8 @@ class DistributedPSApp:
         acc = meta.get("final_acc", 0.0)
         loss = meta.get("final_loss", 0.0)
         ep = meta.get("epochs", "?")
+        seed = meta.get("seed", "—")
+        n_sample = meta.get("n_sample", "—")
         secs = meta.get("elapsed_s", 0.0)
         date = meta.get("created_at", "—")
 
@@ -1023,15 +1035,20 @@ class DistributedPSApp:
         self._lbl_info_acc.configure(text=f"Precisión         : {acc:.2f}%")  # type: ignore
         self._lbl_info_loss.configure(text=f"Pérdida            : {loss:.4f}")  # type: ignore
         self._lbl_info_epochs.configure(text=f"Épocas             : {ep}")  # type: ignore
+        self._lbl_info_seed.configure(text=f"Semilla             : {seed}")  # type: ignore
+        self._lbl_info_n_sample.configure(text=f"Muestras         : {n_sample}")  # type: ignore
         self._lbl_info_time.configure(text=f"Tiempo            : {time_str}")  # type: ignore
         self._lbl_info_date.configure(text=f"Creado en       : {date}")  # type: ignore
 
     def _clear_model_info(self) -> None:
+        """Limpia la información del modelo (resetea etiquetas a —)."""
         for lbl, text in [
             (self._lbl_info_arch, "Arquitectura   : —"),
             (self._lbl_info_acc, "Precisión         : —"),
             (self._lbl_info_loss, "Pérdida            : —"),
             (self._lbl_info_epochs, "Épocas             : —"),
+            (self._lbl_info_seed, "Semilla             : —"),
+            (self._lbl_info_n_sample, "Muestras         : —"),
             (self._lbl_info_time, "Tiempo            : —"),
             (self._lbl_info_date, "Creado en       : —"),
         ]:

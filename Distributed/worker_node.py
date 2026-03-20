@@ -49,7 +49,7 @@ Coste por época: indexación + MLP forward/backward (puro NumPy).
 
 import socket
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 

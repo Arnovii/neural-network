@@ -295,7 +295,9 @@ def main() -> None:
                 "[PS] Solicitando muestra de train al Worker "
                 "para preentrenar CNN sin sesgo..."
             )
-            train_sample = server.request_train_sample(n_samples=args.cnn_pretrain_samples)
+            train_sample = server.request_train_sample(
+                n_samples=args.cnn_pretrain_samples
+            )
             if train_sample is not None:
                 X_pre, Y_pre = train_sample
                 print(
