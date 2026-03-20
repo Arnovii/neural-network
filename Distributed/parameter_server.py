@@ -342,7 +342,7 @@ class ParameterServer:
 
     def request_train_sample(
         self,
-        n_samples: int = 5000,
+        n_samples: int = 10000,
     ) -> "tuple[np.ndarray, np.ndarray] | None":
         """
         Pide una muestra de imágenes de entrenamiento al Worker 0.
@@ -456,7 +456,7 @@ class ParameterServer:
             )
             self._cnn_ready_event.clear()
             self._cnn_ready_count = 0
-            self._X_test_features    = None
+            self._X_test_features = None
             self._Y_test_from_worker = None
 
             # Buscar caché de features de test ANTES de enviar CNN_WEIGHTS.
@@ -468,8 +468,10 @@ class ParameterServer:
                 if cached is not None:
                     X_test, Y_test = cached
                     need_test = False
-                    print(f"[PS] Features de prueba en caché: {X_test.shape} "
-                          f"— Workers no necesitan enviarlos.\n")
+                    print(
+                        f"[PS] Features de prueba en caché: {X_test.shape} "
+                        f"— Workers no necesitan enviarlos.\n"
+                    )
 
             # Broadcast CNN_WEIGHTS en paralelo con el flag need_test_features.
             def _send_cnn_to_worker(wid: int) -> None:
@@ -478,11 +480,15 @@ class ParameterServer:
                 if sock is None:
                     return
                 try:
-                    send_message(sock, MsgType.CNN_WEIGHTS, {
-                        "arch":                arch,
-                        "weights_bytes":       weights_bytes,
-                        "need_test_features":  need_test,
-                    })
+                    send_message(
+                        sock,
+                        MsgType.CNN_WEIGHTS,
+                        {
+                            "arch": arch,
+                            "weights_bytes": weights_bytes,
+                            "need_test_features": need_test,
+                        },
+                    )
                 except Exception as exc:
                     print(f"[PS] Error enviando CNN a Worker {wid}: {exc}")
                     self._remove_worker(wid)
@@ -491,8 +497,10 @@ class ParameterServer:
                 threading.Thread(target=_send_cnn_to_worker, args=(wid,), daemon=True)
                 for wid in worker_ids
             ]
-            for t in send_threads: t.start()
-            for t in send_threads: t.join()
+            for t in send_threads:
+                t.start()
+            for t in send_threads:
+                t.join()
 
             def _wait_cnn_ready(wid: int) -> None:
                 try:
@@ -508,7 +516,7 @@ class ParameterServer:
                                 with self._lock:
                                     if self._X_test_features is None:
                                         p = msg2["payload"]
-                                        self._X_test_features    = p["X_test_features"]
+                                        self._X_test_features = p["X_test_features"]
                                         self._Y_test_from_worker = p["Y_test"]
                                         print(
                                             f"[PS] Features de prueba recibidos del "
@@ -545,10 +553,11 @@ class ParameterServer:
                 elif X_test is not None and Y_test is not None:
                     print("[PS] Extrayendo y cacheando features de prueba...")
                     X_test, Y_test = self._cnn.prepare(
-                        X_test, Y_test,
-                        split           = "test",
-                        pretrain_epochs = 0,
-                        verbose         = True,
+                        X_test,
+                        Y_test,
+                        split="test",
+                        pretrain_epochs=0,
+                        verbose=True,
                     )
                     print(f"[PS] Features de prueba listos: {X_test.shape}\n")
 
@@ -656,11 +665,16 @@ class ParameterServer:
                     self._remove_worker(wid)
 
             param_threads = [
-                threading.Thread(target=_send_params_to_worker, args=(wid,), daemon=True)
-                for wid in worker_ids if wid in self._worker_sockets
+                threading.Thread(
+                    target=_send_params_to_worker, args=(wid,), daemon=True
+                )
+                for wid in worker_ids
+                if wid in self._worker_sockets
             ]
-            for t in param_threads: t.start()
-            for t in param_threads: t.join()
+            for t in param_threads:
+                t.start()
+            for t in param_threads:
+                t.join()
 
             # Lanza receptores
             threads = [

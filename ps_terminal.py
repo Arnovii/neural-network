@@ -278,17 +278,19 @@ def main() -> None:
     # (pedidos al Worker) en lugar de X_test → sin sesgo en evaluación.
     if args.cnn_arch == "simple":
         import glob as _glob
-        has_cache = bool(_glob.glob(
-            str(cnn._cache_dir) + "/simple_*_weights.pt"
-        ))
+
+        has_cache = bool(_glob.glob(str(cnn._cache_dir) + "/simple_*_weights.pt"))
         if not has_cache:
-            print("[PS] Solicitando muestra de train al Worker "
-                  "para preentrenar CNN sin sesgo...")
-            train_sample = server.request_train_sample(n_samples=5000)
+            print(
+                "[PS] Solicitando muestra de train al Worker "
+                "para preentrenar CNN sin sesgo..."
+            )
+            train_sample = server.request_train_sample(n_samples=10000)
             if train_sample is not None:
                 X_pre, Y_pre = train_sample
-                print(f"[PS] Muestra recibida ({len(X_pre)} imgs). "
-                      "Preentrenando CNN...")
+                print(
+                    f"[PS] Muestra recibida ({len(X_pre)} imgs). Preentrenando CNN..."
+                )
                 cnn.pretrain(X_pre, Y_pre, epochs=10, verbose=True)
             else:
                 print("[PS] ⚠ Sin Workers — pretrain usará datos de prueba.")

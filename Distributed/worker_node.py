@@ -238,7 +238,7 @@ class WorkerNode:
         Solo se envían imágenes raw (no features) para que el PS
         pueda preentrenar con distintas CNNs sin re-solicitar datos.
         """
-        n_samples = payload.get("n_samples", 5000)
+        n_samples = payload.get("n_samples", 10000)
         n_samples = min(n_samples, len(self._X_raw))
 
         rng = np.random.RandomState(42)

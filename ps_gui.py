@@ -194,7 +194,7 @@ class DistributedPSApp:
         self._v_cnn_mode: tk.StringVar = tk.StringVar(value="load")
         self._v_cnn_model_sel: tk.StringVar = tk.StringVar(value="")
         self._v_cnn_epochs: tk.IntVar = tk.IntVar(value=10)
-        self._v_cnn_lr:   tk.StringVar = tk.StringVar(value="1e-3")
+        self._v_cnn_lr: tk.StringVar = tk.StringVar(value="1e-3")
         self._v_cnn_seed: tk.StringVar = tk.StringVar(value="42")
         self._saved_models: list = []
         # Widgets del panel CNN (se crean en _build_left_panel)
@@ -439,7 +439,7 @@ class DistributedPSApp:
 
         # ── Sección CARGAR ────────────────────────────────────────
         self._frm_load = ttk.Frame(self._frm_cnn_container)
-        self._frm_load.grid(row=0, column=0, sticky='nsew')
+        self._frm_load.grid(row=0, column=0, sticky="nsew")
 
         ttk.Label(
             self._frm_load, text="Modelo guardado:", font=("Helvetica", 9, "bold")
@@ -461,11 +461,21 @@ class DistributedPSApp:
         self._frm_model_info.pack(fill=tk.X, pady=(0, 4))
 
         self._lbl_info_arch = ttk.Label(self._frm_model_info, text="Arquitectura   : —")
-        self._lbl_info_acc = ttk.Label(self._frm_model_info, text="Precisión         : —")
-        self._lbl_info_loss = ttk.Label(self._frm_model_info, text="Pérdida            : —")
-        self._lbl_info_epochs = ttk.Label(self._frm_model_info, text="Épocas             : —")
-        self._lbl_info_time = ttk.Label(self._frm_model_info, text="Tiempo            : —")
-        self._lbl_info_date = ttk.Label(self._frm_model_info, text="Creado en       : —")
+        self._lbl_info_acc = ttk.Label(
+            self._frm_model_info, text="Precisión         : —"
+        )
+        self._lbl_info_loss = ttk.Label(
+            self._frm_model_info, text="Pérdida            : —"
+        )
+        self._lbl_info_epochs = ttk.Label(
+            self._frm_model_info, text="Épocas             : —"
+        )
+        self._lbl_info_time = ttk.Label(
+            self._frm_model_info, text="Tiempo            : —"
+        )
+        self._lbl_info_date = ttk.Label(
+            self._frm_model_info, text="Creado en       : —"
+        )
         for lbl in (
             self._lbl_info_arch,
             self._lbl_info_acc,
@@ -478,7 +488,7 @@ class DistributedPSApp:
 
         # ── Sección ENTRENAR ──────────────────────────────────────
         self._frm_train_cnn = ttk.Frame(self._frm_cnn_container)
-        self._frm_train_cnn.grid(row=0, column=0, sticky='nsew')
+        self._frm_train_cnn.grid(row=0, column=0, sticky="nsew")
 
         ttk.Label(
             self._frm_train_cnn, text="Arquitectura:", font=("Helvetica", 9, "bold")
@@ -533,7 +543,8 @@ class DistributedPSApp:
         ttk.Entry(
             self._frm_train_cnn,
             textvariable=self._v_cnn_seed,
-            width=10, justify="center",
+            width=10,
+            justify="center",
         ).pack(pady=(0, 6))
 
         ttk.Label(
@@ -1246,6 +1257,7 @@ class DistributedPSApp:
                     cnn = self._cnn
 
                     if arch_new == "simple":
+
                         def _on_pretrain_epoch_check(
                             epoch: int, total: int, loss: float, acc: float
                         ) -> None:
@@ -1266,7 +1278,7 @@ class DistributedPSApp:
                             "[PS] Solicitando muestra de imágenes de train "
                             "al Worker (sin sesgo en evaluación)..."
                         )
-                        train_sample = server.request_train_sample(n_samples=5000)
+                        train_sample = server.request_train_sample(n_samples=10000)
 
                         if train_sample is not None:
                             X_pretrain, Y_pretrain = train_sample

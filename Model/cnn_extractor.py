@@ -327,8 +327,7 @@ class CNNExtractor:
         :rtype: str.
         """
         return os.path.join(
-            self._cache_dir,
-            f"{self.arch}_{self._weights_hash()}_weights.pt"
+            self._cache_dir, f"{self.arch}_{self._weights_hash()}_weights.pt"
         )
 
     def _feature_cache_paths(self, split: str) -> Tuple[str, str]:
@@ -413,8 +412,7 @@ class CNNExtractor:
         y metadata siempre correspondan al mismo modelo.
         """
         return os.path.join(
-            self._cache_dir,
-            f"{self.arch}_{self._weights_hash()}_metadata.json"
+            self._cache_dir, f"{self.arch}_{self._weights_hash()}_metadata.json"
         )
 
     def _save_metadata(
@@ -524,6 +522,7 @@ class CNNExtractor:
         Busca {arch}_*_weights.pt en el directorio de caché.
         """
         import glob
+
         pattern = os.path.join(self._cache_dir, f"{self.arch}_*_weights.pt")
         candidates = glob.glob(pattern)
         if not candidates:
@@ -672,7 +671,7 @@ class CNNExtractor:
                 correct += (logits.argmax(1) == yb).sum().item()
 
             epoch_loss = total_loss / N
-            epoch_acc  = 100.0 * correct / N
+            epoch_acc = 100.0 * correct / N
             _final_loss, _final_acc = epoch_loss, epoch_acc
             if verbose:
                 print(
