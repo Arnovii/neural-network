@@ -50,6 +50,7 @@ ARQUITECTURAS
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import time
 from typing import Callable, Optional, Tuple
@@ -402,6 +403,118 @@ class CNNExtractor:
         self._model.load_state_dict(state)
         self._model.eval()
 
+    def _metadata_path(self) -> str:
+        """
+        Ruta del archivo JSON de metadata asociado a los pesos CNN.
+
+        El nombre sigue la misma clave que _weights_cache_path():
+        {arch}_{seed}_metadata.json
+        Esto garantiza que pesos y metadata siempre van juntos.
+        """
+        seed_str = str(self.seed) if self.seed is not None else "none"
+        return os.path.join(self._cache_dir, f"{self.arch}_{seed_str}_metadata.json")
+
+    def _save_metadata(
+        self,
+        epochs: int,
+        final_loss: float,
+        final_acc: float,
+        elapsed: float,
+    ) -> None:
+        """
+        Guarda la metadata del preentrenamiento en JSON.
+
+        Se llama al terminar pretrain(). El archivo queda junto
+        al .pt con el mismo prefijo de nombre.
+
+        :param epochs: Épocas de preentrenamiento realizadas.
+        :param final_loss: Pérdida de la última época.
+        :param final_acc: Precisión de la última época (0-100).
+        :param elapsed: Tiempo total de entrenamiento en segundos.
+        """
+        import datetime
+
+        meta = {
+            "arch": self.arch,
+            "seed": self.seed,
+            "weights_hash": self._weights_hash(),
+            "epochs": epochs,
+            "final_loss": round(final_loss, 6),
+            "final_acc": round(final_acc, 4),
+            "elapsed_s": round(elapsed, 2),
+            "created_at": datetime.datetime.now().isoformat(timespec="seconds"),
+        }
+        with open(self._metadata_path(), "w", encoding="utf-8") as f:
+            json.dump(meta, f, indent=2)
+
+    def load_metadata(self) -> "dict | None":
+        """
+        Carga la metadata del modelo actual desde disco.
+
+        :return: Dict con arch, seed, weights_hash, epochs, final_loss,
+                 final_acc, elapsed_s, created_at; o None si no existe.
+        """
+        path = self._metadata_path()
+        if not os.path.exists(path):
+            return None
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+
+    @classmethod
+    def list_saved_models(cls, cache_dir: "str | None" = None) -> "list[dict]":
+        """
+        Lista todos los modelos CNN preentrenados localmente.
+
+        Busca pares (weights.pt + metadata.json) en cache_dir y
+        devuelve la lista ordenada por final_acc descendente.
+
+        :param cache_dir: Directorio de caché. None = default.
+        :return: Lista de dicts de metadata, ordenada por precisión.
+        """
+        if cache_dir is None:
+            root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            cache_dir = os.path.join(root, "Data", "feature_cache")
+
+        models = []
+        if not os.path.isdir(cache_dir):
+            return models
+
+        for fname in os.listdir(cache_dir):
+            if not fname.endswith("_metadata.json"):
+                continue
+            meta_path = os.path.join(cache_dir, fname)
+            # Verificar que el .pt correspondiente existe
+            weights_name = fname.replace("_metadata.json", "_weights.pt")
+            weights_path = os.path.join(cache_dir, weights_name)
+            if not os.path.exists(weights_path):
+                continue
+            try:
+                with open(meta_path, encoding="utf-8") as f:
+                    meta = json.load(f)
+                meta["weights_path"] = weights_path
+                meta["metadata_path"] = meta_path
+                models.append(meta)
+            except Exception:
+                continue
+
+        models.sort(key=lambda m: m.get("final_acc", 0.0), reverse=True)
+        return models
+
+    def load_from_path(self, weights_path: str) -> None:
+        """
+        Carga pesos CNN desde una ruta explícita de archivo .pt.
+
+        Permite cargar cualquier modelo guardado, no solo el que
+        coincide con arch/seed actuales.
+
+        :param weights_path: Ruta absoluta al archivo .pt.
+        """
+        import torch
+
+        state = torch.load(weights_path, map_location=self.device, weights_only=True)
+        self._model.load_state_dict(state)
+        self._model.eval()
+
     def _load_weights_if_cached(self) -> bool:
         """
         Carga pesos CNN desde caché si el archivo existe.
@@ -520,9 +633,9 @@ class CNNExtractor:
 
         # Crea un generador aleatorio
         rng = np.random.RandomState(self.seed if self.seed is not None else 0)
+        _t_pretrain_start = time.perf_counter()
+        _final_loss, _final_acc = 0.0, 0.0
 
-        # Notificar época 0 antes de arrancar: indica que el proceso empezó
-        # y evita que el log parezca congelado durante la primera época.
         if on_epoch is not None:
             on_epoch(0, epochs, 0.0, 0.0)
 
@@ -555,7 +668,8 @@ class CNNExtractor:
                 correct += (logits.argmax(1) == yb).sum().item()
 
             epoch_loss = total_loss / N
-            epoch_acc = 100.0 * correct / N
+            epoch_acc  = 100.0 * correct / N
+            _final_loss, _final_acc = epoch_loss, epoch_acc
             if verbose:
                 print(
                     f"  Época {epoch:2d}/{epochs}  "
@@ -564,18 +678,23 @@ class CNNExtractor:
             if on_epoch is not None:
                 on_epoch(epoch, epochs, epoch_loss, epoch_acc)
 
+        _elapsed = time.perf_counter() - _t_pretrain_start
         # Congela la CNN para desactivar el aprendizaje
         for param in self._model.parameters():
             param.requires_grad_(False)
 
         # Cambia a modo evaluación
         self._model.eval()
+        _elapsed = time.perf_counter() - _t_pretrain_start
         self._save_weights()
+        self._save_metadata(epochs, _final_loss, _final_acc, _elapsed)
 
         if verbose:
             print(
                 f"[CNN] Pesos guardados en caché ({self._weights_cache_path()}).\n"
                 f"      Hash de pesos: {self._weights_hash()}\n"
+                f"      Metadata guardada: acc={_final_acc:.1f}%  "
+                f"loss={_final_loss:.4f}  tiempo={_elapsed:.1f}s\n"
             )
 
     # ── método principal: prepare() ───────────────────────────────

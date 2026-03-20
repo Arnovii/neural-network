@@ -189,6 +189,26 @@ class DistributedPSApp:
         self._train_config: dict = {}
         self._cnn: CNNExtractor | None = None
 
+        # Variables Tkinter del panel CNN — se inicializan aquí y se
+        # sobreescriben con valores reales en _build_left_panel().
+        self._v_cnn_mode: tk.StringVar = tk.StringVar(value="load")
+        self._v_cnn_model_sel: tk.StringVar = tk.StringVar(value="")
+        self._v_cnn_epochs: tk.IntVar = tk.IntVar(value=10)
+        self._v_cnn_lr: tk.StringVar = tk.StringVar(value="1e-3")
+        self._saved_models: list = []
+        # Widgets del panel CNN (se crean en _build_left_panel)
+        self._rb_load: ttk.Radiobutton | None = None
+        self._rb_train: ttk.Radiobutton | None = None
+        self._cnn_dropdown: ttk.Combobox | None = None
+        self._frm_load: ttk.Frame | None = None
+        self._frm_train_cnn: ttk.Frame | None = None
+        self._lbl_info_arch: ttk.Label | None = None
+        self._lbl_info_acc: ttk.Label | None = None
+        self._lbl_info_loss: ttk.Label | None = None
+        self._lbl_info_epochs: ttk.Label | None = None
+        self._lbl_info_time: ttk.Label | None = None
+        self._lbl_info_date: ttk.Label | None = None
+
         self._build_ui()
         self._refresh_buttons()
 
@@ -378,33 +398,153 @@ class DistributedPSApp:
         ttk.Separator(frame, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=2)
 
         _add_slider(frame, "Épocas (50 – 1000):", self._v_epochs, 50, 1000)
+        # ── CNN Extractor ─────────────────────────────────────
         ttk.Label(frame, text="CNN Extractor:", font=("Helvetica", 10, "bold")).pack(
             anchor=tk.W, pady=(14, 0)
         )
         ttk.Separator(frame, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=2)
-        cnn_frame = ttk.Frame(frame)
-        cnn_frame.pack(fill=tk.X, pady=(0, 2))
+
+        # Botones de modo (excluyentes)
+        mode_frame = ttk.Frame(frame)
+        mode_frame.pack(fill=tk.X, pady=(0, 4))
+        self._rb_load = ttk.Radiobutton(
+            mode_frame,
+            text="Cargar modelo",
+            variable=self._v_cnn_mode,
+            value="load",
+            command=self._on_cnn_mode_change,
+        )
+        self._rb_train = ttk.Radiobutton(
+            mode_frame,
+            text="Entrenar modelo",
+            variable=self._v_cnn_mode,
+            value="train",
+            command=self._on_cnn_mode_change,
+        )
+        self._rb_load.pack(side=tk.LEFT, padx=(0, 12))
+        self._rb_train.pack(side=tk.LEFT)
+
+        ttk.Separator(frame, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=4)
+
+        # ── Contenedor único para Cargar / Entrenar ──────────────
+        # Ambos frames viven aquí; solo uno es visible a la vez.
+        # Usamos raise_/tkraise para alternar sin mover el widget
+        # en el gestor de layout → el panel no se desplaza.
+        self._frm_cnn_container = ttk.Frame(frame)
+        self._frm_cnn_container.pack(fill=tk.X)
+        self._frm_cnn_container.columnconfigure(0, weight=1)
+
+        # ── Sección CARGAR ────────────────────────────────────────
+        self._frm_load = ttk.Frame(self._frm_cnn_container)
+        self._frm_load.grid(row=0, column=0, sticky='ew')
+
+        ttk.Label(
+            self._frm_load, text="Modelo guardado:", font=("Helvetica", 9, "bold")
+        ).pack(anchor=tk.W)
+
+        self._cnn_dropdown = ttk.Combobox(
+            self._frm_load,
+            textvariable=self._v_cnn_model_sel,
+            state="readonly",
+            width=34,
+        )
+        self._cnn_dropdown.pack(fill=tk.X, pady=(2, 4))
+        self._cnn_dropdown.bind("<<ComboboxSelected>>", self._on_cnn_model_selected)
+
+        # Tarjeta de información del modelo seleccionado
+        self._frm_model_info = ttk.LabelFrame(
+            self._frm_load, text="Información del modelo", padding=6
+        )
+        self._frm_model_info.pack(fill=tk.X, pady=(0, 4))
+
+        self._lbl_info_arch = ttk.Label(self._frm_model_info, text="Arquitectura   : —")
+        self._lbl_info_acc = ttk.Label(self._frm_model_info, text="Precisión       : —")
+        self._lbl_info_loss = ttk.Label(self._frm_model_info, text="Pérdida        : —")
+        self._lbl_info_epochs = ttk.Label(self._frm_model_info, text="Épocas       : —")
+        self._lbl_info_time = ttk.Label(self._frm_model_info, text="Tiempo         : —")
+        self._lbl_info_date = ttk.Label(self._frm_model_info, text="Creado en      : —")
+        for lbl in (
+            self._lbl_info_arch,
+            self._lbl_info_acc,
+            self._lbl_info_loss,
+            self._lbl_info_epochs,
+            self._lbl_info_time,
+            self._lbl_info_date,
+        ):
+            lbl.pack(anchor=tk.W)
+
+        # ── Sección ENTRENAR ──────────────────────────────────────
+        self._frm_train_cnn = ttk.Frame(self._frm_cnn_container)
+        self._frm_train_cnn.grid(row=0, column=0, sticky='ew')
+
+        ttk.Label(
+            self._frm_train_cnn, text="Arquitectura:", font=("Helvetica", 9, "bold")
+        ).pack(anchor=tk.W, pady=(0, 2))
+        arch_frame = ttk.Frame(self._frm_train_cnn)
+        arch_frame.pack(fill=tk.X)
         ttk.Radiobutton(
-            cnn_frame,
-            text="Simple  — preentrenada localmente (~60% precisión)",
+            arch_frame,
+            text="Simple  (~60%)",
             variable=self._v_cnn_arch,
             value="simple",
         ).pack(anchor=tk.W)
         ttk.Radiobutton(
-            cnn_frame,
-            text="Resnet18  — pesos ImageNet (~75-80% precisión)",
+            arch_frame,
+            text="Resnet18 - Pesos ImageNet  (~75-80%)",
             variable=self._v_cnn_arch,
             value="resnet18",
         ).pack(anchor=tk.W)
+
+        ttk.Label(self._frm_train_cnn, text="Épocas CNN (1–50):").pack(
+            anchor=tk.W, pady=(6, 0)
+        )
+        ttk.Scale(
+            self._frm_train_cnn,
+            from_=1,
+            to=50,
+            orient=tk.HORIZONTAL,
+            variable=self._v_cnn_epochs,
+            length=200,
+            command=lambda v: self._v_cnn_epochs.set(max(1, int(round(float(v))))),
+        ).pack(fill=tk.X, pady=2)
+        ttk.Entry(
+            self._frm_train_cnn,
+            textvariable=self._v_cnn_epochs,
+            width=5,
+            justify="center",
+        ).pack(pady=(0, 4))
+
+        ttk.Label(self._frm_train_cnn, text="LR CNN (0.0001–0.1):").pack(
+            anchor=tk.W, pady=(4, 0)
+        )
+        ttk.Entry(
+            self._frm_train_cnn,
+            textvariable=self._v_cnn_lr,
+            width=10,
+            justify="center",
+        ).pack(pady=(0, 6))
+
         ttk.Label(
-            frame,
-            text="ℹ El PS distribuye la CNN al Worker automáticamente.\n"
-            "  resnet18: descarga ~44 MB la 1ª vez (se cachea).\n"
-            "  La extracción de features ocurre en el Worker.",
+            self._frm_train_cnn,
+            text="ℹ Solo aplica para Simple. Resnet18 usa\n"
+            "  pesos ImageNet (sin preentrenar).",
             font=("Helvetica", 8),
             foreground="#1565C0",
             justify=tk.LEFT,
+        ).pack(anchor=tk.W, pady=(0, 4))
+
+        ttk.Label(
+            frame,
+            text="ℹ El PS distribuye la CNN al Worker automáticamente.\n"
+            "  La extracción de features ocurre en el Worker.",
+            font=("Helvetica", 8),
+            foreground="#2E7D32",
+            justify=tk.LEFT,
         ).pack(anchor=tk.W, pady=(4, 6))
+
+        # Inicializar estado del panel
+        self._refresh_saved_models()
+
         ttk.Label(frame, text="Clasificador MLP:", font=("Helvetica", 10, "bold")).pack(
             anchor=tk.W, pady=(14, 0)
         )
@@ -773,6 +913,121 @@ class DistributedPSApp:
     # COMANDOS DE BOTONES
     # ================================================================
 
+    # ================================================================
+    # GESTIÓN DE MODELOS CNN
+    # ================================================================
+
+    def _refresh_saved_models(self) -> None:
+        """
+        Escanea el directorio de caché y actualiza la lista de modelos.
+        Activa/desactiva el modo carga según haya modelos disponibles.
+        Llamado al iniciar y tras cada preentrenamiento completado.
+        """
+        from Model.cnn_extractor import CNNExtractor
+
+        self._saved_models = CNNExtractor.list_saved_models()
+
+        if self._saved_models:
+            # Poblar dropdown ordenado por precisión (mayor primero)
+            labels = [self._model_label(m) for m in self._saved_models]
+            self._cnn_dropdown["values"] = labels  # type: ignore
+            self._cnn_dropdown.current(0)  # type: ignore  # mejor modelo por defecto
+            self._v_cnn_mode.set("load")
+            self._rb_load.configure(state=tk.NORMAL)  # type: ignore
+            self._on_cnn_model_selected()  # mostrar info del primero
+        else:
+            # Sin modelos: forzar modo entrenamiento
+            self._cnn_dropdown["values"] = []  # type: ignore
+            self._v_cnn_model_sel.set("")
+            self._v_cnn_mode.set("train")
+            self._rb_load.configure(state=tk.DISABLED)  # type: ignore
+            self._clear_model_info()
+
+        self._on_cnn_mode_change()
+
+    def _model_label(self, meta: dict) -> str:
+        """Etiqueta legible para el dropdown: arch | acc% | fecha."""
+        arch = meta.get("arch", "?")
+        acc = meta.get("final_acc", 0.0)
+        date = meta.get("created_at", "")[:10]  # solo la fecha
+        return f"{arch}  |  {acc:.2f}%  |  {date}"
+
+    def _on_cnn_mode_change(self) -> None:
+        """
+        Alterna entre las secciones Cargar / Entrenar.
+
+        Usa tkraise() en lugar de pack/pack_forget para que el frame
+        visible suba al frente sin cambiar la posición en el layout.
+        Ambos frames ocupan el mismo espacio en el contenedor.
+        """
+        mode = self._v_cnn_mode.get()
+        if mode == "load":
+            self._frm_load.tkraise()  # type: ignore
+        else:
+            self._frm_train_cnn.tkraise()  # type: ignore
+        # Actualizar altura del contenedor al frame visible
+        self._frm_cnn_container.update_idletasks()
+
+    def _on_cnn_model_selected(self, event=None) -> None:
+        """Actualiza la tarjeta de información al seleccionar un modelo."""
+        idx = self._cnn_dropdown.current()  # type: ignore
+        if idx < 0 or idx >= len(self._saved_models):
+            self._clear_model_info()
+            return
+        meta = self._saved_models[idx]
+        arch = meta.get("arch", "?")
+        acc = meta.get("final_acc", 0.0)
+        loss = meta.get("final_loss", 0.0)
+        ep = meta.get("epochs", "?")
+        secs = meta.get("elapsed_s", 0.0)
+        date = meta.get("created_at", "—")
+
+        mins, rem = divmod(secs, 60)
+        time_str = f"{int(mins)}m {rem:.0f}s" if mins else f"{secs:.1f}s"
+
+        self._lbl_info_arch.configure(text=f"Arquitectura   : {arch}")  # type: ignore
+        self._lbl_info_acc.configure(text=f"Precisión       : {acc:.2f}%")  # type: ignore
+        self._lbl_info_loss.configure(text=f"Pérdida        : {loss:.4f}")  # type: ignore
+        self._lbl_info_epochs.configure(text=f"Épocas       : {ep}")  # type: ignore
+        self._lbl_info_time.configure(text=f"Tiempo         : {time_str}")  # type: ignore
+        self._lbl_info_date.configure(text=f"Creado en      : {date}")  # type: ignore
+
+    def _clear_model_info(self) -> None:
+        for lbl, text in [
+            (self._lbl_info_arch, "Arquitectura   : —"),
+            (self._lbl_info_acc, "Precisión       : —"),
+            (self._lbl_info_loss, "Pérdida        : —"),
+            (self._lbl_info_epochs, "Épocas       : —"),
+            (self._lbl_info_time, "Tiempo         : —"),
+            (self._lbl_info_date, "Creado en      : —"),
+        ]:
+            lbl.configure(text=text)  # type: ignore
+
+    def _get_cnn_for_training(self) -> "CNNExtractor | None":
+        """
+        Devuelve la CNN lista para usar según el modo seleccionado.
+
+        Modo 'load': carga el modelo seleccionado en el dropdown.
+        Modo 'train': devuelve None (la CNN se construirá en _train_thread).
+        """
+        from Model.cnn_extractor import CNNExtractor
+
+        if self._v_cnn_mode.get() == "load":
+            idx = self._cnn_dropdown.current()  # type: ignore
+            if idx < 0 or idx >= len(self._saved_models):
+                return None
+            meta = self._saved_models[idx]
+            arch = meta["arch"]
+            cnn = CNNExtractor(
+                arch=arch,
+                pretrained=(arch == "resnet18"),
+                device="cpu",
+                seed=42,
+            )
+            cnn.load_from_path(meta["weights_path"])
+            return cnn
+        return None  # modo 'train': se construye en el hilo de fondo
+
     def _cmd_listen(self) -> None:
         try:
             host = self._v_host.get().strip()
@@ -938,59 +1193,102 @@ class DistributedPSApp:
                 _, Y_test = load_cifar10_test(verbose=False)
                 _gui_log(f"[PS] {len(Y_test)} etiquetas de prueba cargadas.")
 
-                _gui_log("[PS] Cargando datos CIFAR-10...")
+                _gui_log("[PS] Cargando datos de prueba CIFAR-10...")
                 X_test_raw, Y_test = load_cifar10_test(verbose=False)
-                _gui_log(f"[PS] {len(Y_test)} etiquetas de prueba cargadas.")
+                _gui_log(f"[PS] {len(Y_test)} imágenes de prueba cargadas.")
 
-                if cnn_arch == "resnet18":
+                # ── Obtener CNN según el modo seleccionado ──────────
+                cnn_mode = self._v_cnn_mode.get()
+
+                if cnn_mode == "load":
+                    # Cargar modelo seleccionado en el dropdown
+                    cnn = self._get_cnn_for_training()
+                    if cnn is None:
+                        raise ValueError("No hay modelo CNN seleccionado.")
                     _gui_log(
-                        "[PS] Descargando pesos ImageNet (~44 MB, solo la 1ª vez)..."
+                        f"[PS] Modelo cargado: {cnn.arch} (hash={cnn._weights_hash()})"
                     )
-                elif cnn_arch == "simple":
-                    _gui_log(
-                        "[PS] Preentrenando CNN simple (esto solo ocurre la 1ª vez)..."
-                    )
+                    self._cnn = cnn
 
-                # Construir CNN aquí (no en el hilo principal) para que
-                # la descarga de ImageNet no congele la GUI.
-                if (
-                    self._cnn is None
-                    or self._cnn.arch != cnn_arch
-                    or self._cnn.seed != cnn_seed
-                ):
-                    self._cnn = CNNExtractor(
-                        arch=cnn_arch,
-                        pretrained=cnn_pretrained,
-                        device="cpu",
-                        seed=cnn_seed,
-                    )
-                cnn = self._cnn
+                else:  # modo "train"
+                    arch_new = self._v_cnn_arch.get()
+                    cnn_pretrained_new = arch_new == "resnet18"
+                    cnn_epochs_new = int(self._v_cnn_epochs.get())
+                    try:
+                        cnn_lr_new = float(self._v_cnn_lr.get())
+                    except ValueError:
+                        cnn_lr_new = 0.001
 
-                # Para simple: preentrenar con X_test (lo único que tiene el PS).
-                # Para resnet18: los pesos ImageNet ya se cargaron al construir.
-                # En ambos casos NO extraemos features aquí — eso lo hace el Worker.
-                if cnn_arch == "simple":
+                    if arch_new == "resnet18":
+                        _gui_log("[PS] Descargando pesos ImageNet (~44 MB, 1ª vez)...")
+                    else:
+                        _gui_log(
+                            f"[PS] Preentrenando CNN simple "
+                            f"({cnn_epochs_new} épocas)..."
+                        )
 
-                    def _on_pretrain_epoch(
-                        epoch: int, total: int, loss: float, acc: float
-                    ) -> None:
-                        if epoch == 0:
-                            _gui_log(f"[CNN] Preentrenando  0/{total} — iniciando...")
-                        else:
-                            bar = "█" * int(acc / 5)
+                    if (
+                        self._cnn is None
+                        or self._cnn.arch != arch_new
+                        or self._cnn.seed != cnn_seed
+                    ):
+                        self._cnn = CNNExtractor(
+                            arch=arch_new,
+                            pretrained=cnn_pretrained_new,
+                            device="cpu",
+                            seed=cnn_seed,
+                        )
+                    cnn = self._cnn
+
+                    if arch_new == "simple":
+                        # Detectar si el modelo resultante ya existe
+                        def _on_pretrain_epoch_check(
+                            epoch: int, total: int, loss: float, acc: float
+                        ) -> None:
+                            if epoch == 0:
+                                _gui_log(
+                                    f"[CNN] Preentrenando  0/{total} — Iniciando..."
+                                )
+                            else:
+                                bar = "█" * int(acc / 5)
+                                _gui_log(
+                                    f"[CNN] Preentrenando {epoch:2d}/{total} — "
+                                    f"loss={loss:.4f}  acc={acc:.1f}%  {bar}"
+                                )
+
+                        cnn.prepare(
+                            X_test_raw,
+                            Y_test,
+                            split="test",
+                            pretrain_epochs=cnn_epochs_new,
+                            pretrain_lr=cnn_lr_new,
+                            verbose=False,
+                            on_epoch=_on_pretrain_epoch_check,
+                        )
+                        # Verificar duplicados: si ya existe un modelo con
+                        # el mismo hash, no guardar y avisar al usuario.
+                        new_hash = cnn._weights_hash()
+                        existing = CNNExtractor.list_saved_models()
+                        duplicate = next(
+                            (
+                                m
+                                for m in existing
+                                if m.get("weights_hash") == new_hash
+                                and m.get("metadata_path") != cnn._metadata_path()
+                            ),
+                            None,
+                        )
+                        if duplicate:
                             _gui_log(
-                                f"[CNN] Preentrenando {epoch:2d}/{total} — "
-                                f"loss={loss:.4f}  acc={acc:.1f}%  {bar}"
+                                "⚠ El modelo entrenado es idéntico a uno "
+                                f"ya guardado ({duplicate['created_at'][:10]}). "
+                                "No se guardará una copia adicional."
                             )
 
-                    cnn.prepare(
-                        X_test_raw,
-                        Y_test,
-                        split="test",
-                        pretrain_epochs=10,
-                        verbose=False,
-                        on_epoch=_on_pretrain_epoch,
-                    )
+                    # Al terminar, actualizar la lista de modelos y
+                    # activar el modo carga si es el primero que se guardó.
+                    q.put(("refresh_cnn_models", None))
+
                 _gui_log(
                     f"[PS] CNN lista (hash={cnn._weights_hash()}). Distribuyendo a Workers..."
                 )
@@ -1003,7 +1301,6 @@ class DistributedPSApp:
                     X_test=None,  # features vienen del Worker via TEST_FEATURES
                     Y_test=Y_test,
                     momentum=momentum,
-                    seed=seed,  # controla epoch_seeds → reproducibilidad completa
                 )
                 q.put(("training_done", history))
             except Exception as exc:
@@ -1069,6 +1366,8 @@ class DistributedPSApp:
                     self._on_training_done(payload)
                 elif msg_type == "log":
                     self._log(payload)
+                elif msg_type == "refresh_cnn_models":
+                    self._refresh_saved_models()
                 elif msg_type == "error":
                     self._on_error(payload)
 
