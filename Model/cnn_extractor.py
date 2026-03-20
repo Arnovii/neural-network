@@ -678,7 +678,6 @@ class CNNExtractor:
             if on_epoch is not None:
                 on_epoch(epoch, epochs, epoch_loss, epoch_acc)
 
-        _elapsed = time.perf_counter() - _t_pretrain_start
         # Congela la CNN para desactivar el aprendizaje
         for param in self._model.parameters():
             param.requires_grad_(False)

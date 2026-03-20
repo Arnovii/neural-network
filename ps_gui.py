@@ -431,12 +431,14 @@ class DistributedPSApp:
         # Usamos raise_/tkraise para alternar sin mover el widget
         # en el gestor de layout → el panel no se desplaza.
         self._frm_cnn_container = ttk.Frame(frame)
-        self._frm_cnn_container.pack(fill=tk.X)
+        self._frm_cnn_container.rowconfigure(0, weight=1)
+        self._frm_cnn_container.columnconfigure(0, weight=1)
+        self._frm_cnn_container.pack(fill=tk.BOTH, expand=True)
         self._frm_cnn_container.columnconfigure(0, weight=1)
 
         # ── Sección CARGAR ────────────────────────────────────────
         self._frm_load = ttk.Frame(self._frm_cnn_container)
-        self._frm_load.grid(row=0, column=0, sticky='ew')
+        self._frm_load.grid(row=0, column=0, sticky='nsew')
 
         ttk.Label(
             self._frm_load, text="Modelo guardado:", font=("Helvetica", 9, "bold")
@@ -458,11 +460,11 @@ class DistributedPSApp:
         self._frm_model_info.pack(fill=tk.X, pady=(0, 4))
 
         self._lbl_info_arch = ttk.Label(self._frm_model_info, text="Arquitectura   : —")
-        self._lbl_info_acc = ttk.Label(self._frm_model_info, text="Precisión       : —")
-        self._lbl_info_loss = ttk.Label(self._frm_model_info, text="Pérdida        : —")
-        self._lbl_info_epochs = ttk.Label(self._frm_model_info, text="Épocas       : —")
-        self._lbl_info_time = ttk.Label(self._frm_model_info, text="Tiempo         : —")
-        self._lbl_info_date = ttk.Label(self._frm_model_info, text="Creado en      : —")
+        self._lbl_info_acc = ttk.Label(self._frm_model_info, text="Precisión         : —")
+        self._lbl_info_loss = ttk.Label(self._frm_model_info, text="Pérdida            : —")
+        self._lbl_info_epochs = ttk.Label(self._frm_model_info, text="Épocas             : —")
+        self._lbl_info_time = ttk.Label(self._frm_model_info, text="Tiempo            : —")
+        self._lbl_info_date = ttk.Label(self._frm_model_info, text="Creado en       : —")
         for lbl in (
             self._lbl_info_arch,
             self._lbl_info_acc,
@@ -475,7 +477,7 @@ class DistributedPSApp:
 
         # ── Sección ENTRENAR ──────────────────────────────────────
         self._frm_train_cnn = ttk.Frame(self._frm_cnn_container)
-        self._frm_train_cnn.grid(row=0, column=0, sticky='ew')
+        self._frm_train_cnn.grid(row=0, column=0, sticky='nsew')
 
         ttk.Label(
             self._frm_train_cnn, text="Arquitectura:", font=("Helvetica", 9, "bold")
@@ -986,20 +988,20 @@ class DistributedPSApp:
         time_str = f"{int(mins)}m {rem:.0f}s" if mins else f"{secs:.1f}s"
 
         self._lbl_info_arch.configure(text=f"Arquitectura   : {arch}")  # type: ignore
-        self._lbl_info_acc.configure(text=f"Precisión       : {acc:.2f}%")  # type: ignore
-        self._lbl_info_loss.configure(text=f"Pérdida        : {loss:.4f}")  # type: ignore
-        self._lbl_info_epochs.configure(text=f"Épocas       : {ep}")  # type: ignore
-        self._lbl_info_time.configure(text=f"Tiempo         : {time_str}")  # type: ignore
-        self._lbl_info_date.configure(text=f"Creado en      : {date}")  # type: ignore
+        self._lbl_info_acc.configure(text=f"Precisión         : {acc:.2f}%")  # type: ignore
+        self._lbl_info_loss.configure(text=f"Pérdida            : {loss:.4f}")  # type: ignore
+        self._lbl_info_epochs.configure(text=f"Épocas             : {ep}")  # type: ignore
+        self._lbl_info_time.configure(text=f"Tiempo            : {time_str}")  # type: ignore
+        self._lbl_info_date.configure(text=f"Creado en       : {date}")  # type: ignore
 
     def _clear_model_info(self) -> None:
         for lbl, text in [
             (self._lbl_info_arch, "Arquitectura   : —"),
-            (self._lbl_info_acc, "Precisión       : —"),
-            (self._lbl_info_loss, "Pérdida        : —"),
-            (self._lbl_info_epochs, "Épocas       : —"),
-            (self._lbl_info_time, "Tiempo         : —"),
-            (self._lbl_info_date, "Creado en      : —"),
+            (self._lbl_info_acc, "Precisión         : —"),
+            (self._lbl_info_loss, "Pérdida            : —"),
+            (self._lbl_info_epochs, "Épocas             : —"),
+            (self._lbl_info_time, "Tiempo            : —"),
+            (self._lbl_info_date, "Creado en       : —"),
         ]:
             lbl.configure(text=text)  # type: ignore
 
@@ -1227,17 +1229,13 @@ class DistributedPSApp:
                             f"({cnn_epochs_new} épocas)..."
                         )
 
-                    if (
-                        self._cnn is None
-                        or self._cnn.arch != arch_new
-                        or self._cnn.seed != cnn_seed
-                    ):
-                        self._cnn = CNNExtractor(
-                            arch=arch_new,
-                            pretrained=cnn_pretrained_new,
-                            device="cpu",
-                            seed=cnn_seed,
-                        )
+                    # Siempre crear CNN nueva con pesos aleatorios frescos.
+                    self._cnn = CNNExtractor(
+                        arch=arch_new,
+                        pretrained=cnn_pretrained_new,
+                        device="cpu",
+                        seed=cnn_seed,
+                    )
                     cnn = self._cnn
 
                     if arch_new == "simple":
@@ -1256,12 +1254,15 @@ class DistributedPSApp:
                                     f"loss={loss:.4f}  acc={acc:.1f}%  {bar}"
                                 )
 
-                        cnn.prepare(
+                        # pretrain() entrena desde cero sin caché.
+                        # Usa X_test_raw porque es lo único que tiene el PS.
+                        # Los features de evaluación vendrán del Worker con
+                        # la CNN ya distribuida, no de estos datos directamente.
+                        cnn.pretrain(
                             X_test_raw,
                             Y_test,
-                            split="test",
-                            pretrain_epochs=cnn_epochs_new,
-                            pretrain_lr=cnn_lr_new,
+                            epochs=cnn_epochs_new,
+                            lr=cnn_lr_new,
                             verbose=False,
                             on_epoch=_on_pretrain_epoch_check,
                         )
