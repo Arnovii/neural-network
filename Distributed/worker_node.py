@@ -208,9 +208,12 @@ class WorkerNode:
                 self._log("STOP recibido. Finalizando.")
                 break
 
-            if msg["type"] == MsgType.TRAIN_SAMPLE:
-                # El PS pide una muestra de imágenes de train para
-                # preentrenar su CNN sin usar datos de prueba.
+            if msg["type"] == MsgType.REQUEST_TEST_FEATURES:
+                # El PS pide los features de prueba explícitamente.
+                self._handle_request_test_features()
+
+            elif msg["type"] == MsgType.TRAIN_SAMPLE:
+                # El PS pide una muestra de imágenes de train.
                 self._handle_train_sample(msg["payload"])
 
             elif msg["type"] == MsgType.CNN_WEIGHTS:
@@ -228,6 +231,50 @@ class WorkerNode:
                 self._run_training_session(
                     p["epochs"], p["n_train"], p["n_workers"], p["worker_rank"]
                 )
+
+    def _optimal_batch_size(self, base: int = 2048) -> int:
+        """
+        Devuelve el batch size óptimo según el dispositivo.
+        CPU: batch pequeño → feedback más frecuente.
+        GPU: batch grande → maximiza la ocupación.
+        """
+        device_type = str(self._cnn.device).split(":")[0]
+        if device_type == "cpu":
+            return 256
+        elif device_type == "mps":
+            return 512
+        return base
+
+    def _handle_request_test_features(self) -> None:
+        """
+        Responde al PS con los features de prueba extraídos con la CNN actual.
+
+        El PS llama a este método (via REQUEST_TEST_FEATURES) después de la
+        barrera CNN_READY, cuando ya sabe que este Worker tiene la CNN cargada.
+        Solo un Worker recibe esta petición — el resto no hace nada.
+        """
+        if self._X_test is None or self._Y_test is None:
+            self._log("Sin datos de prueba — no puedo enviar TEST_FEATURES.")
+            return
+        self._log(
+            f"PS solicitó features de prueba. "
+            f"Extrayendo {len(self._X_test)} imgs con CNN actual..."
+        )
+        bs = self._optimal_batch_size()
+        X_test_feat = self._cnn.extract_batched(
+            self._X_test, batch_size=bs, verbose=self.verbose
+        )
+        self._log(
+            f"Enviando features de prueba al PS "
+            f"({X_test_feat.nbytes // 1024 // 1024} MB)..."
+        )
+        assert self._sock is not None
+        send_message(
+            self._sock,
+            MsgType.TEST_FEATURES,
+            {"X_test_features": X_test_feat, "Y_test": self._Y_test},
+        )
+        self._log("Features de prueba enviados al PS.")
 
     def _handle_train_sample(self, payload: dict) -> None:
         """
@@ -314,32 +361,8 @@ class WorkerNode:
         assert self._sock is not None
         send_message(self._sock, MsgType.CNN_READY, {"worker_id": self.worker_id})
 
-        # El Worker 0 también extrae y envía features de test al PS.
-        # Así el PS nunca necesita hacer forward CNN — usa la GPU del Worker.
-        # Solo el Worker 0 lo hace para evitar envíos redundantes.
-        if (
-            self.worker_id == 0
-            and self._X_test is not None
-            and self._Y_test is not None
-        ):
-            self._log(f"Extrayendo features de prueba ({len(self._X_test)} imgs)...")
-            X_test_feat = self._cnn.extract_batched(
-                self._X_test,
-                batch_size=2048,
-                verbose=self.verbose,
-            )
-            self._log(
-                f"Enviando features de prueba al PS ({X_test_feat.nbytes // 1024 // 1024} MB)..."
-            )
-            send_message(
-                self._sock,
-                MsgType.TEST_FEATURES,
-                {
-                    "X_test_features": X_test_feat,
-                    "Y_test": self._Y_test,
-                },
-            )
-            self._log("Features de prueba enviados.")
+        # Los features de prueba se envían solo cuando el PS
+        # los solicita explícitamente con REQUEST_TEST_FEATURES.
 
     def _run_training_session(
         self,

@@ -345,39 +345,36 @@ class ParameterServer:
         n_samples: int = 10000,
     ) -> "tuple[np.ndarray, np.ndarray] | None":
         """
-        Pide una muestra de imágenes de entrenamiento al Worker 0.
-
-        Permite al PS preentrenar la CNN con datos de entrenamiento
-        reales en lugar de datos de prueba, eliminando el sesgo en
-        la evaluación (la CNN ya no habrá visto el test set).
-
-        :param n_samples: Número de imágenes a solicitar.
-        :return: (X_sample, Y_sample) o None si no hay Workers.
+        Pide una muestra de imágenes de train a un Worker, con failover.
+        Intenta con cada Worker en orden. Si falla, pasa al siguiente.
         """
         with self._lock:
             worker_ids = sorted(self._worker_sockets.keys())
         if not worker_ids:
             return None
-
-        # Pedir la muestra al primer Worker disponible
-        wid = worker_ids[0]
-        with self._lock:
-            sock = self._worker_sockets.get(wid)
-        if sock is None:
-            return None
-
-        print(f"[PS] Solicitando {n_samples} imágenes de train al Worker {wid}...")
-        try:
-            send_message(sock, MsgType.TRAIN_SAMPLE, {"n_samples": n_samples})
-            msg = receive_message(sock)
-            if msg["type"] == MsgType.TRAIN_SAMPLE_DATA:
-                p = msg["payload"]
-                X = p["X_sample"]
-                Y = p["Y_sample"]
-                print(f"[PS] Muestra recibida: {X.shape} — sin sesgo en evaluación.")
-                return X, Y
-        except Exception as exc:
-            print(f"[PS] Error al solicitar muestra de train: {exc}")
+        for wid in worker_ids:
+            with self._lock:
+                sock = self._worker_sockets.get(wid)
+            if sock is None:
+                continue
+            print(f"[PS] Solicitando {n_samples} imgs de train al Worker {wid}...")
+            try:
+                send_message(sock, MsgType.TRAIN_SAMPLE, {"n_samples": n_samples})
+                msg = receive_message(sock)
+                if msg["type"] == MsgType.TRAIN_SAMPLE_DATA:
+                    p = msg["payload"]
+                    X, Y = p["X_sample"], p["Y_sample"]
+                    print(
+                        f"[PS] Muestra recibida del Worker {wid}: "
+                        f"{X.shape} — sin sesgo en evaluación."
+                    )
+                    return X, Y
+            except Exception as exc:
+                print(
+                    f"[PS] Worker {wid} falló ({exc}). Intentando con el siguiente..."
+                )
+                self._remove_worker(wid)
+        print("[PS] Todos los Workers fallaron — sin muestra de train.")
         return None
 
     def train(
@@ -462,16 +459,13 @@ class ParameterServer:
             # Buscar caché de features de test ANTES de enviar CNN_WEIGHTS.
             # Si los encuentra, indica a los Workers que no los necesita
             # → Workers no extraen ni transfieren ~20 MB innecesariamente.
-            need_test = True
+            need_test_cached = False
             if X_test is not None and Y_test is not None and X_test.ndim == 4:
                 cached = self._cnn._load_features_if_cached("test")
                 if cached is not None:
                     X_test, Y_test = cached
-                    need_test = False
-                    print(
-                        f"[PS] Features de prueba en caché: {X_test.shape} "
-                        f"— Workers no necesitan enviarlos.\n"
-                    )
+                    need_test_cached = True
+                    print(f"[PS] Features de prueba en caché: {X_test.shape}\n")
 
             # Broadcast CNN_WEIGHTS en paralelo con el flag need_test_features.
             def _send_cnn_to_worker(wid: int) -> None:
@@ -486,7 +480,7 @@ class ParameterServer:
                         {
                             "arch": arch,
                             "weights_bytes": weights_bytes,
-                            "need_test_features": need_test,
+                            # need_test_features eliminado: PS pide test features explícitamente.
                         },
                     )
                 except Exception as exc:
@@ -503,28 +497,17 @@ class ParameterServer:
                 t.join()
 
             def _wait_cnn_ready(wid: int) -> None:
+                """Espera CNN_READY. Los features de test se piden después."""
                 try:
                     msg = receive_message(self._worker_sockets[wid])
                     if msg["type"] == MsgType.CNN_READY:
                         print(f"[PS] Worker {wid}: CNN_READY ✓")
-                        self._handle_cnn_ready(wid, len(worker_ids))
-                    # Solo esperar TEST_FEATURES si el PS los necesita
-                    if need_test:
-                        try:
-                            msg2 = receive_message(self._worker_sockets[wid])
-                            if msg2["type"] == MsgType.TEST_FEATURES:
-                                with self._lock:
-                                    if self._X_test_features is None:
-                                        p = msg2["payload"]
-                                        self._X_test_features = p["X_test_features"]
-                                        self._Y_test_from_worker = p["Y_test"]
-                                        print(
-                                            f"[PS] Features de prueba recibidos del "
-                                            f"Worker {wid}: "
-                                            f"{self._X_test_features.shape}"  # type: ignore[union-attr]
-                                        )
-                        except Exception:
-                            pass  # Worker no envió TEST_FEATURES
+                    else:
+                        print(
+                            f"[PS] Worker {wid}: mensaje inesperado "
+                            f"{msg['type']} (esperaba CNN_READY)."
+                        )
+                    self._handle_cnn_ready(wid, len(worker_ids))
                 except Exception as exc:
                     print(f"[PS] Worker {wid}: error esperando CNN_READY: {exc}")
                     self._handle_cnn_ready(wid, len(worker_ids))
@@ -541,25 +524,52 @@ class ParameterServer:
                 t.join()
             print("[PS] Todos los Workers listos con la CNN distribuida.")
 
-            # Si need_test=True el PS aún no tiene features de prueba.
-            if need_test:
-                if self._X_test_features is not None:
-                    X_test = self._X_test_features
-                    Y_test = self._Y_test_from_worker
-                    print(f"[PS] Features de prueba del Worker: {X_test.shape}")
-                    if Y_test is not None:
-                        self._cnn._save_features("test", X_test, Y_test)
-                        print("[PS] Features de prueba guardados en caché local.\n")
-                elif X_test is not None and Y_test is not None:
-                    print("[PS] Extrayendo y cacheando features de prueba...")
-                    X_test, Y_test = self._cnn.prepare(
-                        X_test,
-                        Y_test,
-                        split="test",
-                        pretrain_epochs=0,
-                        verbose=True,
-                    )
-                    print(f"[PS] Features de prueba listos: {X_test.shape}\n")
+            # Pedir TEST_FEATURES si no están en caché local.
+            # Un único Worker los extrae y envía — con failover.
+            if not need_test_cached:
+                with self._lock:
+                    candidate_ids = sorted(self._worker_sockets.keys())
+                for wid in candidate_ids:
+                    with self._lock:
+                        sock = self._worker_sockets.get(wid)
+                    if sock is None:
+                        continue
+                    print(f"[PS] Solicitando features de prueba al Worker {wid}...")
+                    try:
+                        send_message(sock, MsgType.REQUEST_TEST_FEATURES, {})
+                        msg_t = receive_message(sock)
+                        if msg_t["type"] == MsgType.TEST_FEATURES:
+                            p = msg_t["payload"]
+                            X_test = p["X_test_features"]
+                            Y_test = p["Y_test"]
+                            assert X_test is not None and Y_test is not None
+                            self._cnn._save_features("test", X_test, Y_test)
+                            print(
+                                f"[PS] Features de prueba recibidos del "
+                                f"Worker {wid}: {X_test.shape}\n"
+                            )
+                            break  # éxito
+                    except Exception as exc:
+                        print(
+                            f"[PS] Worker {wid} falló ({exc}). "
+                            "Intentando con el siguiente..."
+                        )
+                        self._remove_worker(wid)
+                else:
+                    # Todos los Workers fallaron → fallback al PS local
+                    if X_test is not None and Y_test is not None:
+                        print(
+                            "[PS] Todos los Workers fallaron. "
+                            "Extrayendo features localmente..."
+                        )
+                        X_test, Y_test = self._cnn.prepare(
+                            X_test,
+                            Y_test,
+                            split="test",
+                            pretrain_epochs=0,
+                            verbose=True,
+                        )
+                        print(f"[PS] Features de prueba listos: {X_test.shape}\n")
 
         params = {tipo: datos.copy() for tipo, datos in initial_params.items()}
         velocities: Dict[str, np.ndarray] = {}  # estado de momentum entre épocas

@@ -83,6 +83,14 @@ CNN_READY
                     todos los Workers antes de enviar TRAIN_START.
     payload: {"worker_id": int}
 
+REQUEST_TEST_FEATURES
+    PS → Worker  |  El PS pide explícitamente los features de prueba
+                    a un Worker específico, tras la barrera CNN_READY.
+                    Reemplaza el envío automático de TEST_FEATURES:
+                    el PS elige a qué Worker pedirlos y hace failover
+                    si ese Worker falla, evitando transferencias redundantes.
+    payload: {}  # sin parámetros — el Worker ya tiene la CNN cargada
+
 TRAIN_SAMPLE
     PS → Worker  |  El PS pide una muestra de imágenes de entrenamiento
                     para preentrenar la CNN sin usar datos de prueba.
@@ -146,6 +154,7 @@ class MsgType(str, Enum):
     CNN_WEIGHTS = "CNN_WEIGHTS"
     CNN_READY = "CNN_READY"
     TEST_FEATURES = "TEST_FEATURES"
+    REQUEST_TEST_FEATURES = "REQUEST_TEST_FEATURES"
     TRAIN_SAMPLE = "TRAIN_SAMPLE"
     TRAIN_SAMPLE_DATA = "TRAIN_SAMPLE_DATA"
     TRAIN_START = "TRAIN_START"
