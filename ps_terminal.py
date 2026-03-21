@@ -65,7 +65,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from Distributed.parameter_server import ParameterServer
 from Model.cnn_extractor import CNNExtractor
 from Model.mlp import init_params
-from Utils.imagenet_loader import NUM_CLASSES, get_imagenet_dataloader
+from Utils.imagenet_loader import NUM_CLASSES, load_imagenet_labels
 from Utils.results_exporter import export_results
 
 
@@ -194,6 +194,16 @@ def main() -> None:
         help="Dispositivo PyTorch para la CNN: cpu, cuda, mps (default: cpu)",
     )
     parser.add_argument(
+        "--data-dir",
+        type=str,
+        default=None,
+        help=(
+            "Directorio raíz de ImageNet con train/ y val/. "
+            "Necesario para cargar etiquetas de val (Y_test). "
+            "Default: Data/ImageNet/"
+        ),
+    )
+    parser.add_argument(
         "--cnn-pretrain-samples",
         type=int,
         default=10000,
@@ -278,11 +288,19 @@ def main() -> None:
     feature_dim = cnn.feature_dim
     print(f"CNN lista — arch={args.cnn_arch}  feature_dim={feature_dim}\n")
 
-    # Y_test: solo etiquetas. Los features de prueba los extrae el Worker
-    # y los envía al PS con REQUEST_TEST_FEATURES tras la barrera CNN_READY.
-    # ImageNet test: los features los extraerá el Worker vía REQUEST_TEST_FEATURES
-    # El PS no carga las imágenes de test — son 50k × 224×224, demasiado para RAM
+    # Y_test: etiquetas del split val (50k int32).
+    # Los features los extrae el Worker vía REQUEST_TEST_FEATURES.
     Y_test = None
+    if args.data_dir is not None:
+        val_dir = os.path.join(args.data_dir, "val")
+        if os.path.isdir(val_dir):
+            print("Cargando etiquetas de ImageNet val...")
+            Y_test = load_imagenet_labels(split="val", data_dir=args.data_dir)
+            print(f"  {len(Y_test):,} etiquetas val cargadas.\n")
+        else:
+            print(
+                f"⚠ --data-dir='{args.data_dir}' no contiene val/. Sin eval de test.\n"
+            )
     server.set_cnn(cnn)
 
     initial_params = init_params(
