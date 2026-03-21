@@ -168,15 +168,16 @@ class CNNExtractor:
     :param cache_dir: Directorio de caché. None = Data/feature_cache/.
     """
 
-    ARCHITECTURES = ("simple", "resnet18")
+    ARCHITECTURES = ("resnet18",)
 
     def __init__(
         self,
-        arch: str = "simple",
-        pretrained: bool = False,
+        arch: str = "resnet18",
+        pretrained: bool = True,
         device: str = "cpu",
         seed: int | None = 42,
         cache_dir: str | None = None,
+        input_size: int = 32,
     ) -> None:
         if arch not in self.ARCHITECTURES:
             raise ValueError(
@@ -186,6 +187,7 @@ class CNNExtractor:
         self.arch = arch
         self.pretrained = pretrained
         self.seed = seed
+        self._input_size = input_size
 
         # Convierte el string en un objeto PyTorch que controla dónde correr la CNN
         self.device = torch.device(device)
@@ -203,7 +205,11 @@ class CNNExtractor:
         # imágenes de 32×32. Envolver la red con un upscale automático
         # permite aprovechar los pesos ImageNet correctamente.
         if arch == "resnet18":
-            self._model = self._make_resnet_wrapper(base).to(self.device)
+            # input_size=224: ImageNet nativo, sin upscale
+            # input_size=32:  CIFAR-10 legacy, activa upscale
+            self._model = self._make_resnet_wrapper(
+                base, input_size=self._input_size
+            ).to(self.device)
         else:
             self._model = base.to(self.device)
 
@@ -249,40 +255,24 @@ class CNNExtractor:
         model.fc = nn.Identity()  # type: ignore  — expone el vector de 512 features
         return model
 
-    def _make_resnet_wrapper(self, base: nn.Module) -> nn.Module:
+    def _make_resnet_wrapper(self, base: nn.Module, input_size: int = 224) -> nn.Module:
         """
-        Envuelve ResNet-18 con un upscale 32→224 para CIFAR-10.
-
-        ResNet-18 fue diseñado para imágenes ImageNet de 224×224.
-        Su primera capa es Conv2d(kernel=7, stride=2) seguida de
-        MaxPool(3,2), lo que reduce 224→56→28 px antes del primer bloque.
-        Con imágenes de 32×32, esa reducción produce mapas de 8×8,
-        demasiado pequeños para que los pesos ImageNet sean efectivos.
-
-        Redimensionar a 224×224 antes del forward permite que la red
-        procese las imágenes en la escala para la que fue entrenada,
-        obteniendo features de mayor calidad y pasando de ~60% a ~75-80%.
-
-        :param base: Modelo ResNet-18 base.
-        :type base: nn.Module.
-
-        :return: ResNet-18 envuelto con interpolación automática.
-        :rtype: nn.Module (_ResNetWrapper).
+        Envuelve ResNet-18 con upscale solo si las imágenes son más pequeñas
+        que 224×224. Para ImageNet (224×224 nativo) devuelve el modelo sin
+        modificar — el upscale sería un no-op costoso.
         """
+        if input_size >= 224:
+            return base  # ImageNet: imágenes ya son 224×224, sin upscale
 
+        # CIFAR-10 legacy: imágenes 32×32, necesita upscale
         class _ResNetWrapper(nn.Module):
             def __init__(self, model: nn.Module) -> None:
                 super().__init__()
                 self.model = model
 
             def forward(self, x: torch.Tensor) -> torch.Tensor:
-                # Upscale de 32×32 a 224×224 con interpolación bilineal.
-                # antialias=True evita artefactos de aliasing al ampliar.
                 x = torch.nn.functional.interpolate(
-                    x,
-                    size=(224, 224),
-                    mode="bilinear",
-                    align_corners=False,
+                    x, size=(224, 224), mode="bilinear", align_corners=False
                 )
                 return self.model(x)
 
@@ -834,6 +824,77 @@ class CNNExtractor:
     @property
     def feature_dim(self) -> int:
         return FEATURE_DIM
+
+    # ── Sistema de shards ──────────────────────────────────────────
+
+    def shard_path(self, shard_idx: int, split: str) -> "tuple[str, str]":
+        """
+        Rutas (X.npy, Y.npy) de un shard de features en caché.
+
+        Un shard contiene SHARD_SIZE features extraídos de imágenes
+        consecutivas. El nombre incluye el hash de los pesos CNN para
+        que distintos modelos no compartan caché.
+
+        :param shard_idx: Índice del shard (0, 1, 2, ...).
+        :param split: "train" o "val".
+        :return: (ruta_X, ruta_Y).
+        """
+        wh = self._weights_hash()
+        key = f"{self.arch}_{wh}_{split}_shard{shard_idx:04d}"
+        return (
+            os.path.join(self._cache_dir, f"{key}_X.npy"),
+            os.path.join(self._cache_dir, f"{key}_Y.npy"),
+        )
+
+    def shard_exists(self, shard_idx: int, split: str) -> bool:
+        """True si el shard ya está en caché."""
+        px, py = self.shard_path(shard_idx, split)
+        return os.path.exists(px) and os.path.exists(py)
+
+    def save_shard(
+        self,
+        shard_idx: int,
+        split: str,
+        X_feat: np.ndarray,
+        Y: np.ndarray,
+    ) -> None:
+        """
+        Guarda un shard de features en disco.
+
+        :param shard_idx: Índice del shard.
+        :param split: "train" o "val".
+        :param X_feat: Features, shape (N, feature_dim) float32.
+        :param Y: Etiquetas, shape (N,) int32.
+        """
+        os.makedirs(self._cache_dir, exist_ok=True)
+        px, py = self.shard_path(shard_idx, split)
+        np.save(px, X_feat)
+        np.save(py, Y)
+
+    def load_shard(
+        self, shard_idx: int, split: str
+    ) -> "tuple[np.ndarray, np.ndarray] | None":
+        """
+        Carga un shard de features desde disco.
+
+        :return: (X_feat, Y) o None si no existe.
+        """
+        if not self.shard_exists(shard_idx, split):
+            return None
+        px, py = self.shard_path(shard_idx, split)
+        return np.load(px), np.load(py)
+
+    def count_cached_shards(self, split: str) -> int:
+        """
+        Cuenta cuántos shards consecutivos están en caché.
+
+        Sirve para reanudar la extracción desde donde se dejó
+        si el proceso se interrumpió.
+        """
+        i = 0
+        while self.shard_exists(i, split):
+            i += 1
+        return i
 
     def extract(self, X: np.ndarray) -> np.ndarray:
         """

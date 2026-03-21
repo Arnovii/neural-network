@@ -1,138 +1,84 @@
 """
 Distributed/worker_node.py
 
-Implementación del Worker para el Algoritmo de Diego distribuido
-con pipeline CNN (extractor) + MLP (clasificador).
+Worker Node para el Algoritmo de Diego distribuido — ImageNet.
 
-──────────────────────────────────────────────────────────────────
-ROL DEL WORKER EN LA PIPELINE CNN + MLP
-──────────────────────────────────────────────────────────────────
-Cada Worker es un proceso persistente que:
-
-    1. Se conecta al Parameter Server enviando READY (sin ID propio).
-    2. Recibe su ID asignado por el PS (mensaje WORKER_ID).
-    3. Entra en un bucle de espera permanente:
-         a. Espera TRAIN_START → comienza una sesión de entrenamiento.
-         b. Por cada época: recibe PARAMS, calcula gradientes, envía
-            GRADIENTS al PS.
-         c. Al terminar todas las épocas, vuelve a esperar TRAIN_START.
-    4. Al recibir STOP, cierra la conexión limpiamente.
-
-El Worker nunca se desconecta entre sesiones de entrenamiento.
-Permanece activo hasta que el PS envíe STOP o el proceso se
-interrumpa manualmente.
-
-El Worker ejecuta dos etapas en cada época:
-
-    1. EXTRACCIÓN (CNN — PyTorch, pesos fijos):
-       X_batch (N, 3, 32, 32) ──► CNN ──► features (N, feature_dim)
-       La CNN no se entrena: sus pesos son idénticos en todos los
-       Workers y no cambian durante el entrenamiento.
-
-    2. FORWARD + BACKWARD (MLP — NumPy):
-       features (N, feature_dim) ──► MLP ──► gradientes
-       Solo los gradientes del MLP viajan por la red al PS.
-
-Esta separación mantiene el Algoritmo de Diego intacto.
-
-──────────────────────────────────────────────────────────────────
-EXTRACCIÓN PREPROCESADA UNA SOLA VEZ
-──────────────────────────────────────────────────────────────────
-Al arrancar, el Worker extrae los features de las 50 000 imágenes
-una sola vez y los almacena en self._X_features (50000, feature_dim).
-En cada época solo se indexan las filas correspondientes al chunk.
-Esto es correcto porque la CNN es fija: los features no cambian.
-
-Coste único: ~50 000 forward passes CNN al arrancar (~segundos).
-Coste por época: indexación + MLP forward/backward (puro NumPy).
+Cambios respecto a CIFAR-10:
+  · Las imágenes NO se cargan en RAM. Se leen del disco por shards
+    (SHARD_SIZE imágenes) usando DataLoader de PyTorch.
+  · _handle_cnn_weights extrae features por shards y los cachea en
+    disco. Reanuda desde el último shard completo si se interrumpe.
+  · FeatureScaler (StandardScaler) calculado sobre shard 0 y aplicado
+    en cada época antes del forward del MLP.
+  · _run_training_session carga solo los shards necesarios por época
+    (_load_features_for_indices), liberando RAM inmediatamente.
+  · TEST_FEATURES enviados solo bajo petición explícita del PS
+    (REQUEST_TEST_FEATURES), no automáticamente.
+  · _handle_train_sample conservado como fallback del PS.
+  · arch=simple eliminado: solo resnet18 para ImageNet.
 """
 
 import socket
-import time
+import threading
 from typing import Any, Dict, List, Optional
 
 import numpy as np
+import torch
 
 from Distributed.protocol import MsgType, receive_message, send_message
-from Model.cnn_extractor import CNNExtractor
-from Model.mlp import forward_and_gradients
+from Model.cnn_extractor import CNNExtractor, FEATURE_DIM
+from Utils.imagenet_loader import (
+    NUM_CLASSES,
+    SHARD_SIZE,
+    get_imagenet_dataloader,
+    load_imagenet_labels,
+)
+from Utils.feature_scaler import FeatureScaler
 
 
 class WorkerNode:
     """
-    Nodo Worker persistente para entrenamiento distribuido con CNN + MLP.
-
-    :param server_host: IP del Parameter Server.
-    :param server_port: Puerto TCP del Parameter Server.
-    :param X_train: Imágenes (N, 3, 32, 32) float32 NCHW normalizadas.
-    :param Y_train: Etiquetas (N,) int32.
-    :param cnn_device: Dispositivo PyTorch: "cpu", "cuda", "mps".
-    :param cnn_seed: Semilla para inicialización CNN (no crítica — el PS sobreescribirá los pesos).
-    :param hidden1: Neuronas capa oculta 1 del MLP.
-    :param hidden2: Neuronas capa oculta 2 del MLP.
-    :param cnn_batch_size: Batch size para extracción inicial de features.
-    :param verbose: Imprime progreso por época.
+    Worker Node persistente para ImageNet con extracción de features por shards.
     """
 
     def __init__(
         self,
-        server_host: str,
-        server_port: int,
-        X_train: "np.ndarray",
-        Y_train: "np.ndarray",
-        X_test: "np.ndarray | None" = None,
-        Y_test: "np.ndarray | None" = None,
-        cnn_device: str = "cpu",
-        cnn_seed: int | None = 42,
-        hidden1: int = 256,
-        hidden2: int = 128,
-        cnn_batch_size: int = 2048,
+        data_dir: str,
+        server_host: str = "127.0.0.1",
+        server_port: int = 9999,
+        device: str = "cpu",
         verbose: bool = True,
+        cache_dir: Optional[str] = None,
     ) -> None:
-        self.server_host = server_host
-        self.server_port = server_port
-        self.Y_train = Y_train
-        self.hidden1 = hidden1
-        self.hidden2 = hidden2
+        self._data_dir = data_dir
+        self._server_host = server_host
+        self._server_port = server_port
         self.verbose = verbose
-        self.worker_id: Optional[int] = None
-        self._sock: Optional[socket.socket] = None
-        # ── Extractor CNN — placeholder hasta recibir CNN_WEIGHTS del PS ────
-        # El Worker arranca con una CNN mínima (simple) solo para tener
-        # la estructura en memoria. Al recibir CNN_WEIGHTS del PS,
-        # _handle_cnn_weights() la reconstruirá con la arquitectura
-        # y pesos correctos. El usuario no necesita especificar arch.
-        self._log(
-            "Inicializando extractor CNN (pesos temporales, el PS los sobreescribirá)..."
-        )
+
+        # Cargar SOLO etiquetas en RAM (sin imágenes)
+        self._Y_raw = load_imagenet_labels(split="train", data_dir=data_dir)
+        self.Y_train = self._Y_raw
+        self._n_train = len(self._Y_raw)
+
         self._cnn = CNNExtractor(
-            arch="simple",  # placeholder — se reconstruye en _handle_cnn_weights
-            device=cnn_device,
-            seed=cnn_seed,
+            arch="resnet18",
+            pretrained=True,
+            device=device,
+            seed=None,
+            cache_dir=cache_dir,
+            input_size=224,  # ImageNet nativo — sin upscale
         )
 
-        # Guardar los datos raw para poder re-extraer features cuando
-        # el PS envíe una nueva CNN (mensaje CNN_WEIGHTS).
-        self._X_raw: np.ndarray = X_train
-        self._Y_raw: np.ndarray = Y_train
-        self._X_test: "np.ndarray | None" = X_test
-        self._Y_test: "np.ndarray | None" = Y_test
-
-        # No extraemos features aquí — el PS enviará CNN_WEIGHTS con sus
-        # pesos antes de TRAIN_START, y _handle_cnn_weights() hará la
-        # extracción completa con la CNN correcta (con caché).
-        self._X_features: np.ndarray = np.empty((0,), dtype=np.float32)
-
-        # ── Índices por clase precalculados ───────────────────────
-        # np.where se ejecuta una sola vez por clase al arrancar.
-        # _reconstruct_indices los reutiliza cada época sin recalcularlos.
+        self.worker_id: int = -1
+        self._sock: Optional[socket.socket] = None
+        self._scaler: Optional[FeatureScaler] = None
         self._class_indices: List[np.ndarray] = [
-            np.where(Y_train == digit)[0] for digit in range(10)
+            np.where(self._Y_raw == c)[0] for c in range(NUM_CLASSES)
         ]
 
-    # ================================================================
-    # PUNTO DE ENTRADA
-    # ================================================================
+        self._log(
+            f"WorkerNode inicializado. Dataset: {self._n_train} imgs, device={device}"
+        )
 
     def run(self) -> None:
         """
@@ -143,10 +89,9 @@ class WorkerNode:
         """
         self._connect()
         self._log(
-            f"Conectado a {self.server_host}:{self.server_port}  "
+            f"Conectado a {self._server_host}:{self._server_port}  "
             f"| ID={self.worker_id}  "
-            f"| features={self._X_features.shape}  "
-            f"| MLP hidden=({self.hidden1},{self.hidden2})"
+            f"| dataset={self._n_train} imgs"
         )
         self._log("Esperando sesión de entrenamiento del Parameter Server...")
         self._main_loop()
@@ -166,7 +111,7 @@ class WorkerNode:
         # AF_INET = IPv4.
         # SOCK_STREAM = TCP
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self._sock.connect((self.server_host, self.server_port))
+        self._sock.connect((self._server_host, self._server_port))
 
         # Handshake: el Worker no declara ID; el PS lo asigna
         send_message(self._sock, MsgType.READY, {})
@@ -192,15 +137,10 @@ class WorkerNode:
 
     def _main_loop(self) -> None:
         """
-        Bucle persistente que alterna entre:
-            - Esperar TRAIN_START (nueva sesión de entrenamiento)
-            - Procesar épocas de esa sesión (PARAMS → GRADIENTS)
-            - Volver a esperar
-
-        Sale cuando recibe STOP.
+        Bucle principal: espera mensajes del PS y los despacha.
+        Soporta múltiples sesiones de entrenamiento sin reconexión.
         """
         assert self._sock is not None
-
         while True:
             msg = receive_message(self._sock)
 
@@ -208,18 +148,15 @@ class WorkerNode:
                 self._log("STOP recibido. Finalizando.")
                 break
 
-            if msg["type"] == MsgType.REQUEST_TEST_FEATURES:
-                # El PS pide los features de prueba explícitamente.
+            elif msg["type"] == MsgType.REQUEST_TEST_FEATURES:
+                # PS pide features de prueba explícitamente (un solo Worker)
                 self._handle_request_test_features()
 
             elif msg["type"] == MsgType.TRAIN_SAMPLE:
-                # El PS pide una muestra de imágenes de train.
+                # Fallback: PS pide muestra de train para pretrain externo
                 self._handle_train_sample(msg["payload"])
 
             elif msg["type"] == MsgType.CNN_WEIGHTS:
-                # El PS envía sus pesos CNN antes de TRAIN_START.
-                # El Worker los carga, extrae sus features de train
-                # con esa CNN, y confirma con CNN_READY.
                 self._handle_cnn_weights(msg["payload"])
 
             elif msg["type"] == MsgType.TRAIN_START:
@@ -232,71 +169,68 @@ class WorkerNode:
                     p["epochs"], p["n_train"], p["n_workers"], p["worker_rank"]
                 )
 
-    def _optimal_batch_size(self, base: int = 2048) -> int:
-        """
-        Devuelve el batch size óptimo según el dispositivo.
-        CPU: batch pequeño → feedback más frecuente.
-        GPU: batch grande → maximiza la ocupación.
-        """
-        device_type = str(self._cnn.device).split(":")[0]
-        if device_type == "cpu":
-            return 256
-        elif device_type == "mps":
-            return 512
-        return base
-
     def _handle_request_test_features(self) -> None:
         """
-        Responde al PS con los features de prueba extraídos con la CNN actual.
+        Extrae y envía features de prueba al PS bajo petición explícita.
 
-        El PS llama a este método (via REQUEST_TEST_FEATURES) después de la
-        barrera CNN_READY, cuando ya sabe que este Worker tiene la CNN cargada.
-        Solo un Worker recibe esta petición — el resto no hace nada.
+        Solo un Worker recibe esta petición (el PS usa failover).
+        La CNN ya está cargada desde _handle_cnn_weights.
         """
-        if self._X_test is None or self._Y_test is None:
-            self._log("Sin datos de prueba — no puedo enviar TEST_FEATURES.")
-            return
-        self._log(
-            f"PS solicitó features de prueba. "
-            f"Extrayendo {len(self._X_test)} imgs con CNN actual..."
+        self._log("PS solicitó features de prueba. Cargando val split...")
+        loader = get_imagenet_dataloader(
+            split="val",
+            data_dir=self._data_dir,
+            batch_size=self._optimal_batch_size(),
+            num_workers=4,
         )
-        bs = self._optimal_batch_size()
-        X_test_feat = self._cnn.extract_batched(
-            self._X_test, batch_size=bs, verbose=self.verbose
-        )
+        feats_list, labels_list = [], []
+        self._cnn._model.eval()
+        with torch.inference_mode():
+            for imgs, labels in loader:
+                imgs = imgs.to(self._cnn.device)
+                feats_list.append(self._cnn._model(imgs).cpu().numpy())
+                labels_list.append(labels.numpy().astype(np.int32))
+
+        X_feat = np.concatenate(feats_list, axis=0)
+        Y_feat = np.concatenate(labels_list, axis=0)
         self._log(
-            f"Enviando features de prueba al PS "
-            f"({X_test_feat.nbytes // 1024 // 1024} MB)..."
+            f"Features de prueba extraídos: {X_feat.shape} "
+            f"({X_feat.nbytes // 1024 // 1024} MB). Enviando al PS..."
         )
         assert self._sock is not None
         send_message(
             self._sock,
             MsgType.TEST_FEATURES,
-            {"X_test_features": X_test_feat, "Y_test": self._Y_test},
+            {"X_test_features": X_feat, "Y_test": Y_feat},
         )
-        self._log("Features de prueba enviados al PS.")
+        self._log("Features de prueba enviados.")
 
     def _handle_train_sample(self, payload: dict) -> None:
         """
         Responde al PS con una muestra aleatoria de imágenes de train.
-
-        El PS usa esta muestra para preentrenar la CNN sin necesidad
-        de usar los datos de prueba, eliminando el sesgo de evaluación.
-        Solo se envían imágenes raw (no features) para que el PS
-        pueda preentrenar con distintas CNNs sin re-solicitar datos.
+        Fallback para pretrain externo. Envía imágenes RAW (no features).
         """
-        n_samples = payload.get("n_samples", 10000)
-        n_samples = min(n_samples, len(self._X_raw))
-
+        n_samples = min(payload.get("n_samples", 5000), self._n_train)
         rng = np.random.RandomState(42)
-        indices = rng.choice(len(self._X_raw), size=n_samples, replace=False)
-        X_sample = self._X_raw[indices]
-        Y_sample = self._Y_raw[indices]
+        indices = rng.choice(self._n_train, size=n_samples, replace=False)
 
+        loader = get_imagenet_dataloader(
+            split="train",
+            data_dir=self._data_dir,
+            batch_size=self._optimal_batch_size(),
+            num_workers=4,
+            indices=indices,
+        )
+        imgs_list, labels_list = [], []
+        for imgs, labels in loader:
+            imgs_list.append(imgs.numpy())
+            labels_list.append(labels.numpy().astype(np.int32))
+
+        X_sample = np.concatenate(imgs_list, axis=0)
+        Y_sample = np.concatenate(labels_list, axis=0)
         self._log(
             f"Enviando muestra de train al PS "
-            f"({n_samples} imgs, "
-            f"{X_sample.nbytes // 1024 // 1024} MB)..."
+            f"({n_samples} imgs, {X_sample.nbytes // 1024 // 1024} MB)..."
         )
         assert self._sock is not None
         send_message(
@@ -304,65 +238,97 @@ class WorkerNode:
             MsgType.TRAIN_SAMPLE_DATA,
             {"X_sample": X_sample, "Y_sample": Y_sample},
         )
-        self._log("Muestra de train enviada al PS.")
+        self._log("Muestra de train enviada.")
 
     def _handle_cnn_weights(self, payload: dict) -> None:
         """
-        Procesa CNN_WEIGHTS del PS: reconstruye la CNN si el arch cambió,
-        carga los pesos, regenera features y confirma con CNN_READY.
+        Carga pesos CNN del PS y extrae features de ImageNet por shards.
 
-        El Worker puede haber arrancado con arch=simple y recibir pesos
-        de resnet18 (o viceversa) si el usuario cambió la arquitectura en
-        el PS entre sesiones. En ese caso se reconstruye el modelo antes
-        de cargar los pesos para evitar un RuntimeError de state_dict.
+        Flujo:
+          1. Cargar pesos recibidos (reconstruir CNN si arch cambió)
+          2. Contar shards ya en caché para este hash de pesos
+          3. Extraer shards faltantes uno a uno, liberando RAM entre ellos
+          4. Calcular/cargar FeatureScaler sobre shard 0
+          5. Reconstruir índices por clase
+          6. Enviar CNN_READY al PS
         """
         arch = payload["arch"]
         weights_bytes = payload["weights_bytes"]
+        self._log(f"CNN_WEIGHTS recibido (arch={arch}). Cargando pesos...")
 
-        self._log(f"CNN_WEIGHTS recibido del PS (arch={arch}). Cargando pesos...")
-
-        # Reconstruir el extractor si la arquitectura es diferente a la actual.
-        # Es necesario porque load_state_dict falla si los pesos no coinciden
-        # con la arquitectura del modelo — por ejemplo, ResNet-18 sobre _SimpleCNN.
         if self._cnn.arch != arch:
-            self._log(
-                f"Arquitectura cambió ({self._cnn.arch} → {arch}). "
-                f"Reconstruyendo extractor CNN..."
-            )
+            self._log(f"Arquitectura cambió → reconstruyendo CNN...")
             self._cnn = CNNExtractor(
                 arch=arch,
                 device=str(self._cnn.device),
                 seed=self._cnn.seed,
                 cache_dir=self._cnn._cache_dir,
+                input_size=224,
             )
 
         self._cnn.load_weights_from_bytes(weights_bytes)
         wh = self._cnn._weights_hash()
-        self._log(f"Pesos cargados (hash={wh}). Preparando features de train...")
+        self._log(f"Pesos cargados (hash={wh}).")
 
-        # Regenerar features con la CNN del PS.
-        # prepare() comprueba la caché local primero — si ya existe
-        # {arch}_{wh}_train_50000_X.npy, la carga sin re-extraer.
-        self._X_features, self.Y_train = self._cnn.prepare(
-            self._X_raw,
-            self._Y_raw,
-            split="train",
-            pretrain_epochs=0,  # pesos ya vienen del PS, no reentrenar
-            batch_size=2048,
-            verbose=self.verbose,
-        )
+        # ── Extracción por shards ──────────────────────────────────
+        n_shards = (self._n_train + SHARD_SIZE - 1) // SHARD_SIZE
+        n_cached = self._cnn.count_cached_shards("train")
 
-        # Reconstruir índices por clase con el Y_train actualizado
+        if n_cached >= n_shards:
+            self._log(f"Todos los shards ({n_shards}) ya en caché.")
+        else:
+            self._log(
+                f"Extrayendo shards {n_cached}–{n_shards - 1} "
+                f"({self._n_train} imgs, {SHARD_SIZE}/shard)..."
+            )
+            for sid in range(n_cached, n_shards):
+                start = sid * SHARD_SIZE
+                end = min(start + SHARD_SIZE, self._n_train)
+                indices = np.arange(start, end)
+                self._log(f"  Shard {sid}/{n_shards - 1}: imgs {start}–{end - 1}...")
+
+                loader = get_imagenet_dataloader(
+                    split="train",
+                    data_dir=self._data_dir,
+                    batch_size=self._optimal_batch_size(),
+                    num_workers=4,
+                    indices=indices,
+                )
+                feats_list, labels_list = [], []
+                self._cnn._model.eval()
+                with torch.inference_mode():
+                    for imgs, labels in loader:
+                        imgs = imgs.to(self._cnn.device)
+                        feats_list.append(self._cnn._model(imgs).cpu().numpy())
+                        labels_list.append(labels.numpy().astype(np.int32))
+
+                X_s = np.concatenate(feats_list, axis=0)
+                Y_s = np.concatenate(labels_list, axis=0)
+                self._cnn.save_shard(sid, "train", X_s, Y_s)
+                self._log(f"  Shard {sid} guardado ({X_s.nbytes // 1024 // 1024} MB)")
+                del X_s, Y_s, feats_list, labels_list
+
+        # ── FeatureScaler sobre shard 0 ────────────────────────────
+        if not FeatureScaler.exists(self._cnn._cache_dir, wh):
+            self._log("Calculando FeatureScaler sobre shard 0...")
+            s0 = self._cnn.load_shard(0, "train")
+            if s0 is not None:
+                self._scaler = FeatureScaler().fit(s0[0])
+                self._scaler.save(self._cnn._cache_dir, wh)
+                del s0
+                self._log("FeatureScaler guardado en caché.")
+        else:
+            self._scaler = FeatureScaler.load(self._cnn._cache_dir, wh)
+            self._log("FeatureScaler cargado desde caché.")
+
+        # Reconstruir índices por clase
         self._class_indices = [
-            np.where(self.Y_train == digit)[0] for digit in range(10)
+            np.where(self._Y_raw == c)[0] for c in range(NUM_CLASSES)
         ]
 
         self._log("Features listos. Enviando CNN_READY al PS.")
         assert self._sock is not None
         send_message(self._sock, MsgType.CNN_READY, {"worker_id": self.worker_id})
-
-        # Los features de prueba se envían solo cuando el PS
-        # los solicita explícitamente con REQUEST_TEST_FEATURES.
 
     def _run_training_session(
         self,
@@ -372,91 +338,98 @@ class WorkerNode:
         worker_rank: int,
     ) -> None:
         """
-        Procesa todas las épocas de una sesión de entrenamiento.
-
-        Por cada época: recibe PARAMS (con semilla), reconstruye los índices
-        localmente, calcula gradientes y envía GRADIENTS.
-        Al terminar ``epochs`` épocas vuelve a _main_loop para esperar
-        el siguiente TRAIN_START.
-
-        :param epochs: Número de épocas en esta sesión.
-        :param n_train: Total de ejemplos de entrenamiento (para estratificación).
-        :param n_workers: Número de Workers en esta sesión.
-        :param worker_rank: Posición de este Worker en la sesión (0-based).
+        Bucle de épocas. Por cada época:
+          1. Recibir PARAMS (pesos MLP + epoch_seed)
+          2. Reconstruir índices localmente con epoch_seed
+          3. Cargar features de los shards necesarios
+          4. Aplicar FeatureScaler
+          5. forward + backward MLP → enviar GRADIENTS
         """
         assert self._sock is not None
 
-        for _ in range(epochs):
+        for epoch in range(1, epochs + 1):
             msg = receive_message(self._sock)
-
             if msg["type"] == MsgType.STOP:
-                # Defensa ante un apagado forzado del PS (p.ej. desde ps_terminal.py
-                # o si el PS falla). La GUI lo previene, pero el Worker no puede
-                # asumir que siempre hay una GUI de por medio.
-                self._log("STOP recibido durante entrenamiento. Finalizando.")
+                self._log("STOP recibido durante entrenamiento.")
                 raise SystemExit(0)
+            if msg["type"] != MsgType.PARAMS:
+                continue
 
-            if msg["type"] == MsgType.PARAMS:
-                self._handle_params(msg["payload"], n_train, n_workers, worker_rank)
+            params = msg["payload"]["params"]
+            epoch_seed = msg["payload"]["seed"]
 
-    # ================================================================
-    # PROCESAMIENTO DE UNA ÉPOCA
-    # ================================================================
+            indices = self._reconstruct_indices(
+                epoch_seed, n_train, n_workers, worker_rank
+            )
 
-    def _handle_params(
-        self,
-        payload: Dict[str, Any],
-        n_train: int,
-        n_workers: int,
-        worker_rank: int,
-    ) -> None:
+            X_epoch, Y_epoch = self._load_features_for_indices(indices)
+
+            if self._scaler is not None:
+                X_epoch = self._scaler.transform(X_epoch)
+
+            from Model.mlp import forward_and_gradients
+
+            gradients, loss, accuracy = forward_and_gradients(params, X_epoch, Y_epoch)
+
+            send_message(
+                self._sock,
+                MsgType.GRADIENTS,
+                {
+                    "worker_id": self.worker_id,
+                    "epoch": epoch,
+                    "gradients": gradients,
+                    "loss": loss,
+                    "accuracy": accuracy,
+                },
+            )
+
+    def _load_features_for_indices(
+        self, indices: np.ndarray
+    ) -> "tuple[np.ndarray, np.ndarray]":
         """
-        Recibe PARAMS (pesos MLP + semilla), reconstruye los índices localmente
-        a partir de la semilla, calcula gradientes y envía GRADIENTS.
-
-        No hay forward CNN aquí: self._X_features ya tiene todos los features.
-        Solo se indexan las filas correspondientes al chunk de este Worker.
-
-        La partición es un Round Robin estratificado por clase (0-9)
-        con la misma semilla, es decir, mismo resultado. Esto significa
-        cero índices por red.
-
-        :param payload:     Dict con ``epoch``, ``params``, ``seed``.
-        :param n_train:     Total de ejemplos (recibido en TRAIN_START).
-        :param n_workers:   Número de Workers en la sesión.
-        :param worker_rank: Posición de este Worker (0-based).
+        Carga los features de los shards que cubren los índices dados.
+        Solo carga los shards necesarios, liberando cada uno tras extraer
+        las filas pedidas — nunca más de ~200 MB en RAM simultáneamente.
         """
-        epoch = payload["epoch"]
-        params = payload["params"]
-        seed = payload["seed"]
+        shard_ids = np.unique(indices // SHARD_SIZE)
+        feat_parts: list = []
+        label_parts: list = []
 
-        indices = self._reconstruct_indices(seed, n_train, n_workers, worker_rank)
-        self._log(f"Época {epoch} — {len(indices)} ejemplos")
+        for sid in shard_ids:
+            shard_data = self._cnn.load_shard(int(sid), "train")
+            if shard_data is None:
+                continue
+            X_s, Y_s = shard_data
+            shard_start = int(sid) * SHARD_SIZE
+            mask = (indices >= shard_start) & (indices < shard_start + len(X_s))
+            local_idx = indices[mask] - shard_start
+            feat_parts.append(X_s[local_idx])
+            label_parts.append(Y_s[local_idx])
+            del X_s, Y_s
 
-        t_start = time.perf_counter()
-        F_batch = self._X_features[indices]
-        Y_batch = self.Y_train[indices]
-        gradients, loss, accuracy = forward_and_gradients(params, F_batch, Y_batch)
-        elapsed = time.perf_counter() - t_start
+        if not feat_parts:
+            s0 = self._cnn.load_shard(0, "train")
+            if s0 is not None:
+                n = min(len(indices), len(s0[0]))
+                return s0[0][:n], s0[1][:n]
+            return (
+                np.empty((0, FEATURE_DIM), np.float32),
+                np.empty((0,), np.int32),
+            )
 
-        self._log(f"  loss={loss:.4f}  acc={accuracy:.2f}%  ({elapsed:.3f}s)")
-
-        assert self._sock is not None
-        send_message(
-            self._sock,
-            MsgType.GRADIENTS,
-            {
-                "worker_id": self.worker_id,
-                "epoch": epoch,
-                "gradients": gradients,
-                "loss": loss,
-                "accuracy": accuracy,
-            },
+        return (
+            np.concatenate(feat_parts, axis=0),
+            np.concatenate(label_parts, axis=0),
         )
 
-    # ================================================================
-    # RECONSTRUCCIÓN DE ÍNDICES
-    # ================================================================
+    def _optimal_batch_size(self, base: int = 256) -> int:
+        """Batch size óptimo según dispositivo."""
+        device_type = str(self._cnn.device).split(":")[0]
+        if device_type == "cuda":
+            return 512
+        if device_type == "mps":
+            return 256
+        return base  # cpu
 
     def _reconstruct_indices(
         self,

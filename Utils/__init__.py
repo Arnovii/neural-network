@@ -1,34 +1,61 @@
 """
-Utils — Utilidades para entrenamiento distribuido CIFAR-10 CNN+MLP.
+Utils — Utilidades para entrenamiento distribuido ImageNet CNN+MLP.
 
+──────────────────────────────────────────────────────────────────
 Módulos
--------
-cifar_loader      Cargadores de datos CIFAR-10 (train y test).
-results_exporter  Exportación de resultados de entrenamiento a JSON.
+──────────────────────────────────────────────────────────────────
+feature_scaler    FeatureScaler: normalización StandardScaler para features CNN.
+                  Calcula media/std offline sobre features de train
+                  y los aplica en train y test.
 
+imagenet_loader   Cargadores lazy de ImageNet (~150 GB).
+                  Funciones: get_imagenet_dataloader, load_imagenet_labels,
+                            get_dataset_size.
+                  Constantes: NUM_CLASSES, IMAGE_SIZE, SHARD_SIZE.
+
+results_exporter  Exportación de resultados de entrenamiento a JSON con
+                  historial, configuración y resumen de métricas.
+
+──────────────────────────────────────────────────────────────────
 Uso rápido
-----------
+──────────────────────────────────────────────────────────────────
     from Utils import (
-        load_cifar10_train, load_cifar10_test, NUM_CLASSES,
+        # Feature normalization
+        FeatureScaler,
+        # ImageNet dataloaders
+        get_imagenet_dataloader, load_imagenet_labels, get_dataset_size,
+        NUM_CLASSES, IMAGE_SIZE, SHARD_SIZE,
+        # Results export
         export_results
     )
 """
 
-# CIFAR-10 loaders
-from Utils.cifar_loader import (
-    load_cifar10_train,
-    load_cifar10_test,
+# Feature normalization
+from Utils.feature_scaler import FeatureScaler
+
+# ImageNet loaders
+from Utils.imagenet_loader import (
+    get_imagenet_dataloader,
+    load_imagenet_labels,
+    get_dataset_size,
     NUM_CLASSES,
+    IMAGE_SIZE,
+    SHARD_SIZE,
 )
 
 # Results export
 from Utils.results_exporter import export_results
 
 __all__ = [
-    # CIFAR-10
-    "load_cifar10_train",
-    "load_cifar10_test",
+    # Feature scaling
+    "FeatureScaler",
+    # ImageNet
+    "get_imagenet_dataloader",
+    "load_imagenet_labels",
+    "get_dataset_size",
     "NUM_CLASSES",
-    # Results export
+    "IMAGE_SIZE",
+    "SHARD_SIZE",
+    # Results
     "export_results",
 ]

@@ -150,10 +150,10 @@ def init_params(
     :type feature_dim: int, típicamente 512.
 
     :param hidden1: Neuronas en la primera capa oculta.
-    :type hidden1: int, típicamente 256 o 512.
+    :type hidden1: int, típicamente 1024 para ImageNet (256 para CIFAR-10).
 
     :param hidden2: Neuronas en la segunda capa oculta.
-    :type hidden2: int, típicamente 128 o 256.
+    :type hidden2: int, típicamente 512 para ImageNet (128 para CIFAR-10).
 
     :param n_classes: Número de clases de salida (10 para CIFAR-10).
     :type n_classes: int.

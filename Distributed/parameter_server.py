@@ -1,62 +1,20 @@
 """
 Distributed/parameter_server.py
 
-Implementación del Parameter Server para el algoritmo de Diego
-distribuido con Data-Oriented Parallelism sobre sockets TCP.
+Parameter Server para el Algoritmo de Diego con Data-Oriented
+Parallelism — adaptado para ImageNet.
 
-──────────────────────────────────────────────────────────────────
-CICLO DE VIDA
-──────────────────────────────────────────────────────────────────
-El PS tiene tres fases independientes:
-
-    listen()   → Abre el socket y acepta Workers indefinidamente
-                 en un hilo de fondo. Los Workers que se conectan
-                 quedan registrados y esperan instrucciones.
-                 El PS les asigna un ID secuencial (0, 1, 2, …).
-
-    train()    → Ejecuta una sesión de entrenamiento con los Workers
-                 actualmente conectados. Puede llamarse múltiples
-                 veces sin reiniciar el servidor ni reconectar Workers.
-
-    shutdown() → Envía STOP a todos los Workers, cierra conexiones
-                 y detiene el hilo de aceptación.
-
-──────────────────────────────────────────────────────────────────
-ASIGNACIÓN DE IDs
-──────────────────────────────────────────────────────────────────
-El Worker ya no declara su propio ID. Al conectarse envía READY
-con payload vacío y el PS responde con WORKER_ID asignando el
-siguiente entero disponible (0, 1, 2, …). Esto evita colisiones
-cuando varios Workers se conectan simultáneamente.
-
-──────────────────────────────────────────────────────────────────
-WORKERS PERSISTENTES
-──────────────────────────────────────────────────────────────────
-Los Workers no se desconectan al finalizar un entrenamiento.
-Permanecen conectados esperando el siguiente TRAIN_START. El PS
-puede lanzar múltiples sesiones de entrenamiento sin que los
-Workers se reinicien.
-
-──────────────────────────────────────────────────────────────────
-CALLBACKS DISPONIBLES
-──────────────────────────────────────────────────────────────────
-on_worker_connected(worker_id, addr)
-    Llamado cuando un Worker envía READY y queda registrado.
-
-on_worker_disconnected(worker_id)
-    Llamado cuando un Worker pierde la conexión inesperadamente.
-
-on_gradients_received(worker_id, epoch, loss, accuracy)
-    Llamado cada vez que se reciben los gradientes de un Worker.
-
-on_epoch_end(epoch, total_epochs, train_accuracy, train_loss, test_accuracy, test_loss)
-    Llamado tras promediar gradientes y actualizar pesos.
-    ``test_accuracy`` y ``test_loss`` son None si no se pasaron datos de prueba.
-
-on_worker_joined_late(worker_id, addr)
-    Llamado cuando un Worker se conecta mientras hay un entrenamiento
-    en curso. Ese Worker NO participa en la sesión activa; se incorpora
-    en la siguiente.
+Cambios respecto a CIFAR-10:
+  · train() ya no acepta X_test. Los features de prueba se solicitan
+    al Worker con REQUEST_TEST_FEATURES tras la barrera CNN_READY.
+    (50k × 224×224 float32 ≈ 7 GB — no cabe en RAM del PS.)
+  · CNN_WEIGHTS ya no incluye need_test_features: el PS pide los
+    features de test explícitamente a un solo Worker, con failover.
+  · need_test_cached: el PS detecta caché local ANTES del broadcast
+    para evitar la petición si los features ya están en disco.
+  · request_train_sample() con failover por Worker.
+  · TRAIN_SAMPLE eliminado del flujo principal (ResNet-18 ImageNet
+    no necesita pretrain adicional).
 """
 
 import socket
@@ -72,43 +30,7 @@ from Model.mlp import apply_gradients, evaluate
 
 
 class ParameterServer:
-    """
-    Parameter Server persistente para entrenamiento distribuido.
-
-    El servidor acepta conexiones continuamente hasta llamar a
-    ``shutdown()``. Una sesión de entrenamiento se inicia con
-    ``train()`` y puede repetirse sin reconectar Workers.
-
-    :param host: Dirección IP en la que escucha el servidor.
-    :type host: str
-
-    :param port: Puerto TCP.
-    :type port: int
-
-    :param on_worker_connected: Callback cuando un Worker se registra.
-                                Firma: ``(worker_id: int, addr: str)``
-    :type on_worker_connected: Callable | None
-
-    :param on_worker_disconnected: Callback cuando un Worker se pierde.
-                                   Firma: ``(worker_id: int)``
-    :type on_worker_disconnected: Callable | None
-
-    :param on_gradients_received: Callback al recibir gradientes.
-                                  Firma: ``(worker_id, epoch, loss, accuracy)``
-    :type on_gradients_received: Callable | None
-
-    :param on_epoch_end: Callback al final de cada época.
-                           Firma: ``(epoch, total_epochs, train_accuracy, train_loss,
-                           test_accuracy, test_loss)``.
-                           ``test_accuracy`` y ``test_loss`` son None si no se
-                           proporcionaron datos de prueba.
-    :type on_epoch_end: Callable | None
-
-    :param on_worker_joined_late: Callback cuando un Worker llega durante
-                                  un entrenamiento activo y queda en espera.
-                                  Firma: ``(worker_id: int, addr: str)``
-    :type on_worker_joined_late: Callable | None
-    """
+    """Parameter Server persistente para entrenamiento distribuido."""
 
     def __init__(
         self,
@@ -152,7 +74,7 @@ class ParameterServer:
         self._shutdown_flag = threading.Event()
 
         # IDs que participan en el entrenamiento activo (None = sin sesión)
-        self._active_training_workers: Optional[List[int]] = None
+        self._active_training_workers: "set[int] | None" = None
 
         # Gradientes y métricas de la época actual (reutilizados por train)
         self._epoch_gradients: Dict[int, Dict[str, np.ndarray]] = {}
@@ -346,7 +268,9 @@ class ParameterServer:
     ) -> "tuple[np.ndarray, np.ndarray] | None":
         """
         Pide una muestra de imágenes de train a un Worker, con failover.
-        Intenta con cada Worker en orden. Si falla, pasa al siguiente.
+
+        Intenta con cada Worker en orden. Si uno falla lo elimina y
+        pasa al siguiente. Devuelve None si todos fallan.
         """
         with self._lock:
             worker_ids = sorted(self._worker_sockets.keys())
@@ -362,12 +286,8 @@ class ParameterServer:
                 send_message(sock, MsgType.TRAIN_SAMPLE, {"n_samples": n_samples})
                 msg = receive_message(sock)
                 if msg["type"] == MsgType.TRAIN_SAMPLE_DATA:
-                    p = msg["payload"]
-                    X, Y = p["X_sample"], p["Y_sample"]
-                    print(
-                        f"[PS] Muestra recibida del Worker {wid}: "
-                        f"{X.shape} — sin sesgo en evaluación."
-                    )
+                    X, Y = msg["payload"]["X_sample"], msg["payload"]["Y_sample"]
+                    print(f"[PS] Muestra recibida del Worker {wid}: {X.shape}")
                     return X, Y
             except Exception as exc:
                 print(
@@ -383,68 +303,41 @@ class ParameterServer:
         initial_params: Dict[str, np.ndarray],
         learning_rate: float,
         n_train: int,
-        X_test: Optional[np.ndarray] = None,
         Y_test: Optional[np.ndarray] = None,
         momentum: float = 0.0,
         seed: Optional[int] = None,
     ) -> Dict[str, List[float]]:
         """
-        Ejecuta una sesión de entrenamiento con los Workers conectados.
+        Sesión de entrenamiento distribuido para ImageNet.
 
-        Puede llamarse múltiples veces; cada llamada es independiente
-        y comienza desde ``initial_params``.
+        X_test eliminado de la firma: 50k imágenes ImageNet no caben
+        en RAM del PS. Los features de prueba se solicitan al Worker
+        con REQUEST_TEST_FEATURES tras la barrera CNN_READY.
 
-        :param epochs: Número de épocas a entrenar.
-        :type epochs: int
-
-        :param initial_params: Pesos iniciales de la red (W1, b1, W2, b2).
-        :type initial_params: Dict[str, np.ndarray]
-
-        :param learning_rate: Tasa de aprendizaje.
-        :type learning_rate: float
-
-        :param n_train: Total de ejemplos de entrenamiento.
-        :type n_train: int
-
-
-        :param X_test: Imágenes del conjunto de prueba, forma ``(N_test, input_size)``.
-                       Si se proporciona junto con ``Y_test``, el PS evaluará
-                       el modelo global después de cada época.
-        :type X_test: np.ndarray | None
-
-        :param Y_test: Etiquetas del conjunto de prueba, forma ``(N_test,)``.
-        :type Y_test: np.ndarray | None
-
-        :param momentum: Coeficiente de momentum para SGD (0.0 = SGD puro,
-                         0.9 = valor típico). El PS mantiene el estado de
-                         velocidades internamente entre épocas.
-        :type momentum: float
-
-        :return: Historial con ``"accuracies"``, ``"losses"``,
-                 ``"test_accuracies"`` y ``"test_losses"`` por época.
-                 Las listas de test están vacías si no se pasaron datos de prueba.
-        :rtype: Dict[str, List[float]]
-
-        :raises RuntimeError: Si no hay Workers conectados.
+        :param epochs: Épocas de entrenamiento.
+        :param initial_params: Pesos iniciales del MLP.
+        :param learning_rate: Tasa de aprendizaje SGD.
+        :param n_train: Total de ejemplos para el round-robin.
+        :param Y_test: Etiquetas de prueba (50k int32). None = sin eval.
+        :param momentum: Momentum SGD (0.0 = SGD puro).
+        :param seed: Semilla para epoch_seeds reproducibles.
+        :return: Historial de métricas por época.
         """
-        worker_ids = self.connected_workers
+        with self._lock:
+            worker_ids = sorted(self._worker_sockets.keys())
+            self._active_training_workers = set(worker_ids)
         if not worker_ids:
-            raise RuntimeError(
-                "No hay Workers conectados. "
-                "Inicia al menos un Worker antes de entrenar."
-            )
+            raise RuntimeError("No hay Workers conectados.")
 
-        # Congela los participantes de esta sesión. Cualquier Worker que se
-        # conecte a partir de este momento queda en espera y recibe el
-        # callback on_worker_joined_late en lugar de on_worker_connected.
-        self._active_training_workers = worker_ids
+        # Resetear features de sesión anterior
+        self._X_test_features = None
+        self._Y_test_from_worker = None
 
-        # ── Distribuir CNN a los Workers ──────────────────────────────
-        # El PS envía sus pesos CNN (preentrenados) a todos los Workers.
-        # Cada Worker carga esos pesos, extrae sus features de train y
-        # confirma con CNN_READY. El PS espera todas las confirmaciones
-        # antes de continuar — garantiza que el entrenamiento empieza
-        # solo cuando todos los Workers están listos con la misma CNN.
+        # X_test se puede definir dentro del bloque if self._cnn is not None.
+        # Se inicializa aquí para evitar 'possibly unbound' en Pylance.
+        X_test: Optional[np.ndarray] = None
+
+        # ── Distribuir CNN y obtener features de test ──────────────
         if self._cnn is not None:
             weights_bytes = self._cnn._get_weights_bytes()
             arch = self._cnn.arch
@@ -453,21 +346,18 @@ class ParameterServer:
             )
             self._cnn_ready_event.clear()
             self._cnn_ready_count = 0
-            self._X_test_features = None
-            self._Y_test_from_worker = None
 
-            # Buscar caché de features de test ANTES de enviar CNN_WEIGHTS.
-            # Si los encuentra, indica a los Workers que no los necesita
-            # → Workers no extraen ni transfieren ~20 MB innecesariamente.
+            # Buscar caché ANTES del broadcast para evitar petición
             need_test_cached = False
-            if X_test is not None and Y_test is not None and X_test.ndim == 4:
+            X_test: Optional[np.ndarray] = None
+            if Y_test is not None:
                 cached = self._cnn._load_features_if_cached("test")
                 if cached is not None:
-                    X_test, Y_test = cached
+                    X_test, _ = cached
                     need_test_cached = True
                     print(f"[PS] Features de prueba en caché: {X_test.shape}\n")
 
-            # Broadcast CNN_WEIGHTS en paralelo con el flag need_test_features.
+            # Broadcast CNN_WEIGHTS en paralelo — sin need_test_features
             def _send_cnn_to_worker(wid: int) -> None:
                 with self._lock:
                     sock = self._worker_sockets.get(wid)
@@ -477,11 +367,7 @@ class ParameterServer:
                     send_message(
                         sock,
                         MsgType.CNN_WEIGHTS,
-                        {
-                            "arch": arch,
-                            "weights_bytes": weights_bytes,
-                            # need_test_features eliminado: PS pide test features explícitamente.
-                        },
+                        {"arch": arch, "weights_bytes": weights_bytes},
                     )
                 except Exception as exc:
                     print(f"[PS] Error enviando CNN a Worker {wid}: {exc}")
@@ -496,17 +382,14 @@ class ParameterServer:
             for t in send_threads:
                 t.join()
 
+            # Barrera CNN_READY — solo espera CNN_READY, sin TEST_FEATURES
             def _wait_cnn_ready(wid: int) -> None:
-                """Espera CNN_READY. Los features de test se piden después."""
                 try:
                     msg = receive_message(self._worker_sockets[wid])
                     if msg["type"] == MsgType.CNN_READY:
                         print(f"[PS] Worker {wid}: CNN_READY ✓")
                     else:
-                        print(
-                            f"[PS] Worker {wid}: mensaje inesperado "
-                            f"{msg['type']} (esperaba CNN_READY)."
-                        )
+                        print(f"[PS] Worker {wid}: mensaje inesperado {msg['type']}.")
                     self._handle_cnn_ready(wid, len(worker_ids))
                 except Exception as exc:
                     print(f"[PS] Worker {wid}: error esperando CNN_READY: {exc}")
@@ -524,11 +407,13 @@ class ParameterServer:
                 t.join()
             print("[PS] Todos los Workers listos con la CNN distribuida.")
 
-            # Pedir TEST_FEATURES si no están en caché local.
-            # Un único Worker los extrae y envía — con failover.
-            if not need_test_cached:
+            # Pedir features de test a un solo Worker — con failover
+            # Antes: N×~100 MB + esperar al más lento
+            # Ahora: 1×~100 MB + failover limpio
+            if not need_test_cached and Y_test is not None:
                 with self._lock:
                     candidate_ids = sorted(self._worker_sockets.keys())
+                _got_test = False
                 for wid in candidate_ids:
                     with self._lock:
                         sock = self._worker_sockets.get(wid)
@@ -541,35 +426,24 @@ class ParameterServer:
                         if msg_t["type"] == MsgType.TEST_FEATURES:
                             p = msg_t["payload"]
                             X_test = p["X_test_features"]
-                            Y_test = p["Y_test"]
-                            assert X_test is not None and Y_test is not None
-                            self._cnn._save_features("test", X_test, Y_test)
+                            _y = p["Y_test"]
+                            assert X_test is not None
+                            self._cnn._save_features("test", X_test, _y)
                             print(
-                                f"[PS] Features de prueba recibidos del "
-                                f"Worker {wid}: {X_test.shape}\n"
+                                f"[PS] Features de prueba del Worker {wid}: {X_test.shape}\n"
                             )
-                            break  # éxito
+                            _got_test = True
+                            break
                     except Exception as exc:
                         print(
-                            f"[PS] Worker {wid} falló ({exc}). "
-                            "Intentando con el siguiente..."
+                            f"[PS] Worker {wid} falló ({exc}). Intentando con el siguiente..."
                         )
                         self._remove_worker(wid)
-                else:
-                    # Todos los Workers fallaron → fallback al PS local
-                    if X_test is not None and Y_test is not None:
-                        print(
-                            "[PS] Todos los Workers fallaron. "
-                            "Extrayendo features localmente..."
-                        )
-                        X_test, Y_test = self._cnn.prepare(
-                            X_test,
-                            Y_test,
-                            split="test",
-                            pretrain_epochs=0,
-                            verbose=True,
-                        )
-                        print(f"[PS] Features de prueba listos: {X_test.shape}\n")
+                if not _got_test:
+                    print(
+                        "[PS] ⚠ Sin features de prueba. Evaluación de test desactivada."
+                    )
+                    X_test = None
 
         params = {tipo: datos.copy() for tipo, datos in initial_params.items()}
         velocities: Dict[str, np.ndarray] = {}  # estado de momentum entre épocas
@@ -750,6 +624,10 @@ class ParameterServer:
         print("[PS] Entrenamiento completado.\n")
         self._active_training_workers = None
         return history
+
+    # ================================================================
+    # HELPERS INTERNOS
+    # ================================================================
 
     # ================================================================
     # HELPERS INTERNOS

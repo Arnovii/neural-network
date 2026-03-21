@@ -65,7 +65,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from Distributed.parameter_server import ParameterServer
 from Model.cnn_extractor import CNNExtractor
 from Model.mlp import init_params
-from Utils.cifar_loader import NUM_CLASSES, load_cifar10_test
+from Utils.imagenet_loader import NUM_CLASSES, get_imagenet_dataloader
 from Utils.results_exporter import export_results
 
 
@@ -153,14 +153,14 @@ def main() -> None:
     parser.add_argument(
         "--hidden1",
         type=int,
-        default=256,
-        help="Neuronas en la primera capa oculta (default: 256)",
+        default=1024,
+        help="Neuronas en la primera capa oculta (default: 1024 para ImageNet)",
     )
     parser.add_argument(
         "--hidden2",
         type=int,
-        default=128,
-        help="Neuronas en la segunda capa oculta (default: 128)",
+        default=512,
+        help="Neuronas en la segunda capa oculta (default: 512 para ImageNet)",
     )
     parser.add_argument(
         "--lr", type=float, default=0.01, help="Tasa de aprendizaje (default: 0.01)"
@@ -169,7 +169,7 @@ def main() -> None:
         "--n-train",
         type=int,
         default=50_000,
-        help="Total de ejemplos de entrenamiento (default: 50000, máx CIFAR-10 train)",
+        help="Total de ejemplos de entrenamiento (default: 50000, máx ImageNet train)",
     )
     parser.add_argument(
         "--seed", type=int, default=None, help="Semilla aleatoria (default: ninguna)"
@@ -183,8 +183,8 @@ def main() -> None:
     parser.add_argument(
         "--cnn-arch",
         type=str,
-        default="simple",
-        choices=["simple", "resnet18"],
+        default="resnet18",
+        choices=["resnet18"],
         help="Arquitectura CNN: simple (preentrenada local) | resnet18 (pesos ImageNet, default: simple)",
     )
     parser.add_argument(
@@ -207,7 +207,7 @@ def main() -> None:
     OUTPUT_SIZE = NUM_CLASSES
 
     print("=" * 70)
-    print("PARAMETER SERVER — Configuración (CIFAR-10)")
+    print("PARAMETER SERVER — Configuración (ImageNet)")
     print("=" * 70)
     print(f"  Host            : {args.host}:{args.port}")
     print(f"  Workers         : {args.workers}")
@@ -278,34 +278,12 @@ def main() -> None:
     feature_dim = cnn.feature_dim
     print(f"CNN lista — arch={args.cnn_arch}  feature_dim={feature_dim}\n")
 
-    # X_test_raw se usa como fallback si el Worker no envía TEST_FEATURES.
-    # Si el Worker 0 sí los envía, el PS los usará en lugar de este fallback.
-    print("Cargando datos de prueba CIFAR-10 (10 000 imágenes)...")
-    X_test_raw, Y_test = load_cifar10_test(verbose=False)
+    # Y_test: solo etiquetas. Los features de prueba los extrae el Worker
+    # y los envía al PS con REQUEST_TEST_FEATURES tras la barrera CNN_READY.
+    # ImageNet test: los features los extraerá el Worker vía REQUEST_TEST_FEATURES
+    # El PS no carga las imágenes de test — son 50k × 224×224, demasiado para RAM
+    Y_test = None
     server.set_cnn(cnn)
-
-    # Si la CNN simple no tiene caché, preentrenar con datos de TRAIN
-    # (pedidos al Worker) en lugar de X_test → sin sesgo en evaluación.
-    if args.cnn_arch == "simple":
-        import glob as _glob
-
-        has_cache = bool(_glob.glob(str(cnn._cache_dir) + "/simple_*_weights.pt"))
-        if not has_cache:
-            print(
-                "[PS] Solicitando muestra de train al Worker "
-                "para preentrenar CNN sin sesgo..."
-            )
-            train_sample = server.request_train_sample(
-                n_samples=args.cnn_pretrain_samples
-            )
-            if train_sample is not None:
-                X_pre, Y_pre = train_sample
-                print(
-                    f"[PS] Muestra recibida ({len(X_pre)} imgs). Preentrenando CNN..."
-                )
-                cnn.pretrain(X_pre, Y_pre, epochs=10, verbose=True)
-            else:
-                print("[PS] ⚠ Sin Workers — pretrain usará datos de prueba.")
 
     initial_params = init_params(
         feature_dim, args.hidden1, args.hidden2, OUTPUT_SIZE, args.seed
@@ -318,9 +296,9 @@ def main() -> None:
         initial_params=initial_params,
         learning_rate=args.lr,
         n_train=args.n_train,
-        X_test=X_test_raw,  # fallback: PS extrae si Worker no envía TEST_FEATURES
-        Y_test=Y_test,
+        Y_test=Y_test,  # etiquetas de prueba (50k int32)
         momentum=args.momentum,
+        seed=args.seed,
     )
 
     elapsed = time.perf_counter() - t_start
