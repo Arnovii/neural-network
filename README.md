@@ -9,9 +9,9 @@ Proyecto de aprendizaje automático distribuido que implementa el **Algoritmo de
 ```
 neural-network/
 ├── Data/
-│   └── ImageNet/            # Dataset ImageNet (~150 GB)
-│       ├── train/           # 1.28M imágenes de entrenamiento
-│       └── val/             # 50k imágenes de validación
+│   ├── ImageNet/            # Dataset ImageNet (~150 GB)
+│   │   ├── train/           # 1.28M imágenes de entrenamiento
+│   │   └── val/             # 50k imágenes de validación
 │   └── feature_cache/       # Caché de features extraídos y pesos CNN
 ├── Distributed/             # Núcleo del sistema distribuido
 │   ├── parameter_server.py  # Clase ParameterServer (lógica TCP + entrenamiento)
@@ -140,11 +140,13 @@ python ps_terminal.py --workers 3 --epochs 500 --hidden1 256 --hidden2 128 --lr 
 | `--hidden2` | Neuronas en la segunda capa oculta del MLP | `128` |
 | `--lr` | Tasa de aprendizaje | `0.01` |
 | `--momentum` | Momentum SGD (0.0 = SGD puro) | `0.9` |
-| `--n-train` | Total de ejemplos de entrenamiento (ImageNet: 1280000) | `1280000` |
+| `--n-train` | Total de ejemplos de entrenamiento | `50000` |
 | `--seed` | Semilla aleatoria (reproducibilidad) | ninguna |
-| `--cnn-arch` | Arquitectura CNN: `simple` o `resnet18` | `resnet18` |
-| `--cnn-pretrained` | Usar pesos ImageNet preentrenados | activo por defecto |
-| `--data-dir` | Directorio donde está ImageNet | `Data/ImageNet/` |
+| `--cnn-arch` | Arquitectura CNN (`resnet18`) | `resnet18` |
+| `--cnn-device` | Dispositivo PyTorch para CNN: `cpu`, `cuda`, `mps` | `cpu` |
+| `--data-dir` | Directorio raiz de ImageNet con `train/` y `val/` | ninguna |
+| `--hf-token` | Token HuggingFace para modo stream | `""` |
+| `--cnn-pretrain-samples` | Muestras de train para preentrenamiento/fallback | `10000` |
 
 ### Lanzar el servidor (GUI)
 
@@ -170,11 +172,11 @@ python worker.py
 # Worker en otra máquina
 python worker.py --server-host 192.168.1.10
 
-# Especificar arquitectura CNN simple (sin pesos ImageNet preentrenados)
-python worker.py --cnn-arch simple
+# Modo stream (sin dataset local): token por argumento
+python worker.py --hf-token hf_xxxx
 
-# ResNet18 con ImageNet preentrenado (défault)
-python worker.py --cnn-arch resnet18 --cnn-pretrained
+# Modo stream (sin dataset local): token por variable de entorno
+export HF_TOKEN=hf_xxxx && python worker.py
 
 # Ver todas las opciones
 python worker.py --help
@@ -184,14 +186,11 @@ python worker.py --help
 |---|---|---|
 | `--server-host` | IP del Parameter Server | `127.0.0.1` |
 | `--server-port` | Puerto TCP del Parameter Server | `9999` |
-| `--data-dir` | Directorio donde está ImageNet | `Data/ImageNet/` |
-| `--hidden1` | Neuronas capa oculta 1 del MLP | `256` |
-| `--hidden2` | Neuronas capa oculta 2 del MLP | `128` |
-| `--cnn-arch` | Arquitectura CNN: `simple` o `resnet18` | `resnet18` |
-| `--cnn-pretrained` | Usar pesos ImageNet preentrenados | True |
+| `--data-dir` | Directorio raiz de ImageNet (`train/` y `val/`) | `Data/ImageNet/` |
+| `--hf-token` | Token HuggingFace para modo stream (`HF_TOKEN` tambien aplica) | `""` |
 | `--cnn-device` | Dispositivo PyTorch: `cpu`, `cuda`, `mps` | `cpu` |
-| `--cnn-seed` | Semilla para inicialización CNN | `42` |
-| `--quiet` | Suprime mensajes de progreso | False |
+| `--cache-dir` | Directorio para shards de features | `Data/feature_cache/` |
+| `--quiet` | Suprime mensajes de progreso | `False` |
 
 > **Nota:** El Worker debe iniciarse **después** de que el PS esté escuchando.
 > El PS bloquea el inicio del entrenamiento hasta que se conecten todos los
@@ -232,7 +231,7 @@ docker build -f Docker/Dockerfile.worker -t nn-worker .
 ```
 
 > La imagen excluye `Data/` (definido en `.dockerignore`) ya que cada
-> contenedor descarga CIFAR-10 automáticamente en su primer arranque.
+> contenedor usara dataset local montado o modo stream de ImageNet.
 
 ### Lanzar Workers
 
@@ -273,6 +272,12 @@ eliminando conversiones y reduciendo el tamaño en red en un **60-70%** respecto
 |---|---|---|
 | `READY` | Worker → PS | El Worker se conecta y solicita un ID |
 | `WORKER_ID` | PS → Worker | PS asigna un ID único al Worker |
+| `CNN_WEIGHTS` | PS → Worker | Envio de pesos CNN para extracción consistente de features |
+| `CNN_READY` | Worker → PS | Confirmación de que el Worker terminó extracción/carga de features |
+| `REQUEST_TEST_FEATURES` | PS → Worker | Solicita features de validación a un Worker específico |
+| `TEST_FEATURES` | Worker → PS | Envia features y etiquetas de validación |
+| `TRAIN_SAMPLE` | PS → Worker | Solicita muestra de train para preentrenamiento/fallback |
+| `TRAIN_SAMPLE_DATA` | Worker → PS | Envia muestra de imágenes y etiquetas de train |
 | `TRAIN_START` | PS → Workers | Inicia una sesión; envía `epochs`, `n_train`, `n_workers`, `worker_rank` |
 | `PARAMS` | PS → Workers | Pesos globales + semilla de época (el Worker reconstruye su chunk determinísticamente) |
 | `GRADIENTS` | Worker → PS | Gradientes calculados sobre el batch asignado |
