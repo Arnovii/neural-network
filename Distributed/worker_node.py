@@ -19,8 +19,7 @@ Cambios respecto a CIFAR-10:
 """
 
 import socket
-import threading
-from typing import Any, Dict, List, Optional
+from typing import List, Optional
 
 import numpy as np
 import torch
@@ -257,7 +256,7 @@ class WorkerNode:
         self._log(f"CNN_WEIGHTS recibido (arch={arch}). Cargando pesos...")
 
         if self._cnn.arch != arch:
-            self._log(f"Arquitectura cambió → reconstruyendo CNN...")
+            self._log("Arquitectura cambió → reconstruyendo CNN...")
             self._cnn = CNNExtractor(
                 arch=arch,
                 device=str(self._cnn.device),
