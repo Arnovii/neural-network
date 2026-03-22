@@ -36,7 +36,8 @@ PIPELINE
 
 import os
 import socket
-from typing import List, Optional
+import threading
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 import torch
@@ -45,11 +46,11 @@ from torch.utils.data import DataLoader
 from Distributed.protocol import MsgType, receive_message, send_message
 from Model.cnn_extractor import CNNExtractor, FEATURE_DIM
 from Utils.imagenet_loader import (
-    NUM_CLASSES,
-    SHARD_SIZE,
+    NUM_CLASSES, SHARD_SIZE,
     detect_data_source,
     get_imagenet_dataloader,
     get_imagenet_stream_dataloader,
+    get_stream_shard_size,
     load_imagenet_labels,
     load_imagenet_labels_stream,
 )
@@ -71,11 +72,13 @@ class WorkerNode:
         cache_dir: Optional[str] = None,
         hf_token: str = "",
     ) -> None:
-        self._data_dir = data_dir
+        self._data_dir    = data_dir
+        # Inicializar worker_id antes de cualquier _log
+        self.worker_id:   int  = -1
         self._server_host = server_host
         self._server_port = server_port
-        self.verbose = verbose
-        self._hf_token = hf_token or os.environ.get("HF_TOKEN", "")
+        self.verbose      = verbose
+        self._hf_token    = hf_token or os.environ.get("HF_TOKEN", "")
 
         # Detectar origen del dataset
         self._data_source = detect_data_source(data_dir)
@@ -84,7 +87,9 @@ class WorkerNode:
         # Modo local:  lee desde disco (ms).
         # Modo stream: descarga solo la columna "label" de HF (~400 KB).
         if self._data_source == "local":
-            self._Y_raw = load_imagenet_labels(split="train", data_dir=data_dir)
+            self._Y_raw = load_imagenet_labels(
+                split="train", data_dir=data_dir
+            )
         else:
             self._log(
                 "Modo streaming detectado. "
@@ -93,7 +98,7 @@ class WorkerNode:
             self._Y_raw = load_imagenet_labels_stream(
                 split="train", token=self._hf_token
             )
-        self.Y_train = self._Y_raw
+        self.Y_train  = self._Y_raw
         self._n_train = len(self._Y_raw)
 
         self._cnn = CNNExtractor(
@@ -105,15 +110,15 @@ class WorkerNode:
             input_size=224,  # ImageNet nativo — sin upscale
         )
 
-        self.worker_id: int = -1
-        self._sock: Optional[socket.socket] = None
-        self._scaler: Optional[FeatureScaler] = None
+        self._sock:        Optional[socket.socket] = None
+        self._scaler:      Optional[FeatureScaler] = None
         self._class_indices: List[np.ndarray] = [
             np.where(self._Y_raw == c)[0] for c in range(NUM_CLASSES)
         ]
 
         self._log(
-            f"WorkerNode inicializado. Dataset: {self._n_train} imgs, device={device}"
+            f"WorkerNode inicializado. "
+            f"Dataset: {self._n_train} imgs, device={device}"
         )
 
     def run(self) -> None:
@@ -126,8 +131,7 @@ class WorkerNode:
         self._connect()
         self._log(
             f"Conectado a {self._server_host}:{self._server_port}  "
-            f"| ID={self.worker_id}  "
-            f"| dataset={self._n_train} imgs"
+            f"| ID={self.worker_id}"
         )
         self._log("Esperando sesión de entrenamiento del Parameter Server...")
         self._main_loop()
@@ -136,6 +140,7 @@ class WorkerNode:
     # ================================================================
     # CONEXIÓN
     # ================================================================
+
 
     def _connect(self) -> None:
         """
@@ -171,6 +176,7 @@ class WorkerNode:
     # BUCLE PRINCIPAL
     # ================================================================
 
+
     def _main_loop(self) -> None:
         """
         Bucle principal: espera mensajes del PS y los despacha.
@@ -202,7 +208,8 @@ class WorkerNode:
                     f"n_train={p['n_train']}  rank={p['worker_rank']}/{p['n_workers']}"
                 )
                 self._run_training_session(
-                    p["epochs"], p["n_train"], p["n_workers"], p["worker_rank"]
+                    p["epochs"], p["n_train"],
+                    p["n_workers"], p["worker_rank"]
                 )
 
     def _handle_request_test_features(self) -> None:
@@ -237,7 +244,7 @@ class WorkerNode:
                 feats_list.append(self._cnn._model(imgs).cpu().numpy())
                 labels_list.append(labels.numpy().astype(np.int32))
 
-        X_feat = np.concatenate(feats_list, axis=0)
+        X_feat = np.concatenate(feats_list,  axis=0)
         Y_feat = np.concatenate(labels_list, axis=0)
         self._log(
             f"Features de prueba extraídos: {X_feat.shape} "
@@ -258,8 +265,8 @@ class WorkerNode:
         Soporta modo local (ImageFolder) y modo stream (HuggingFace).
         """
         n_samples = min(payload.get("n_samples", 5000), self._n_train)
-        rng = np.random.RandomState(42)
-        indices = rng.choice(self._n_train, size=n_samples, replace=False)
+        rng       = np.random.RandomState(42)
+        indices   = rng.choice(self._n_train, size=n_samples, replace=False)
 
         if self._data_source == "local":
             loader = get_imagenet_dataloader(
@@ -283,7 +290,7 @@ class WorkerNode:
             imgs_list.append(imgs.numpy())
             labels_list.append(labels.numpy().astype(np.int32))
 
-        X_sample = np.concatenate(imgs_list, axis=0)
+        X_sample = np.concatenate(imgs_list,   axis=0)
         Y_sample = np.concatenate(labels_list, axis=0)
         self._log(
             f"Enviando muestra de train al PS "
@@ -309,17 +316,15 @@ class WorkerNode:
           5. Reconstruir índices por clase
           6. Enviar CNN_READY al PS
         """
-        arch = payload["arch"]
+        arch          = payload["arch"]
         weights_bytes = payload["weights_bytes"]
         self._log(f"CNN_WEIGHTS recibido (arch={arch}). Cargando pesos...")
 
         if self._cnn.arch != arch:
-            self._log("Arquitectura cambió → reconstruyendo CNN...")
+            self._log(f"Arquitectura cambió → reconstruyendo CNN...")
             self._cnn = CNNExtractor(
-                arch=arch,
-                device=str(self._cnn.device),
-                seed=self._cnn.seed,
-                cache_dir=self._cnn._cache_dir,
+                arch=arch, device=str(self._cnn.device),
+                seed=self._cnn.seed, cache_dir=self._cnn._cache_dir,
                 input_size=224,
             )
 
@@ -335,21 +340,19 @@ class WorkerNode:
             self._log(f"Todos los shards ({n_shards}) ya en caché.")
         else:
             self._log(
-                f"Extrayendo shards {n_cached}–{n_shards - 1} "
+                f"Extrayendo shards {n_cached}–{n_shards-1} "
                 f"({self._n_train} imgs, {SHARD_SIZE}/shard)..."
             )
             for sid in range(n_cached, n_shards):
-                start = sid * SHARD_SIZE
-                end = min(start + SHARD_SIZE, self._n_train)
+                start   = sid * SHARD_SIZE
+                end     = min(start + SHARD_SIZE, self._n_train)
                 indices = np.arange(start, end)
-                self._log(f"  Shard {sid}/{n_shards - 1}: imgs {start}–{end - 1}...")
+                self._log(f"  Shard {sid}/{n_shards-1}: imgs {start}–{end-1}...")
 
                 loader = get_imagenet_dataloader(
-                    split="train",
-                    data_dir=self._data_dir,
+                    split="train", data_dir=self._data_dir,
                     batch_size=self._optimal_batch_size(),
-                    num_workers=4,
-                    indices=indices,
+                    num_workers=4, indices=indices,
                 )
                 feats_list, labels_list = [], []
                 self._cnn._model.eval()
@@ -359,7 +362,7 @@ class WorkerNode:
                         feats_list.append(self._cnn._model(imgs).cpu().numpy())
                         labels_list.append(labels.numpy().astype(np.int32))
 
-                X_s = np.concatenate(feats_list, axis=0)
+                X_s = np.concatenate(feats_list,  axis=0)
                 Y_s = np.concatenate(labels_list, axis=0)
                 self._cnn.save_shard(sid, "train", X_s, Y_s)
                 self._log(f"  Shard {sid} guardado ({X_s.nbytes // 1024 // 1024} MB)")
@@ -412,7 +415,7 @@ class WorkerNode:
             if msg["type"] != MsgType.PARAMS:
                 continue
 
-            params = msg["payload"]["params"]
+            params     = msg["payload"]["params"]
             epoch_seed = msg["payload"]["seed"]
 
             indices = self._reconstruct_indices(
@@ -425,20 +428,22 @@ class WorkerNode:
                 X_epoch = self._scaler.transform(X_epoch)
 
             from Model.mlp import forward_and_gradients
-
-            gradients, loss, accuracy = forward_and_gradients(params, X_epoch, Y_epoch)
+            gradients, loss, accuracy = forward_and_gradients(
+                params, X_epoch, Y_epoch
+            )
 
             send_message(
                 self._sock,
                 MsgType.GRADIENTS,
                 {
                     "worker_id": self.worker_id,
-                    "epoch": epoch,
+                    "epoch":     epoch,
                     "gradients": gradients,
-                    "loss": loss,
-                    "accuracy": accuracy,
+                    "loss":      loss,
+                    "accuracy":  accuracy,
                 },
             )
+
 
     def _get_train_loader(
         self,
@@ -492,17 +497,17 @@ class WorkerNode:
         las filas pedidas — nunca más de ~200 MB en RAM simultáneamente.
         """
         shard_ids = np.unique(indices // SHARD_SIZE)
-        feat_parts: list = []
+        feat_parts: list  = []
         label_parts: list = []
 
         for sid in shard_ids:
             shard_data = self._cnn.load_shard(int(sid), "train")
             if shard_data is None:
                 continue
-            X_s, Y_s = shard_data
+            X_s, Y_s    = shard_data
             shard_start = int(sid) * SHARD_SIZE
-            mask = (indices >= shard_start) & (indices < shard_start + len(X_s))
-            local_idx = indices[mask] - shard_start
+            mask        = (indices >= shard_start) &                           (indices < shard_start + len(X_s))
+            local_idx   = indices[mask] - shard_start
             feat_parts.append(X_s[local_idx])
             label_parts.append(Y_s[local_idx])
             del X_s, Y_s
@@ -518,7 +523,7 @@ class WorkerNode:
             )
 
         return (
-            np.concatenate(feat_parts, axis=0),
+            np.concatenate(feat_parts,  axis=0),
             np.concatenate(label_parts, axis=0),
         )
 
@@ -602,6 +607,7 @@ class WorkerNode:
     # ================================================================
     # LOG
     # ================================================================
+
 
     def _log(self, msg: str) -> None:
         """Imprime un mensaje con el prefijo del Worker si verbose=True."""

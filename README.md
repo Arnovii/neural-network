@@ -142,10 +142,12 @@ python ps_terminal.py --workers 3 --epochs 500 --hidden1 256 --hidden2 128 --lr 
 | `--momentum` | Momentum SGD (0.0 = SGD puro) | `0.9` |
 | `--n-train` | Total de ejemplos de entrenamiento | `50000` |
 | `--seed` | Semilla aleatoria (reproducibilidad) | ninguna |
-| `--cnn-arch` | Arquitectura CNN (`resnet18`) | `resnet18` |
+| `--cnn-arch` | Arquitectura CNN: `simple` o `resnet18` | `resnet18` |
 | `--cnn-device` | Dispositivo PyTorch para CNN: `cpu`, `cuda`, `mps` | `cpu` |
 | `--data-dir` | Directorio raiz de ImageNet con `train/` y `val/` | ninguna |
 | `--hf-token` | Token HuggingFace para modo stream | `""` |
+| `--cnn-pretrain-epochs` | Epocas de pretrain para `simple` (0 = sin pretrain) | `5` |
+| `--cnn-pretrain-lr` | Learning rate del pretrain para CNN `simple` | `0.001` |
 | `--cnn-pretrain-samples` | Muestras de train para preentrenamiento/fallback | `10000` |
 
 ### Lanzar el servidor (GUI)
@@ -195,6 +197,24 @@ python worker.py --help
 > **Nota:** El Worker debe iniciarse **después** de que el PS esté escuchando.
 > El PS bloquea el inicio del entrenamiento hasta que se conecten todos los
 > Workers configurados con `--workers`.
+
+### Streaming HuggingFace (sin descarga previa)
+
+```bash
+# Configurar token una vez (o pasarlo con --hf-token en cada comando)
+export HF_TOKEN=hf_xxxxxxxxxxxx
+
+# Terminal 1: Parameter Server
+python ps_terminal.py \
+  --workers 1 \
+  --epochs 10 \
+  --hf-token hf_xxxxxxxxxxxx
+
+# Terminal 2: Worker
+python worker.py \
+  --hf-token hf_xxxxxxxxxxxx \
+  --cnn-device cpu
+```
 
 ### Ejemplo completo (3 terminales en local)
 
