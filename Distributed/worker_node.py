@@ -253,20 +253,31 @@ class WorkerNode:
 
     def _handle_train_sample(self, payload: dict) -> None:
         """
-        Responde al PS con una muestra aleatoria de imágenes de train.
-        Fallback para pretrain externo. Envía imágenes RAW (no features).
+        Responde al PS con una muestra aleatoria de imagenes de train.
+        Usado por el PS para pretrain de CNN simple. Envia imagenes RAW.
+        Soporta modo local (ImageFolder) y modo stream (HuggingFace).
         """
         n_samples = min(payload.get("n_samples", 5000), self._n_train)
         rng = np.random.RandomState(42)
         indices = rng.choice(self._n_train, size=n_samples, replace=False)
 
-        loader = get_imagenet_dataloader(
-            split="train",
-            data_dir=self._data_dir,
-            batch_size=self._optimal_batch_size(),
-            num_workers=4,
-            indices=indices,
-        )
+        if self._data_source == "local":
+            loader = get_imagenet_dataloader(
+                split="train",
+                data_dir=self._data_dir,
+                batch_size=self._optimal_batch_size(),
+                num_workers=4,
+                indices=indices,
+            )
+        else:
+            # Modo stream: pedir n_samples imagenes del stream
+            loader = get_imagenet_stream_dataloader(
+                split="train",
+                token=self._hf_token,
+                batch_size=self._optimal_batch_size(),
+                shard_index=0,
+                num_shards=1,
+            )
         imgs_list, labels_list = [], []
         for imgs, labels in loader:
             imgs_list.append(imgs.numpy())

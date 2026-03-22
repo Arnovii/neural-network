@@ -72,7 +72,9 @@ FEATURE_DIM = 512
 
 class _SimpleCNN(nn.Module):
     """
-    CNN de 3 bloques convolucionales diseñada para CIFAR-10 (32×32).
+    CNN convolucional propia de 5 bloques (Conv→BN→ReLU→MaxPool).
+    Funciona con cualquier tamano de entrada gracias a AdaptiveAvgPool.
+    Produce FEATURE_DIM=512 features — misma interfaz que ResNet-18.
 
     Bloque = Conv2d → BatchNorm → ReLU → MaxPool
 
@@ -107,7 +109,6 @@ class _SimpleCNN(nn.Module):
         super().__init__()
 
         def _block(in_ch: int, out_ch: int) -> nn.Sequential:
-            # Sequential significa que se ejecuta en orden
             return nn.Sequential(
                 nn.Conv2d(in_ch, out_ch, kernel_size=3, padding=1, bias=False),
                 nn.BatchNorm2d(out_ch),
@@ -115,20 +116,25 @@ class _SimpleCNN(nn.Module):
                 nn.MaxPool2d(2),
             )
 
+        # Canales ampliados para ImageNet (224x224):
+        #   32x32  (CIFAR-10):  3 bloques → 4x4  → 256 canales
+        #   224x224 (ImageNet): 5 bloques → 7x7  → 512 canales
+        # AdaptiveAvgPool(1,1) hace el pooling final independiente del tamano.
         self.features = nn.Sequential(
-            _block(3, 64),  # (3,32,32) → (64,16,16)
-            _block(64, 128),  # (64,16,16) → (128,8,8)
-            _block(128, 256),  # (128,8,8) → (256,4,4)
-            nn.AdaptiveAvgPool2d(
-                (1, 1)
-            ),  # → (256,1,1) — robusto ante cambios de input size
+            _block(3, 64),  # 224→112  |  32→16
+            _block(64, 128),  # 112→56   |  16→8
+            _block(128, 256),  # 56→28    |  8→4
+            _block(256, 512),  # 28→14    (ImageNet: extrae detalle fino)
+            _block(512, 512),  # 14→7     (ImageNet: receptive field amplio)
+            nn.AdaptiveAvgPool2d((1, 1)),  # → (512,1,1) cualquier input
         )
 
-        # Proyección a FEATURE_DIM para unificar la interfaz
+        # Proyeccion a FEATURE_DIM=512 — misma interfaz que ResNet-18
         self.fc = nn.Sequential(
-            nn.Flatten(),  # (256,1,1) → (256,)
-            nn.Linear(256, FEATURE_DIM),
+            nn.Flatten(),  # (512,1,1) → (512,)
+            nn.Linear(512, FEATURE_DIM),
             nn.ReLU(inplace=True),
+            nn.Dropout(0.3),  # regularizacion para ImageNet
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -136,7 +142,7 @@ class _SimpleCNN(nn.Module):
         Forward pass a través de la CNN.
 
         :param x: Imágenes de entrada.
-        :type x: torch.Tensor de shape (batch_size, 3, 32, 32) float32.
+        :type x: torch.Tensor de shape (batch_size, 3, H, W) float32. Cualquier H, W >= 32.
 
         :return: Vector de características extraído.
         :rtype: torch.Tensor de shape (batch_size, FEATURE_DIM) float32.
@@ -168,12 +174,12 @@ class CNNExtractor:
     :param cache_dir: Directorio de caché. None = Data/feature_cache/.
     """
 
-    ARCHITECTURES = ("resnet18",)
+    ARCHITECTURES = ("simple", "resnet18")
 
     def __init__(
         self,
-        arch: str = "resnet18",
-        pretrained: bool = True,
+        arch: str = "simple",
+        pretrained: bool = False,
         device: str = "cpu",
         seed: int | None = 42,
         cache_dir: str | None = None,
@@ -591,36 +597,40 @@ class CNNExtractor:
         batch_size: int = 256,
         verbose: bool = True,
         on_epoch: "Callable[[int, int, float, float], None] | None" = None,
+        n_classes: int = 1000,
     ) -> None:
         """
-        Preentrenamiento supervisado de la CNN simple en CIFAR-10.
+        Preentrenamiento supervisado de la CNN simple (arch="simple").
 
-        Solo aplica para arch="simple". Guarda los pesos en caché al
-        terminar para que los arranques posteriores sean instantáneos.
-        También guarda metadata con información sobre el entrenamiento
-        (épocas, precisión, pérdida, número de muestras, tiempo).
+        Entrena la CNN con un clasificador temporal para que aprenda
+        a extraer features discriminativos antes de pasarla al MLP.
+        Guarda pesos y metadata en cache_dir al terminar.
 
-        :param X_train: Imágenes de entrenamiento.
-        :type X_train: np.ndarray de shape (N, 3, 32, 32) float32 normalizado.
+        :param X_train: Imágenes de entrenamiento en formato NCHW.
+        :type X_train: np.ndarray de shape (N, 3, H, W) float32 normalizado.
+                       H y W pueden ser 32 (CIFAR-10) o 224 (ImageNet).
 
         :param Y_train: Etiquetas de entrenamiento.
-        :type Y_train: np.ndarray de shape (N,) int32.
+        :type Y_train: np.ndarray de shape (N,) int32, valores en [0, n_classes).
 
-        :param epochs: Número de épocas de preentrenamiento.
+        :param epochs: Épocas de preentrenamiento.
         :type epochs: int, default=10.
 
         :param lr: Tasa de aprendizaje del optimizador Adam.
         :type lr: float, default=1e-3.
 
-        :param batch_size: Número de ejemplos por batch.
+        :param batch_size: Imágenes por batch.
         :type batch_size: int, default=256.
 
-        :param verbose: Si True, imprime el progreso del entrenamiento.
+        :param verbose: Si True, imprime progreso.
         :type verbose: bool, default=True.
 
-        :param on_epoch: Callback opcional llamado al final de cada época.
-                         Firma: (epoch: int, total_epochs: int, loss: float, acc: float).
-        :type on_epoch: Callable[[int, int, float, float], None] | None, default=None.
+        :param on_epoch: Callback al final de cada época.
+                         Firma: (epoch, total, loss, acc).
+
+        :param n_classes: Número de clases del dataset.
+                          1000 para ImageNet, 10 para CIFAR-10.
+        :type n_classes: int, default=1000.
 
         :return: None
         :rtype: NoneType.
@@ -637,7 +647,7 @@ class CNNExtractor:
         self._model.train()
 
         # Crea un clasificador temporal
-        classifier = nn.Linear(FEATURE_DIM, 10).to(self.device)
+        classifier = nn.Linear(FEATURE_DIM, n_classes).to(self.device)
 
         # El algoritmo Adam es un optimizador variante de SGD con
         # momentum y learning rate adaptativo.
@@ -888,8 +898,7 @@ class CNNExtractor:
         """
         Cuenta cuántos shards consecutivos están en caché.
 
-        Sirve para reanudar la extracción desde donde se dejó
-        si el proceso se interrumpió.
+        Para determinar desde qué shard reanudar la extracción.
         """
         i = 0
         while self.shard_exists(i, split):

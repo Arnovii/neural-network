@@ -67,7 +67,9 @@ from Model.cnn_extractor import CNNExtractor
 from Model.mlp import init_params
 from Utils.imagenet_loader import (
     NUM_CLASSES,
+    detect_data_source,
     load_imagenet_labels,
+    load_imagenet_labels_stream,
 )
 from Utils.results_exporter import export_results
 
@@ -172,7 +174,7 @@ def main() -> None:
         "--n-train",
         type=int,
         default=50_000,
-        help="Total de ejemplos de entrenamiento (default: 50000, máx CIFAR-10 train)",
+        help="Total de ejemplos de entrenamiento (default: 50000).",
     )
     parser.add_argument(
         "--seed", type=int, default=None, help="Semilla aleatoria (default: ninguna)"
@@ -187,8 +189,8 @@ def main() -> None:
         "--cnn-arch",
         type=str,
         default="resnet18",
-        choices=["resnet18"],
-        help="Arquitectura CNN: simple (preentrenada local) | resnet18 (pesos ImageNet, default: simple)",
+        choices=["simple", "resnet18"],
+        help="Arquitectura CNN: simple (CNN propia entrenable) | resnet18 (pesos ImageNet). (default: resnet18)",
     )
     parser.add_argument(
         "--cnn-device",
@@ -207,8 +209,19 @@ def main() -> None:
         "--hf-token",
         type=str,
         default="",
-        help="Token HuggingFace para cargar Y_test en modo stream. "
-        "También acepta variable de entorno HF_TOKEN.",
+        help="Token HuggingFace para modo stream (o variable HF_TOKEN).",
+    )
+    parser.add_argument(
+        "--cnn-pretrain-epochs",
+        type=int,
+        default=5,
+        help="Épocas de pretrain para arch=simple. 0=sin pretrain. (default: 5)",
+    )
+    parser.add_argument(
+        "--cnn-pretrain-lr",
+        type=float,
+        default=0.001,
+        help="Learning rate para pretrain de CNN simple. (default: 0.001)",
     )
     parser.add_argument(
         "--cnn-pretrain-samples",
@@ -224,7 +237,7 @@ def main() -> None:
     OUTPUT_SIZE = NUM_CLASSES
 
     print("=" * 70)
-    print("PARAMETER SERVER — Configuración (CIFAR-10)")
+    print("PARAMETER SERVER — Configuración (ImageNet)")
     print("=" * 70)
     print(f"  Host            : {args.host}:{args.port}")
     print(f"  Workers         : {args.workers}")
@@ -295,31 +308,64 @@ def main() -> None:
     feature_dim = cnn.feature_dim
     print(f"CNN lista — arch={args.cnn_arch}  feature_dim={feature_dim}\n")
 
-    # Y_test: etiquetas del split val (50k int32).
-    # Los features los extrae el Worker vía REQUEST_TEST_FEATURES.
-    Y_test = None
-    if args.data_dir is not None:
-        val_dir = os.path.join(args.data_dir, "val")
-        if os.path.isdir(val_dir):
-            print("Cargando etiquetas de ImageNet val...")
-            Y_test = load_imagenet_labels(split="val", data_dir=args.data_dir)
-            print(f"  {len(Y_test):,} etiquetas val cargadas.\n")
+    # Pretrain CNN simple si se solicitaron epocas > 0
+    pretrain_epochs = args.cnn_pretrain_epochs
+    pretrain_lr = args.cnn_pretrain_lr
+    if args.cnn_arch == "simple" and pretrain_epochs > 0:
+        print("Solicitando muestra de train al Worker para pretrain CNN...")
+        train_sample = server.request_train_sample(
+            n_samples=getattr(args, "cnn_pretrain_samples", 10000)
+        )
+        if train_sample is not None:
+            X_pre, Y_pre = train_sample
+            print(
+                f"Muestra recibida: {len(X_pre)} imgs. "
+                f"Preentrenando {pretrain_epochs} epocas (lr={pretrain_lr})..."
+            )
+            cnn.pretrain(
+                X_pre,
+                Y_pre,
+                epochs=pretrain_epochs,
+                lr=pretrain_lr,
+                verbose=True,
+                n_classes=NUM_CLASSES,
+            )
+            print("Pretrain CNN simple completado.\n")
         else:
             print(
-                "[PS] Solicitando muestra de train al Worker "
-                "para preentrenar CNN sin sesgo..."
+                "Aviso: sin Workers disponibles para pretrain. "
+                "CNN simple arranca con pesos aleatorios.\n"
             )
-            train_sample = server.request_train_sample(
-                n_samples=args.cnn_pretrain_samples
-            )
-            if train_sample is not None:
-                X_pre, Y_pre = train_sample
-                print(
-                    f"[PS] Muestra recibida ({len(X_pre)} imgs). Preentrenando CNN..."
-                )
-                cnn.pretrain(X_pre, Y_pre, epochs=10, verbose=True)
-            else:
-                print("[PS] ⚠ Sin Workers — pretrain usará datos de prueba.")
+    elif args.cnn_arch == "simple":
+        print("CNN simple con pesos aleatorios (--cnn-pretrain-epochs=0).\n")
+
+    # Cargar etiquetas val. Detecta automáticamente disco local o stream.
+    import os as _os
+
+    hf_token = (getattr(args, "hf_token", "") or "").strip() or _os.environ.get(
+        "HF_TOKEN", ""
+    )
+    data_dir = getattr(args, "data_dir", None)
+    Y_test = None
+    source = detect_data_source(data_dir)
+    if source == "local" and data_dir:
+        try:
+            print("Cargando etiquetas val de ImageNet local...")
+            Y_test = load_imagenet_labels(split="val", data_dir=data_dir)
+            print(f"  {len(Y_test):,} etiquetas val cargadas.\n")
+        except Exception as _e:
+            print(f"  ⚠ No se pudieron cargar etiquetas val: {_e}")
+    elif hf_token:
+        try:
+            print("Cargando etiquetas val desde HuggingFace...")
+            Y_test = load_imagenet_labels_stream(split="val", token=hf_token)
+            print(f"  {len(Y_test):,} etiquetas val cargadas.\n")
+        except Exception as _e:
+            print(f"  ⚠ Error HuggingFace: {_e}")
+    else:
+        print("  ℹ Sin --data-dir ni --hf-token: sin evaluación de test.\n")
+
+    server.set_cnn(cnn)
 
     initial_params = init_params(
         feature_dim, args.hidden1, args.hidden2, OUTPUT_SIZE, args.seed
@@ -332,8 +378,9 @@ def main() -> None:
         initial_params=initial_params,
         learning_rate=args.lr,
         n_train=args.n_train,
-        Y_test=Y_test,  # etiquetas de prueba (50k int32)
+        Y_test=Y_test,
         momentum=args.momentum,
+        seed=args.seed,
     )
 
     elapsed = time.perf_counter() - t_start
