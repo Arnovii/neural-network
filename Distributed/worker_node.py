@@ -3,34 +3,55 @@ Distributed/worker_node.py
 
 Worker Node para el Algoritmo de Diego distribuido — ImageNet.
 
-Cambios respecto a CIFAR-10:
-  · Las imágenes NO se cargan en RAM. Se leen del disco por shards
-    (SHARD_SIZE imágenes) usando DataLoader de PyTorch.
-  · _handle_cnn_weights extrae features por shards y los cachea en
-    disco. Reanuda desde el último shard completo si se interrumpe.
-  · FeatureScaler (StandardScaler) calculado sobre shard 0 y aplicado
-    en cada época antes del forward del MLP.
-  · _run_training_session carga solo los shards necesarios por época
-    (_load_features_for_indices), liberando RAM inmediatamente.
-  · TEST_FEATURES enviados solo bajo petición explícita del PS
-    (REQUEST_TEST_FEATURES), no automáticamente.
-  · _handle_train_sample conservado como fallback del PS.
-  · arch=simple eliminado: solo resnet18 para ImageNet.
+──────────────────────────────────────────────────────────────────
+MODOS DE DATOS
+──────────────────────────────────────────────────────────────────
+Este Worker detecta automáticamente el origen del dataset:
+
+  MODO LOCAL (rápido, offline)
+  ─────────────────────────────
+  Si data_dir contiene train/ y val/ → usa torchvision.ImageFolder.
+  Requiere ~150 GB en disco pero no necesita internet en runtime.
+
+  MODO STREAM (sin descarga previa)
+  ───────────────────────────────────
+  Si data_dir es None o no existe → usa HuggingFace Hub en streaming.
+  Las imágenes llegan bajo demanda. Solo se guardan los features
+  extraídos (~2.6 GB de shards .npy). Requiere token HuggingFace
+  con acceso a ILSVRC/imagenet-1k.
+  Después de la primera sesión, los shards .npy permiten entrenar
+  completamente offline.
+
+  DETECCIÓN: detect_data_source(data_dir) en imagenet_loader.py.
+
+──────────────────────────────────────────────────────────────────
+PIPELINE
+──────────────────────────────────────────────────────────────────
+  1. PS envía CNN_WEIGHTS (ResNet-18, ~44 MB)
+  2. Worker extrae features por shards de 50k imágenes
+     → guarda shard_XXXX_X.npy en cache_dir
+  3. PS pide features de val con REQUEST_TEST_FEATURES
+  4. Entrenamiento MLP epoch por epoch con carga selectiva de shards
 """
 
+import os
 import socket
 from typing import List, Optional
 
 import numpy as np
 import torch
+from torch.utils.data import DataLoader
 
 from Distributed.protocol import MsgType, receive_message, send_message
 from Model.cnn_extractor import CNNExtractor, FEATURE_DIM
 from Utils.imagenet_loader import (
     NUM_CLASSES,
     SHARD_SIZE,
+    detect_data_source,
     get_imagenet_dataloader,
+    get_imagenet_stream_dataloader,
     load_imagenet_labels,
+    load_imagenet_labels_stream,
 )
 from Utils.feature_scaler import FeatureScaler
 
@@ -42,20 +63,36 @@ class WorkerNode:
 
     def __init__(
         self,
-        data_dir: str,
+        data_dir: Optional[str] = None,
         server_host: str = "127.0.0.1",
         server_port: int = 9999,
         device: str = "cpu",
         verbose: bool = True,
         cache_dir: Optional[str] = None,
+        hf_token: str = "",
     ) -> None:
         self._data_dir = data_dir
         self._server_host = server_host
         self._server_port = server_port
         self.verbose = verbose
+        self._hf_token = hf_token or os.environ.get("HF_TOKEN", "")
 
-        # Cargar SOLO etiquetas en RAM (sin imágenes)
-        self._Y_raw = load_imagenet_labels(split="train", data_dir=data_dir)
+        # Detectar origen del dataset
+        self._data_source = detect_data_source(data_dir)
+
+        # Cargar etiquetas de train en RAM (solo metadatos, sin imágenes).
+        # Modo local:  lee desde disco (ms).
+        # Modo stream: descarga solo la columna "label" de HF (~400 KB).
+        if self._data_source == "local":
+            self._Y_raw = load_imagenet_labels(split="train", data_dir=data_dir)
+        else:
+            self._log(
+                "Modo streaming detectado. "
+                "Descargando etiquetas de train desde HuggingFace..."
+            )
+            self._Y_raw = load_imagenet_labels_stream(
+                split="train", token=self._hf_token
+            )
         self.Y_train = self._Y_raw
         self._n_train = len(self._Y_raw)
 
@@ -176,12 +213,22 @@ class WorkerNode:
         La CNN ya está cargada desde _handle_cnn_weights.
         """
         self._log("PS solicitó features de prueba. Cargando val split...")
-        loader = get_imagenet_dataloader(
-            split="val",
-            data_dir=self._data_dir,
-            batch_size=self._optimal_batch_size(),
-            num_workers=4,
-        )
+        if self._data_source == "local":
+            loader = get_imagenet_dataloader(
+                split="val",
+                data_dir=self._data_dir,
+                batch_size=self._optimal_batch_size(),
+                num_workers=4,
+            )
+        else:
+            self._log("Stream: descargando val desde HuggingFace...")
+            loader = get_imagenet_stream_dataloader(
+                split="val",
+                token=self._hf_token,
+                batch_size=self._optimal_batch_size(),
+                shard_index=0,
+                num_shards=1,
+            )
         feats_list, labels_list = [], []
         self._cnn._model.eval()
         with torch.inference_mode():
@@ -380,6 +427,49 @@ class WorkerNode:
                     "loss": loss,
                     "accuracy": accuracy,
                 },
+            )
+
+    def _get_train_loader(
+        self,
+        indices: np.ndarray,
+        shard_idx: int,
+        n_shards: int,
+        start_in_shard: int = 0,
+    ) -> DataLoader:
+        """
+        Devuelve un DataLoader para un rango de imágenes de train.
+
+        Modo local:  usa get_imagenet_dataloader con índices concretos.
+        Modo stream: usa get_imagenet_stream_dataloader con sharding HF.
+
+        En modo stream el parámetro 'indices' se ignora — HuggingFace
+        no admite indexación aleatoria. El sharding garantiza que cada
+        Worker procesa una porción distinta del dataset.
+
+        :param indices: Índices globales (usado en modo local).
+        :param shard_idx: Índice del shard (0-based).
+        :param n_shards: Total de shards del dataset.
+        :param start_in_shard: Elemento de inicio (para reanudación en stream).
+        :return: DataLoader iterable.
+        """
+        bs = self._optimal_batch_size()
+        if self._data_source == "local":
+            return get_imagenet_dataloader(
+                split="train",
+                data_dir=self._data_dir,
+                batch_size=bs,
+                num_workers=4,
+                indices=indices,
+            )
+        else:
+            # Stream: el shard HF corresponde al shard de features
+            return get_imagenet_stream_dataloader(
+                split="train",
+                token=self._hf_token,
+                batch_size=bs,
+                shard_index=shard_idx,
+                num_shards=n_shards,
+                start_index=start_in_shard,
             )
 
     def _load_features_for_indices(

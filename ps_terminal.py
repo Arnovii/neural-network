@@ -65,7 +65,10 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from Distributed.parameter_server import ParameterServer
 from Model.cnn_extractor import CNNExtractor
 from Model.mlp import init_params
-from Utils.imagenet_loader import NUM_CLASSES, load_imagenet_labels
+from Utils.imagenet_loader import (
+    NUM_CLASSES,
+    load_imagenet_labels,
+)
 from Utils.results_exporter import export_results
 
 
@@ -153,14 +156,14 @@ def main() -> None:
     parser.add_argument(
         "--hidden1",
         type=int,
-        default=1024,
-        help="Neuronas en la primera capa oculta (default: 1024 para ImageNet)",
+        default=256,
+        help="Neuronas en la primera capa oculta (default: 256)",
     )
     parser.add_argument(
         "--hidden2",
         type=int,
-        default=512,
-        help="Neuronas en la segunda capa oculta (default: 512 para ImageNet)",
+        default=128,
+        help="Neuronas en la segunda capa oculta (default: 128)",
     )
     parser.add_argument(
         "--lr", type=float, default=0.01, help="Tasa de aprendizaje (default: 0.01)"
@@ -169,7 +172,7 @@ def main() -> None:
         "--n-train",
         type=int,
         default=50_000,
-        help="Total de ejemplos de entrenamiento (default: 50000, máx ImageNet train)",
+        help="Total de ejemplos de entrenamiento (default: 50000, máx CIFAR-10 train)",
     )
     parser.add_argument(
         "--seed", type=int, default=None, help="Semilla aleatoria (default: ninguna)"
@@ -197,11 +200,15 @@ def main() -> None:
         "--data-dir",
         type=str,
         default=None,
-        help=(
-            "Directorio raíz de ImageNet con train/ y val/. "
-            "Necesario para cargar etiquetas de val (Y_test). "
-            "Default: Data/ImageNet/"
-        ),
+        help="Directorio raíz de ImageNet con train/ y val/. "
+        "Si no existe se usa modo stream.",
+    )
+    parser.add_argument(
+        "--hf-token",
+        type=str,
+        default="",
+        help="Token HuggingFace para cargar Y_test en modo stream. "
+        "También acepta variable de entorno HF_TOKEN.",
     )
     parser.add_argument(
         "--cnn-pretrain-samples",
@@ -217,7 +224,7 @@ def main() -> None:
     OUTPUT_SIZE = NUM_CLASSES
 
     print("=" * 70)
-    print("PARAMETER SERVER — Configuración (ImageNet)")
+    print("PARAMETER SERVER — Configuración (CIFAR-10)")
     print("=" * 70)
     print(f"  Host            : {args.host}:{args.port}")
     print(f"  Workers         : {args.workers}")
@@ -299,9 +306,20 @@ def main() -> None:
             print(f"  {len(Y_test):,} etiquetas val cargadas.\n")
         else:
             print(
-                f"⚠ --data-dir='{args.data_dir}' no contiene val/. Sin eval de test.\n"
+                "[PS] Solicitando muestra de train al Worker "
+                "para preentrenar CNN sin sesgo..."
             )
-    server.set_cnn(cnn)
+            train_sample = server.request_train_sample(
+                n_samples=args.cnn_pretrain_samples
+            )
+            if train_sample is not None:
+                X_pre, Y_pre = train_sample
+                print(
+                    f"[PS] Muestra recibida ({len(X_pre)} imgs). Preentrenando CNN..."
+                )
+                cnn.pretrain(X_pre, Y_pre, epochs=10, verbose=True)
+            else:
+                print("[PS] ⚠ Sin Workers — pretrain usará datos de prueba.")
 
     initial_params = init_params(
         feature_dim, args.hidden1, args.hidden2, OUTPUT_SIZE, args.seed
@@ -316,7 +334,6 @@ def main() -> None:
         n_train=args.n_train,
         Y_test=Y_test,  # etiquetas de prueba (50k int32)
         momentum=args.momentum,
-        seed=args.seed,
     )
 
     elapsed = time.perf_counter() - t_start

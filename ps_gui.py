@@ -72,8 +72,12 @@ except ImportError as e:
 from Distributed.parameter_server import ParameterServer
 from Model.cnn_extractor import CNNExtractor, FEATURE_DIM
 from Model.mlp import init_params
-from Utils.imagenet_loader import NUM_CLASSES
-from Utils.imagenet_loader import load_imagenet_labels
+from Utils.imagenet_loader import (
+    NUM_CLASSES,
+    detect_data_source,
+    load_imagenet_labels,
+    load_imagenet_labels_stream,
+)
 from Utils.results_exporter import export_results
 
 
@@ -193,14 +197,15 @@ class DistributedPSApp:
         # Variables Tkinter del panel CNN — se inicializan aquí y se
         # sobreescriben con valores reales en _build_left_panel().
         self._v_cnn_arch: tk.StringVar = tk.StringVar(value="resnet18")
+        self._v_data_dir: tk.StringVar = tk.StringVar(value="Data/ImageNet")
         self._v_cache_dir: tk.StringVar = tk.StringVar(value="Data/feature_cache")
+        self._v_hf_token: tk.StringVar = tk.StringVar(value="")
         self._v_cnn_mode: tk.StringVar = tk.StringVar(value="load")
         self._v_cnn_model_sel: tk.StringVar = tk.StringVar(value="")
         self._v_cnn_epochs: tk.IntVar = tk.IntVar(value=10)
         self._v_cnn_lr: tk.StringVar = tk.StringVar(value="1e-3")
         self._v_cnn_seed: tk.StringVar = tk.StringVar(value="42")
         self._saved_models: list = []
-        self._v_data_dir: tk.StringVar = tk.StringVar(value="Data/ImageNet")
         # Widgets del panel CNN (se crean en _build_left_panel)
         self._rb_load: ttk.Radiobutton | None = None
         self._rb_train: ttk.Radiobutton | None = None
@@ -384,10 +389,11 @@ class DistributedPSApp:
         self._v_hidden1 = tk.IntVar(value=256)
         self._v_hidden2 = tk.IntVar(value=128)
         self._v_lr = tk.StringVar(value="0.01")
-        self._v_n_train = tk.StringVar(value="50000")  # subset inicial razonable
+        self._v_n_train = tk.StringVar(value="50000")
         self._v_seed = tk.StringVar(value="")
         self._v_cnn_arch = tk.StringVar(value="simple")
         self._v_momentum = tk.StringVar(value="0.9")
+        self._v_cnn_pretrain_samples = tk.StringVar(value="10000")
 
         # ── Sección: Conexión TCP ─────────────────────────────────
         ttk.Label(frame, text="Conexión TCP", font=("Helvetica", 11, "bold")).pack(
@@ -501,44 +507,89 @@ class DistributedPSApp:
             lbl.pack(anchor=tk.W)
 
         # ── Sección ENTRENAR ──────────────────────────────────────
-        # ImageNet: solo ResNet-18 con pesos ImageNet preentrenados.
-        # No hay pretrain local — los pesos vienen de torchvision.
         self._frm_train_cnn = ttk.Frame(self._frm_cnn_container)
         self._frm_train_cnn.grid(row=0, column=0, sticky="nsew")
 
         ttk.Label(
-            self._frm_train_cnn,
-            text="Arquitectura:",
-            font=("Helvetica", 9, "bold"),
+            self._frm_train_cnn, text="Arquitectura:", font=("Helvetica", 9, "bold")
         ).pack(anchor=tk.W, pady=(0, 2))
+        arch_frame = ttk.Frame(self._frm_train_cnn)
+        arch_frame.pack(fill=tk.X)
         ttk.Radiobutton(
-            self._frm_train_cnn,
-            text="ResNet-18 — pesos ImageNet preentrenados (~75-80%)",
+            arch_frame,
+            text="Simple  (~60%)",
+            variable=self._v_cnn_arch,
+            value="simple",
+        ).pack(anchor=tk.W)
+        ttk.Radiobutton(
+            arch_frame,
+            text="Resnet18 - Pesos ImageNet  (~75-80%)",
             variable=self._v_cnn_arch,
             value="resnet18",
-            state=tk.DISABLED,  # única opción disponible para ImageNet
         ).pack(anchor=tk.W)
+
+        ttk.Label(self._frm_train_cnn, text="Épocas CNN (1–50):").pack(
+            anchor=tk.W, pady=(6, 0)
+        )
+        ttk.Scale(
+            self._frm_train_cnn,
+            from_=1,
+            to=50,
+            orient=tk.HORIZONTAL,
+            variable=self._v_cnn_epochs,
+            length=200,
+            command=lambda v: self._v_cnn_epochs.set(max(1, int(round(float(v))))),
+        ).pack(fill=tk.X, pady=2)
+        ttk.Entry(
+            self._frm_train_cnn,
+            textvariable=self._v_cnn_epochs,
+            width=5,
+            justify="center",
+        ).pack(pady=(0, 4))
+
+        ttk.Label(self._frm_train_cnn, text="LR CNN (0.0001–0.1):").pack(
+            anchor=tk.W, pady=(4, 0)
+        )
+        ttk.Entry(
+            self._frm_train_cnn,
+            textvariable=self._v_cnn_lr,
+            width=10,
+            justify="center",
+        ).pack(pady=(0, 6))
+
+        ttk.Label(self._frm_train_cnn, text="Muestras CNN (100–50000):").pack(
+            anchor=tk.W, pady=(4, 0)
+        )
+        ttk.Entry(
+            self._frm_train_cnn,
+            textvariable=self._v_cnn_pretrain_samples,
+            width=10,
+            justify="center",
+        ).pack(pady=(0, 6))
+
+        ttk.Label(self._frm_train_cnn, text="Semilla CNN (vacío = aleatoria):").pack(
+            anchor=tk.W, pady=(4, 0)
+        )
+        ttk.Entry(
+            self._frm_train_cnn,
+            textvariable=self._v_cnn_seed,
+            width=10,
+            justify="center",
+        ).pack(pady=(0, 6))
 
         ttk.Label(
             self._frm_train_cnn,
-            text=(
-                "ℹ ResNet-18 usa pesos ImageNet preentrenados.\n"
-                "  No requiere preentrenamiento local adicional.\n"
-                "  Los pesos se distribuyen a todos los Workers\n"
-                "  automáticamente al iniciar el entrenamiento."
-            ),
+            text="ℹ Solo aplica para Simple. Resnet18 usa\n"
+            "  pesos ImageNet (sin preentrenar).",
             font=("Helvetica", 8),
             foreground="#1565C0",
             justify=tk.LEFT,
-        ).pack(anchor=tk.W, pady=(6, 4))
+        ).pack(anchor=tk.W, pady=(0, 4))
 
         ttk.Label(
             frame,
-            text=(
-                "ℹ ImageNet: features extraídos por shards (~50k imgs/shard).\n"
-                "  Primera sesión: extracción larga (horas CPU / min GPU).\n"
-                "  Sesiones siguientes: carga de caché en segundos."
-            ),
+            text="ℹ El PS distribuye la CNN al Worker automáticamente.\n"
+            "  La extracción de features ocurre en el Worker.",
             font=("Helvetica", 8),
             foreground="#2E7D32",
             justify=tk.LEFT,
@@ -547,43 +598,51 @@ class DistributedPSApp:
         # Inicializar estado del panel
         self._refresh_saved_models()
 
-        # ── Sección Dataset ImageNet ──────────────────────────────
         ttk.Label(frame, text="Dataset ImageNet", font=("Helvetica", 10, "bold")).pack(
             anchor=tk.W, pady=(18, 0)
         )
         ttk.Separator(frame, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=2)
-
-        ttk.Label(
-            frame,
-            text="Directorio raíz (train/ y val/):",
-        ).pack(anchor=tk.W)
+        ttk.Label(frame, text="Directorio raíz (train/ y val/):").pack(anchor=tk.W)
         dir_frame = ttk.Frame(frame)
         dir_frame.pack(fill=tk.X, pady=(2, 0))
         ttk.Entry(dir_frame, textvariable=self._v_data_dir, width=26).pack(
             side=tk.LEFT, fill=tk.X, expand=True
         )
-        ttk.Button(
-            dir_frame,
-            text="📁",
-            width=3,
-            command=self._browse_data_dir,
-        ).pack(side=tk.LEFT, padx=(4, 0))
-
-        ttk.Label(
-            frame,
-            text="Directorio de caché de shards:",
-        ).pack(anchor=tk.W, pady=(6, 0))
+        ttk.Button(dir_frame, text="📁", width=3, command=self._browse_data_dir).pack(
+            side=tk.LEFT, padx=(4, 0)
+        )
+        ttk.Label(frame, text="Caché de shards:").pack(anchor=tk.W, pady=(6, 0))
         cache_frame = ttk.Frame(frame)
-        cache_frame.pack(fill=tk.X, pady=(2, 6))
+        cache_frame.pack(fill=tk.X, pady=(2, 0))
         ttk.Entry(cache_frame, textvariable=self._v_cache_dir, width=26).pack(
             side=tk.LEFT, fill=tk.X, expand=True
         )
         ttk.Button(
-            cache_frame,
-            text="📁",
-            width=3,
-            command=self._browse_cache_dir,
+            cache_frame, text="📁", width=3, command=self._browse_cache_dir
         ).pack(side=tk.LEFT, padx=(4, 0))
+        ttk.Label(frame, text="Token HuggingFace (modo stream):").pack(
+            anchor=tk.W, pady=(6, 0)
+        )
+        hf_frame = ttk.Frame(frame)
+        hf_frame.pack(fill=tk.X, pady=(2, 0))
+        ttk.Entry(
+            hf_frame,
+            textvariable=self._v_hf_token,
+            width=26,
+            show="*",  # ocultar token como contraseña
+        ).pack(side=tk.LEFT, fill=tk.X, expand=True)
+        ttk.Label(
+            frame,
+            text=(
+                "ℹ Si data_dir tiene train/ y val/ se usa disco local.\n"
+                "  Si no, se usa HuggingFace streaming (requiere token).\n"
+                "  La primera sesión descarga y cachea features (~2.6 GB).\n"
+                "  Las siguientes no necesitan internet."
+            ),
+            font=("Helvetica", 8),
+            foreground="#6A1B9A",
+            justify=tk.LEFT,
+        ).pack(anchor=tk.W, pady=(4, 6))
 
         ttk.Label(frame, text="Clasificador MLP:", font=("Helvetica", 10, "bold")).pack(
             anchor=tk.W, pady=(14, 0)
@@ -599,10 +658,10 @@ class DistributedPSApp:
         )
         _add_integer_input(
             frame,
-            "Ejemplos de entrenamiento (1 000 – 1 281 167):",
+            "Ejemplos de entrenamiento (10 - 50000):",
             self._v_n_train,
-            1000,
-            1281167,
+            100,
+            50000,
         )
         _add_text_input(frame, "Semilla (vacío = aleatoria):", self._v_seed)
 
@@ -1087,14 +1146,11 @@ class DistributedPSApp:
                 return None
             meta = self._saved_models[idx]
             arch = meta["arch"]
-            cache_dir_val = self._v_cache_dir.get().strip() or None
             cnn = CNNExtractor(
                 arch=arch,
                 pretrained=(arch == "resnet18"),
                 device="cpu",
-                seed=None,
-                cache_dir=cache_dir_val,
-                input_size=224,
+                seed=42,
             )
             cnn.load_from_path(meta["weights_path"])
             return cnn
@@ -1258,17 +1314,35 @@ class DistributedPSApp:
                 def _gui_log(msg: str) -> None:
                     q.put(("log", msg))
 
-                # ImageNet: solo etiquetas val (50k int32), sin imágenes en RAM.
-                # Los features de prueba los extrae el Worker via REQUEST_TEST_FEATURES.
-                _gui_log("[PS] Cargando etiquetas de ImageNet val...")
-                try:
-                    data_dir = self._v_data_dir.get().strip() or None
-                    Y_test = load_imagenet_labels(split="val", data_dir=data_dir)
-                    _gui_log(f"[PS] {len(Y_test):,} etiquetas val cargadas.")
-                except Exception as _e:
-                    _gui_log(f"[PS] ⚠ Sin etiquetas val: {_e}. Sin eval de test.")
-                    Y_test = None
+                # Cargar etiquetas val. Detecta automáticamente si usar
+                # disco local o HuggingFace streaming.
+                data_dir_val = self._v_data_dir.get().strip() or None
+                hf_token_val = (self._v_hf_token.get() or "").strip() or __import__(
+                    "os"
+                ).environ.get("HF_TOKEN", "")
+                source_val = detect_data_source(data_dir_val)
+                Y_test = None
                 X_test_raw = None
+                if source_val == "local" and data_dir_val:
+                    try:
+                        _gui_log("[PS] Cargando etiquetas val de ImageNet local...")
+                        Y_test = load_imagenet_labels(
+                            split="val", data_dir=data_dir_val
+                        )
+                        _gui_log(f"[PS] {len(Y_test):,} etiquetas val cargadas.")
+                    except Exception as _e:
+                        _gui_log(f"[PS] ⚠ Sin etiquetas val: {_e}")
+                elif hf_token_val:
+                    try:
+                        _gui_log("[PS] Cargando etiquetas val desde HuggingFace...")
+                        Y_test = load_imagenet_labels_stream(
+                            split="val", token=hf_token_val
+                        )
+                        _gui_log(f"[PS] {len(Y_test):,} etiquetas val cargadas.")
+                    except Exception as _e:
+                        _gui_log(f"[PS] ⚠ Error HuggingFace: {_e}")
+                else:
+                    _gui_log("[PS] ℹ Sin data-dir ni token — sin evaluación de test.")
 
                 # ── Obtener CNN según el modo seleccionado ──────────
                 cnn_mode = self._v_cnn_mode.get()
@@ -1284,23 +1358,98 @@ class DistributedPSApp:
                     self._cnn = cnn
 
                 else:  # modo "train"
-                    # ImageNet: solo ResNet-18 con pesos preentrenados.
-                    # No hay pretrain local — los pesos vienen de torchvision.
-                    _gui_log("[PS] Cargando pesos ImageNet de ResNet-18...")
-                    _gui_log(
-                        "  (descarga ~44 MB la primera vez, luego usa caché local)"
-                    )
-                    cache_dir_val = self._v_cache_dir.get().strip() or None
+                    arch_new = self._v_cnn_arch.get()
+                    cnn_pretrained_new = arch_new == "resnet18"
+                    cnn_epochs_new = int(self._v_cnn_epochs.get())
+                    try:
+                        cnn_lr_new = float(self._v_cnn_lr.get())
+                    except ValueError:
+                        cnn_lr_new = 0.001
+
+                    if arch_new == "resnet18":
+                        _gui_log("[PS] Descargando pesos ImageNet (~44 MB, 1ª vez)...")
+                    else:
+                        _gui_log(
+                            f"[PS] Preentrenando CNN simple "
+                            f"({cnn_epochs_new} épocas)..."
+                        )
+
+                    # Siempre crear CNN nueva — nunca reutilizar la anterior.
                     self._cnn = CNNExtractor(
-                        arch="resnet18",
-                        pretrained=True,
+                        arch=arch_new,
+                        pretrained=cnn_pretrained_new,
                         device="cpu",
-                        seed=None,
-                        cache_dir=cache_dir_val,
-                        input_size=224,
+                        seed=cnn_seed,
                     )
                     cnn = self._cnn
-                    _gui_log(f"[PS] ResNet-18 lista (hash={cnn._weights_hash()}).")
+
+                    if arch_new == "simple":
+
+                        def _on_pretrain_epoch_check(
+                            epoch: int, total: int, loss: float, acc: float
+                        ) -> None:
+                            if epoch == 0:
+                                _gui_log(
+                                    f"[CNN] Preentrenando  0/{total} — Iniciando..."
+                                )
+                            else:
+                                bar = "█" * int(acc / 5)
+                                _gui_log(
+                                    f"[CNN] Preentrenando {epoch:2d}/{total} — "
+                                    f"loss={loss:.4f}  acc={acc:.1f}%  {bar}"
+                                )
+
+                        # Pedir muestra de train al Worker para preentrenar
+                        # sin usar datos de prueba → elimina el sesgo.
+                        _gui_log(
+                            "[PS] Solicitando muestra de imágenes de train "
+                            "al Worker (sin sesgo en evaluación)..."
+                        )
+                        train_sample = server.request_train_sample(
+                            n_samples=int(self._v_cnn_pretrain_samples.get())
+                        )
+
+                        if train_sample is not None:
+                            X_pretrain, Y_pretrain = train_sample
+                            _gui_log(
+                                f"[PS] Muestra recibida: {len(X_pretrain)} imgs "
+                                f"de train — preentrenando CNN sin sesgo."
+                            )
+                        else:
+                            X_pretrain, Y_pretrain = None, None
+                            _gui_log(
+                                "[PS] ⚠ Sin Workers disponibles — "
+                                "no es posible preentrenar la CNN simple."
+                            )
+
+                        if X_pretrain is not None and Y_pretrain is not None:
+                            cnn.pretrain(
+                                X_pretrain,
+                                Y_pretrain,
+                                epochs=cnn_epochs_new,
+                                lr=cnn_lr_new,
+                                verbose=False,
+                                on_epoch=_on_pretrain_epoch_check,
+                            )
+                        # Verificar duplicados: si ya existe un modelo con
+                        # el mismo hash, no guardar y avisar al usuario.
+                        new_hash = cnn._weights_hash()
+                        existing = CNNExtractor.list_saved_models()
+                        duplicate = next(
+                            (
+                                m
+                                for m in existing
+                                if m.get("weights_hash") == new_hash
+                                and m.get("metadata_path") != cnn._metadata_path()
+                            ),
+                            None,
+                        )
+                        if duplicate:
+                            _gui_log(
+                                "⚠ El modelo entrenado es idéntico a uno "
+                                f"ya guardado ({duplicate['created_at'][:10]}). "
+                                "No se guardará una copia adicional."
+                            )
 
                     # Al terminar, actualizar la lista de modelos y
                     # activar el modo carga si es el primero que se guardó.
