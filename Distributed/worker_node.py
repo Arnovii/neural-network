@@ -313,10 +313,16 @@ class WorkerNode:
         """
         Carga pesos CNN del PS y extrae features de ImageNet por shards.
 
+        Soporta dos modos:
+          - LOCAL: Lee imágenes de disco, extrae shards con índices específicos.
+          - STREAM: Procesa HuggingFace streaming secuencialmente, divide en shards.
+
         Flujo:
           1. Cargar pesos recibidos (reconstruir CNN si arch cambió)
           2. Contar shards ya en caché para este hash de pesos
-          3. Extraer shards faltantes uno a uno, liberando RAM entre ellos
+          3. Extraer shards faltantes:
+             - Modo local: por índices concretos (0-50k, 50k-100k, ...)
+             - Modo stream: procesando secuencialmente
           4. Calcular/cargar FeatureScaler sobre shard 0
           5. Reconstruir índices por clase
           6. Enviar CNN_READY al PS
@@ -344,34 +350,10 @@ class WorkerNode:
         if n_cached >= n_shards:
             self._log(f"Todos los shards ({n_shards}) ya en caché.")
         else:
-            self._log(
-                f"Extrayendo shards {n_cached}–{n_shards-1} "
-                f"({self._n_train} imgs, {SHARD_SIZE}/shard)..."
-            )
-            for sid in range(n_cached, n_shards):
-                start   = sid * SHARD_SIZE
-                end     = min(start + SHARD_SIZE, self._n_train)
-                indices = np.arange(start, end)
-                self._log(f"  Shard {sid}/{n_shards-1}: imgs {start}–{end-1}...")
-
-                loader = get_imagenet_dataloader(
-                    split="train", data_dir=self._data_dir,
-                    batch_size=self._optimal_batch_size(),
-                    num_workers=4, indices=indices,
-                )
-                feats_list, labels_list = [], []
-                self._cnn._model.eval()
-                with torch.inference_mode():
-                    for imgs, labels in loader:
-                        imgs = imgs.to(self._cnn.device)
-                        feats_list.append(self._cnn._model(imgs).cpu().numpy())
-                        labels_list.append(labels.numpy().astype(np.int32))
-
-                X_s = np.concatenate(feats_list,  axis=0)
-                Y_s = np.concatenate(labels_list, axis=0)
-                self._cnn.save_shard(sid, "train", X_s, Y_s)
-                self._log(f"  Shard {sid} guardado ({X_s.nbytes // 1024 // 1024} MB)")
-                del X_s, Y_s, feats_list, labels_list
+            if self._data_source == "local":
+                self._extract_shards_local(n_cached, n_shards)
+            else:
+                self._extract_shards_stream(n_cached, n_shards)
 
         # ── FeatureScaler sobre shard 0 ────────────────────────────
         if not FeatureScaler.exists(self._cnn._cache_dir, wh):
@@ -387,8 +369,7 @@ class WorkerNode:
             self._log("FeatureScaler cargado desde caché.")
 
         # Reconstruir índices por clase
-        # Reconstruir _class_indices desde los shards ya cacheados
-        # si estamos en modo stream y _Y_raw aún no está cargado.
+        # En modo stream, _Y_raw se carga ahora desde los shards.
         if self._Y_raw is None:
             all_labels: list = []
             n_shards = self._cnn.count_cached_shards("train")
@@ -407,6 +388,107 @@ class WorkerNode:
         self._log("Features listos. Enviando CNN_READY al PS.")
         assert self._sock is not None
         send_message(self._sock, MsgType.CNN_READY, {"worker_id": self.worker_id})
+
+    def _extract_shards_local(self, n_cached: int, n_shards: int) -> None:
+        """
+        Extrae shards en modo LOCAL (ImageFolder con índices específicos).
+
+        Modo local: cada shard es un rango específico de índices.
+        Ej: shard 0 = imgs 0-50000, shard 1 = imgs 50000-100000, ...
+        """
+        self._log(
+            f"Extrayendo shards {n_cached}–{n_shards-1} en MODO LOCAL "
+            f"({self._n_train} imgs, {SHARD_SIZE}/shard)..."
+        )
+        for sid in range(n_cached, n_shards):
+            start   = sid * SHARD_SIZE
+            end     = min(start + SHARD_SIZE, self._n_train)
+            indices = np.arange(start, end)
+            self._log(f"  Shard {sid}/{n_shards-1}: imgs {start}–{end-1}...")
+
+            loader = get_imagenet_dataloader(
+                split="train", data_dir=self._data_dir,
+                batch_size=self._optimal_batch_size(),
+                num_workers=4, indices=indices,
+            )
+            feats_list, labels_list = [], []
+            self._cnn._model.eval()
+            with torch.inference_mode():
+                for imgs, labels in loader:
+                    imgs = imgs.to(self._cnn.device)
+                    feats_list.append(self._cnn._model(imgs).cpu().numpy())
+                    labels_list.append(labels.numpy().astype(np.int32))
+
+            X_s = np.concatenate(feats_list,  axis=0)
+            Y_s = np.concatenate(labels_list, axis=0)
+            self._cnn.save_shard(sid, "train", X_s, Y_s)
+            self._log(f"  Shard {sid} guardado ({X_s.nbytes // 1024 // 1024} MB)")
+            del X_s, Y_s, feats_list, labels_list
+
+    def _extract_shards_stream(self, n_cached: int, n_shards: int) -> None:
+        """
+        Extrae shards en modo STREAM (HuggingFace, sin indexación arbitraria).
+
+        Modo stream: procesa secuencialmente, divide en shards mientras itera.
+        Ignora n_cached (siempre extrae desde el inicio del stream).
+        """
+        self._log(
+            f"Extrayendo features desde HuggingFace STREAM "
+            f"({self._n_train} imgs estimadas, {SHARD_SIZE}/shard)..."
+        )
+
+        loader = get_imagenet_stream_dataloader(
+            split="train",
+            token=self._hf_token,
+            batch_size=self._optimal_batch_size(),
+            shard_index=0,  # Este Worker procesa TODO el split de una vez
+            num_shards=1,
+        )
+
+        feats_list:  list = []
+        labels_list: list = []
+        idx_global = 0
+        current_shard = 0
+
+        self._cnn._model.eval()
+        with torch.inference_mode():
+            for batch_imgs, batch_labels in loader:
+                # Procesar batch
+                batch_imgs = batch_imgs.to(self._cnn.device)
+                feats = self._cnn._model(batch_imgs).cpu().numpy()
+                labels = batch_labels.numpy().astype(np.int32)
+
+                # Acumular
+                feats_list.append(feats)
+                labels_list.append(labels)
+                idx_global += len(labels)
+
+                # Guardar shard completo cuando alcanzamos SHARD_SIZE
+                if idx_global % SHARD_SIZE == 0 or idx_global >= self._n_train:
+                    n_so_far = len(np.concatenate(feats_list))
+                    if n_so_far >= SHARD_SIZE or idx_global >= self._n_train:
+                        X_s = np.concatenate(feats_list,  axis=0)
+                        Y_s = np.concatenate(labels_list, axis=0)
+
+                        # Guardar solo lo que corresponde a este shard
+                        expected_size = min(SHARD_SIZE, self._n_train - current_shard * SHARD_SIZE)
+                        if len(X_s) >= expected_size:
+                            X_save = X_s[:expected_size]
+                            Y_save = Y_s[:expected_size]
+                            self._cnn.save_shard(current_shard, "train", X_save, Y_save)
+                            self._log(
+                                f"  Shard {current_shard} guardado ({X_save.nbytes // 1024 // 1024} MB)"
+                            )
+
+                            # Rebasar los elementos que NO van en este shard
+                            feats_list = [X_s[expected_size:]]
+                            labels_list = [Y_s[expected_size:]]
+                            current_shard += 1
+                        
+                        if idx_global >= self._n_train:
+                            break
+
+        self._log(f"Stream extraction completada. {current_shard} shards guardados.")
 
     def _run_training_session(
         self,
