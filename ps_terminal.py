@@ -71,6 +71,11 @@ from Utils.imagenet_loader import (
     load_imagenet_labels,
     load_imagenet_labels_stream,
 )
+from Utils.cnn_model_manager import (
+    save_cnn_model,
+    load_cnn_model,
+    print_models,
+)
 from Utils.results_exporter import export_results
 
 
@@ -173,8 +178,8 @@ def main() -> None:
     parser.add_argument(
         "--n-train",
         type=int,
-        default=50_000,
-        help="Total de ejemplos de entrenamiento (default: 50000).",
+        default=None,
+        help="Total de ejemplos de entrenamiento (default: use full dataset ~1,281,167).",
     )
     parser.add_argument(
         "--seed", type=int, default=None, help="Semilla aleatoria (default: ninguna)"
@@ -229,7 +234,33 @@ def main() -> None:
         default=10000,
         help="Número de imágenes para preentrenar la CNN simple (default: 10000)",
     )
+    parser.add_argument(
+        "--save-cnn",
+        action="store_true",
+        help="Guardar pesos de la CNN al finalizar (solo modo 'simple')",
+    )
+    parser.add_argument(
+        "--cnn-hash",
+        type=str,
+        default=None,
+        help="Cargar modelo CNN guardado por hash (modo 'simple')",
+    )
+    parser.add_argument(
+        "--cnn-list",
+        action="store_true",
+        help="Listar modelos CNN guardados y salir",
+    )
     args = parser.parse_args()
+
+    # Manejar --cnn-list
+    if args.cnn_list:
+        print_models()
+        sys.exit(0)
+
+    # Resolver n_train: si no se especifica, usar el dataset completo de ImageNet
+    IMAGENET_TRAIN_SIZE = 1_281_167
+    if args.n_train is None:
+        args.n_train = IMAGENET_TRAIN_SIZE
 
     # resnet18 siempre usa pesos ImageNet — es la única configuración útil.
     cnn_pretrained = args.cnn_arch == "resnet18"
@@ -294,19 +325,33 @@ def main() -> None:
     ready_event.wait()
     print()
 
-    # Construye el extractor CNN con la misma semilla que usarán los Workers,
-    # garantizando que todos partan de los mismos pesos convolucionales.
-    print("\nConstruyendo extractor CNN...")
-    # La CNN siempre usa seed=42 — independiente de la semilla MLP.
-    # Mezclarlas haría que --seed invalide la caché CNN.
-    cnn = CNNExtractor(
-        arch=args.cnn_arch,
-        pretrained=cnn_pretrained,
-        device=args.cnn_device,
-        seed=42,
-    )
-    feature_dim = cnn.feature_dim
-    print(f"CNN lista — arch={args.cnn_arch}  feature_dim={feature_dim}\n")
+    # Cargar CNN guardada o crear una nueva
+    if args.cnn_hash:
+        print(f"\nCargando modelo CNN (hash={args.cnn_hash})...")
+        cnn = load_cnn_model(
+            args.cnn_hash,
+            device=args.cnn_device,
+            seed=42,
+        )
+        if cnn is None:
+            print(f"⚠ Modelo no encontrado: {args.cnn_hash}")
+            print("  Usa --cnn-list para ver modelos disponibles.")
+            sys.exit(1)
+        feature_dim = cnn.feature_dim
+        print(f"CNN cargada — arch={cnn.arch}  feature_dim={feature_dim}\n")
+    else:
+        # Construir CNN nueva
+        print("\nConstruyendo extractor CNN...")
+        # La CNN siempre usa seed=42 — independiente de la semilla MLP.
+        # Mezclarlas haría que --seed invalide la caché CNN.
+        cnn = CNNExtractor(
+            arch=args.cnn_arch,
+            pretrained=cnn_pretrained,
+            device=args.cnn_device,
+            seed=42,
+        )
+        feature_dim = cnn.feature_dim
+        print(f"CNN lista — arch={args.cnn_arch}  feature_dim={feature_dim}\n")
 
     # Pretrain CNN simple si se solicitaron epocas > 0
     pretrain_epochs = args.cnn_pretrain_epochs
@@ -386,6 +431,24 @@ def main() -> None:
     elapsed = time.perf_counter() - t_start
 
     server.shutdown()
+
+    # Guardar CNN si se solicitó (solo modo 'simple')
+    if args.save_cnn and args.cnn_arch == "simple":
+        print("\nGuardando modelo CNN...")
+        try:
+            model_hash = save_cnn_model(
+                cnn,
+                n_train=args.n_train,
+                epochs=args.epochs,
+                final_accuracy=history["accuracies"][-1],
+                final_loss=history["losses"][-1],
+                elapsed_time=elapsed,
+                description=f"Entrenamiento automático con {args.n_train:,} ejemplos",
+            )
+            print(f"  ✓ CNN guardada — hash: {model_hash}")
+            print(f"    Cargarlo después con: --cnn-hash {model_hash}")
+        except Exception as e:
+            print(f"  ⚠ Error al guardar CNN: {e}")
 
     # Resumen final
     print("\n" + "=" * 70)

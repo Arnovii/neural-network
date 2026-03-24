@@ -1,10 +1,38 @@
-# Entrenamiento Distribuido ImageNet con CNN + MLP
+# Distributed Neural Network Training – ImageNet CNN+MLP
 
-Proyecto de aprendizaje automático distribuido que implementa el **Algoritmo de Diego** (promediado de gradientes por época) sobre **ImageNet**, combinando una **CNN como extractor de features** (PyTorch, pesos preentrenados o propios) y un **MLP como clasificador** (NumPy, pesos distribuidos). Parameter Server y Workers están conectados por TCP usando **Pickle** para la serialización optimizada de mensajes (sin conversiones de arrays).
+Entrenamiento distribuido de redes neuronales (CNN + MLP) sobre ImageNet usando arquitectura Parameter Server + Workers.
+
+## Tabla de Contenidos
+
+- [Descripción General](#descripción-general)
+- [¿Por Qué Este Proyecto?](#por-qué-este-proyecto)
+- [Arquitectura](#arquitectura)
+- [Modos de Datos](#modos-de-datos)
+- [Requisitos e Instalación](#requisitos-e-instalación)
+- [Uso Rápido](#uso-rápido)
+- [Ejemplos Completos](#ejemplos-completos)
+- [Estructura del Proyecto](#estructura-del-proyecto)
+- [Sistema de Persistencia de Modelos](#sistema-de-persistencia-de-modelos)
+- [Troubleshooting](#troubleshooting)
 
 ---
 
-## Estructura del Proyecto
+## Descripción General
+
+Este proyecto implementa un sistema distribuido de entrenamiento de redes neuronales que:
+
+1. **Extrae características** de imágenes ImageNet usando una CNN (convolutional neural network)
+2. **Entrena un clasificador MLP** (multilayer perceptron) sobre esas características
+3. **Distribuye el aprendizaje** entre múltiples Workers usando un Parameter Server central
+
+El sistema es transparente respecto al origen de los datos:
+
+- **Modo LOCAL**: Lee imágenes de disco (~150 GB requeridos)
+- **Modo STREAMING**: Descarga bajo demanda desde HuggingFace (sin descargar el dataset completo)
+
+### ¿Por Qué Este Proyecto?
+
+Entrena modelos CNN+MLP grandes sin necesidad de GPU con memoria masiva. El Parameter Server promedia gradientes de múltiples Workers, reduciendo el costo computacional y permitiendo entrenar modelos más complejos.
 
 ```
 neural-network/
@@ -310,19 +338,304 @@ eliminando conversiones y reduciendo el tamaño en red en un **60-70%** respecto
 La pipeline completa se divide en dos etapas con responsabilidades distintas:
 
 ```
-┌──────────────────────────────────────────────────────────────┐
-│  ImageNet imagen  (3 × 224 × 224) — 1.28M imágenes train     │
-│         │                                                    │
-│         ▼                                                    │
-│  ┌─────────────────┐                                         │
-│  │  CNN Extractor  │  ← PyTorch (pesos preentrenados ImageNet)
-│  │  (convolucional)│    o arquitectura propia ("simple")     │
-│  │   ResNet18      │    Idéntica en todos los Workers        │
-│  │   o SimpleCNN   │    Inicialización: semilla reproducible │
-│  └────────┬────────┘                                         │
-│           │  feature vector  (512,)                          │
-│           ▼                                                  │
-│  ┌─────────────────┐                                         │
+┌────────────────────────────────────────────────────────────────┐
+│  ImageNet imagen (3 × 224 × 224) — 1.28M imágenes train        │
+│         │                                                      │
+│         ▼                                                      │
+│  ┌──────────────────────┐                                      │
+│  │ CNN Extractor        │  ← PyTorch (pesos ImageNet)          │
+│  │ (ResNet18/SimpleCNN) │    Idéntica en todos Workers        │
+│  │ Modos:              │    Semilla reproducible              │
+│  │ • resnet18: frozen  │    (same features everywhere)        │
+│  │ • simple: trainable │                                      │
+│  └──────────┬──────────┘                                      │
+│             │ feature vector  (512,)                          │
+│             ▼                                                  │
+│  ┌──────────────────────┐                                      │
+│  │ Feature Scaler       │  ← StandardScaler (μ=0, σ=1)        │
+│  │ (Normalization)      │    Calculado sobre train features   │
+│  │ Solo en resnet18     │                                      │
+│  └──────────┬──────────┘                                      │
+│             │                                                  │
+│             ▼                                                  │
+│  ┌──────────────────────────────────────────────────────────┐ │
+│  │ MLP (NumPy) — Distributed Training                        │ │
+│  │                                                          │ │
+│  │  Input:  512-dims (features)                            │ │
+│  │  Output: 1000-dims (logits para 1000 clases ImageNet)   │ │
+│  │                                                          │ │
+│  │  ┌─────────────────────────────────────────────────┐   │ │
+│  │  │ Worker i                                        │   │ │
+│  │  │ ────────────────────────────────────────────    │   │ │
+│  │  │ Batch i = n_train / n_workers  (estratificado) │   │ │
+│  │  │ ▼                                               │   │ │
+│  │  │ logits = MLP.forward(X_batch_i)                │   │ │
+│  │  │ loss = softmax_cross_entropy(logits_i, Y_i)    │   │ │
+│  │  │ grads_i = backward(loss)  [solo MLP!]          │   │ │
+│  │  │ ▼                                               │   │ │
+│  │  │ Envía gradientes al Parameter Server            │   │ │
+│  │  └─────────────────────────────────────────────────┘   │ │
+│  │  + [Worker 2, Worker 3, ...]                           │ │
+│  │                                                          │ │
+│  │  ┌──────────────────────────────────────────────────┐   │ │
+│  │  │ Parameter Server (Agregación)                    │   │ │
+│  │  │ ────────────────────────────────────────────     │   │ │
+│  │  │ params_global = params - lr * mean(all_grads)    │   │ │
+│  │  │ Broadcast params_global to all Workers ↺         │   │ │
+│  │  └──────────────────────────────────────────────────┘   │ │
+│  │                                                          │ │
+│  └──────────────────────────────────────────────────────────┘ │
+│                                                              │
+│  ▼                                                          │
+│  [Predicción en Test Set — validación accuracy]             │
+└────────────────────────────────────────────────────────────────┘
+```
+
+### Componentes Clave
+
+#### **CNN Extractor** (`Model/cnn_extractor.py`)
+- **Propósito**: Extraer features de imágenes ImageNet
+- **Modos**:
+  - **resnet18**: Pesos ImageNet preentrenados, congelados (requires_grad=False)
+  - **simple**: Arquitectura CNN simple, puede ser entrenada junto con MLP
+- **Salida**: Vector de 512 dimensiones (penúltima capa ReLU)
+- **Inicialización**: Semilla reproducible para synchronizar features entre Workers
+
+#### **Feature Scaler** (`Utils/feature_scaler.py`)
+- **Propósito**: Normalizar features a media=0, desv=1
+- **Solo en modo resnet18**: Mejora estabilidad del MLP
+- **Parámetros**: Calculados sobre todo el training set features (no batch-wise)
+
+#### **MLP** (`Model/mlp.py`)
+- **Framework**: NumPy puro (serializable con Pickle)
+- **Arquitectura**: 512 → [capas ocultas] → 1000
+- **Loss**: Softmax Cross-Entropy
+- **Optimizador**: SGD vanilla (distribución de gradientes via Parameter Server)
+
+---
+
+## Modos de Entrenamiento
+
+### Modo "simple" (CNN + MLP Conjuntamente)
+
+```bash
+python ps_terminal.py --mode simple --epochs 10
+```
+
+**Comportamiento:**
+1. CNN es **entrenable** durante distribución
+2. NO hay pre-extracción de features
+3. Raw images → CNN forward (con_grad) → features → MLP forward/backward
+4. Gradientes del CNN NO se sincronizan (solo MLP)
+
+**Caso de uso**: Datasets pequeños, CNN fine-tuning local
+
+---
+
+### Modo "resnet18" (CNN Congelada + MLP Distribuido)
+
+```bash
+python ps_terminal.py --mode resnet18 --epochs 10
+```
+
+**Comportamiento:**
+1. CNN es **congelada** (requires_grad=False)
+2. Pre-extrae features a shards (50k imágenes por archivo .npy)
+3. FeatureScaler normaliza features
+4. features → MLP forward/backward (distribuido via PS)
+5. Solo MLP gradientes se sincronizan
+
+**Caso de uso**: Entrenar rápido sobre features precomputadas
+
+---
+
+## CLI - Ejemplos de Uso
+
+### Parameter Server - Terminal
+
+**Uso básico (resnet18, full dataset):**
+```bash
+python ps_terminal.py --workers 3 --epochs 100 --mode resnet18
+```
+
+**Con ImageNet local:**
+```bash
+python ps_terminal.py --workers 3 --epochs 100 --data-source local --imagenet-dir /path/to/ImageNet
+```
+
+**Con streaming (HuggingFace):**
+```bash
+python ps_terminal.py --workers 3 --epochs 100 --data-source stream --hf-token your_token
+```
+
+**Limitar dataset (n_train):**
+```bash
+python ps_terminal.py --workers 3 --epochs 100 --n-train 100000
+```
+
+**Guardar CNN model después del entrenamiento:**
+```bash
+python ps_terminal.py --workers 3 --epochs 100 --save-cnn
+```
+
+**Usar CNN preentrenado:**
+```bash
+python ps_terminal.py --workers 3 --epochs 100 --cnn-hash abc123def456
+```
+
+**Listar modelos CNN guardados:**
+```bash
+python ps_terminal.py --cnn-list
+```
+
+### Worker Node
+
+```bash
+python worker.py --ps-host localhost --ps-port 9090
+```
+
+---
+
+## Sistema de Persistencia de Modelos CNN
+
+Los modelos CNN entrenados se guardan automáticamente en `Data/cnn_models/`.
+
+**Estructura de archivos:**
+```
+Data/cnn_models/
+├── cnn_abc123def456.pt       # Pesos del modelo (PyTorch)
+└── cnn_abc123def456.json     # Metadatos (epochs, accuracy, etc.)
+```
+
+**Metadatos JSON:**
+```json
+{
+  "hash": "abc123def456",
+  "n_train": 1281167,
+  "epochs": 100,
+  "final_accuracy": 0.92,
+  "final_loss": 0.295,
+  "training_time_seconds": 3600.5,
+  "timestamp": "2025-03-15 14:30:45"
+}
+```
+
+**Comandos de gestión:**
+```bash
+# Listar todos los modelos guardados
+python ps_terminal.py --cnn-list
+
+# Usar modelo específico (por hash)
+python ps_terminal.py --workers 3 --epochs 10 --cnn-hash abc123def456
+```
+
+---
+
+## Troubleshooting
+
+### Error: "ImageNet not found"
+**Causa:** Dataset no descargado o estructura incorrecta
+**Solución:**
+```bash
+# Asegurate de que la estructura es:
+# Data/ImageNet/train/{synset_id}/{image.JPEG}
+# Data/ImageNet/val/{synset_id}/{image.JPEG}
+
+# O especifica ruta alternativa:
+python ps_terminal.py --imagenet-dir /ruta/a/ImageNet
+```
+
+### Error: "Connection refused" (Worker → PS)
+**Causa:** Parameter Server no está corriendo o puerto incorrecto
+**Solución:**
+```bash
+# Terminal 1: inicia PS en puerto explícito
+python ps_terminal.py --port 9090
+
+# Terminal 2: conecta Worker al puerto correcto
+python worker.py --ps-port 9090
+```
+
+### Error: "HuggingFace token not found"
+**Causa:** Modo streaming pero token no proporcionado
+**Solución:**
+```bash
+# Opción 1: pasar token como argumento
+python ps_terminal.py --data-source stream --hf-token tu_token
+
+# Opción 2: exportar variable de entorno
+export HF_TOKEN=tu_token
+python ps_terminal.py --data-source stream
+```
+
+### Entrenamiento muy lento
+**Causa**: Posible: no hay aceleración hardware, dataset demasiado grande, red lenta
+**Soluciones:**
+- Reduce n_train: `--n-train 100000`
+- Usa resnet18 (features precomputadas) en lugar de simple
+- Reduce número de epochs
+- Verifica velocidad de red entre PS y Workers
+
+### Modo simple: CNN no se está entrenando bien
+**Causa:** CNN parameters se inicializan sin semilla reproducible
+**Solución:**
+- Asegúrate que todos los Workers usan la MISMA semilla (automático en resnet18)
+- En modo simple, CNN se entrena localmente, no distribuido
+
+---
+
+## Preguntas Frecuentes (FAQ)
+
+**P: ¿Puedo usar GPU?**
+R: El proyecto usa CPU para propósitos demostraticos. Para GPU: reemplaza NumPy MLP con PyTorch GPU, sincroniza gradientes vía NCCL.
+
+**P: ¿Funciona con otros datasets?**
+R: Sí. Reemplaza `imagenet_loader.py` con un DataLoader de tu dataset. Asegúrate que el CNN siga outputeando 512-dims.
+
+**P: ¿Cuantos Workers puedo tener?**
+R: Teóricamente ilimitado. Cada Worker debe tener acceso a ImageNet (local o streaming). PS agrega gradientes de todos.
+
+**P: ¿Se sincronizan los pesos del CNN en modo simple?**
+R: NO. Solo MLP se sincroniza vía Parameter Server. CNN se entrena localmente en cada Worker (extensible en futuro).
+
+**P: ¿Qué batch size usa cada Worker?**
+R: Determinado automáticamente: batch_per_worker = n_train / n_workers.
+
+**P: ¿Puedo reanudar entrenamiento desde checkpoint?**
+R: Actualmente cada pass de TRAIN_START es independiente. Mejora futura: guardar params_global entre sesiones.
+
+---
+
+## Reproducibilidad
+
+Para reproducir exactamente los mismos resultados:
+
+1. **Semilla**: Todos los Workers usan la misma `seed` (proporcionada por PS en TRAIN_START)
+2. **Índices**: Determinísticos — cada Worker calcula su chunk basado en `rank`
+3. **Features**: Idénticas entre Workers (mismo CNN + initialization)
+4. **Orden de datos**: Estratificado por clase (no aleatorio)
+
+**Ejemplo reproducible:**
+```bash
+python ps_terminal.py --workers 3 --epochs 5 --n-train 50000 --seed 42
+```
+
+Ejecutándolo 2 veces debería dar exactamente los mismos accuracy/loss valores.
+
+---
+
+## Créditos y Referencias
+
+- **ImageNet**: [image-net.org](https://image-net.org/)
+- **ResNet18**: He et al., "Deep Residual Learning for Image Recognition" (2015)
+- **Distributed SGD**: Dean et al., "Large Scale Distributed Deep Networks" (Google, 2012)
+- **Parameter Server**: Li et al., "Scaling Distributed Machine Learning with the Parameter Server" (CMU, 2014)
+
+---
+
+## Licencia
+
+Este proyecto se proporciona con propósitos educativos y de demostración.
 │  │ FeatureScaler   │  ← StandardScaler (normalización)       │
 │  │  (BatchNorm)    │    Media/std calculadas offline         │
 │  └────────┬────────┘    sobre features de train              │

@@ -43,6 +43,15 @@ from Utils.imagenet_loader import (
     SHARD_SIZE,
 )
 
+# CNN model management
+from Utils.cnn_model_manager import (
+    save_cnn_model,
+    load_cnn_model,
+    list_cnn_models,
+    delete_cnn_model,
+    print_models,
+)
+
 # Results export
 from Utils.results_exporter import export_results
 
@@ -56,6 +65,12 @@ __all__ = [
     "NUM_CLASSES",
     "IMAGE_SIZE",
     "SHARD_SIZE",
+    # CNN models
+    "save_cnn_model",
+    "load_cnn_model",
+    "list_cnn_models",
+    "delete_cnn_model",
+    "print_models",
     # Results
     "export_results",
 ]

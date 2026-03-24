@@ -16,7 +16,7 @@ Soporta dos modos transparentes al resto del código:
   Lee desde HuggingFace Hub (ILSVRC/imagenet-1k) bajo demanda.
   Las imágenes nunca se guardan en disco — solo los features extraídos.
   Requiere token HuggingFace con acceso al dataset (licencia ILSVRC).
-  
+
   Flujo stream + caché de features:
     1ª sesión: stream HF → CNN forward → guardar shards .npy (~2.6 GB)
     2ª sesión+: cargar shards .npy directamente, sin internet
@@ -46,18 +46,19 @@ from torchvision import datasets as tvd, transforms as T
 
 # ── Constantes exportadas ─────────────────────────────────────────
 NUM_CLASSES = 1000
-IMAGE_SIZE  = 224
-SHARD_SIZE  = 50_000   # imágenes por shard de features (~100 MB c/u)
+IMAGE_SIZE = 224
+SHARD_SIZE = 50_000  # imágenes por shard de features (~100 MB c/u)
 
-HF_DATASET  = "ILSVRC/imagenet-1k"   # dataset oficial en HuggingFace
+HF_DATASET = "ILSVRC/imagenet-1k"  # dataset oficial en HuggingFace
 
 _MEAN = [0.485, 0.456, 0.406]
-_STD  = [0.229, 0.224, 0.225]
+_STD = [0.229, 0.224, 0.225]
 
 
 # ══════════════════════════════════════════════════════════════════
 # UTILIDADES COMUNES
 # ══════════════════════════════════════════════════════════════════
+
 
 def _default_data_dir() -> str:
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -72,12 +73,14 @@ def _imagenet_transform() -> T.Compose:
     vez y se cachean. Con aumentación aleatoria los shards serían distintos
     cada vez que se reconstruyen, rompiendo la reproducibilidad.
     """
-    return T.Compose([
-        T.Resize(256),
-        T.CenterCrop(IMAGE_SIZE),
-        T.ToTensor(),
-        T.Normalize(mean=_MEAN, std=_STD),
-    ])
+    return T.Compose(
+        [
+            T.Resize(256),
+            T.CenterCrop(IMAGE_SIZE),
+            T.ToTensor(),
+            T.Normalize(mean=_MEAN, std=_STD),
+        ]
+    )
 
 
 def detect_data_source(data_dir: Optional[str] = None) -> str:
@@ -94,15 +97,12 @@ def detect_data_source(data_dir: Optional[str] = None) -> str:
         data_dir = _default_data_dir()
 
     train_dir = os.path.join(data_dir, "train")
-    val_dir   = os.path.join(data_dir, "val")
+    val_dir = os.path.join(data_dir, "val")
 
     def _has_subdirs(path: str) -> bool:
         if not os.path.isdir(path):
             return False
-        return any(
-            os.path.isdir(os.path.join(path, e))
-            for e in os.listdir(path)
-        )
+        return any(os.path.isdir(os.path.join(path, e)) for e in os.listdir(path))
 
     if _has_subdirs(train_dir) and _has_subdirs(val_dir):
         return "local"
@@ -112,6 +112,7 @@ def detect_data_source(data_dir: Optional[str] = None) -> str:
 # ══════════════════════════════════════════════════════════════════
 # MODO LOCAL — torchvision ImageFolder
 # ══════════════════════════════════════════════════════════════════
+
 
 def get_imagenet_dataloader(
     split: str = "train",
@@ -139,7 +140,7 @@ def get_imagenet_dataloader(
         data_dir = _default_data_dir()
 
     split_dir = os.path.join(data_dir, "train" if split == "train" else "val")
-    dataset   = tvd.ImageFolder(root=split_dir, transform=_imagenet_transform())
+    dataset = tvd.ImageFolder(root=split_dir, transform=_imagenet_transform())
 
     if indices is not None:
         dataset = Subset(dataset, indices)  # type: ignore[assignment]
@@ -199,9 +200,20 @@ def get_dataset_size(
 
 # Tamaños oficiales de ILSVRC-2012
 _HF_SPLIT_SIZES = {
-    "train":      1_281_167,
-    "validation":    50_000,
+    "train": 1_281_167,
+    "validation": 50_000,
 }
+
+
+def get_hf_split_size(split: str) -> int:
+    """
+    Retorna el tamaño conocido de un split de ImageNet en HuggingFace.
+
+    :param split: "train" o "val" (o "validation").
+    :return: Número de imágenes en el split.
+    """
+    key = "validation" if split in ("val", "validation") else split
+    return _HF_SPLIT_SIZES.get(key, 0)
 
 
 def _hf_split_name(split: str) -> str:
@@ -238,12 +250,12 @@ class _HFStreamDataset(IterableDataset):
         start_index: int = 0,
     ) -> None:
         super().__init__()
-        self._hf_split    = hf_split
-        self._token       = token
+        self._hf_split = hf_split
+        self._token = token
         self._shard_index = shard_index
-        self._num_shards  = num_shards
+        self._num_shards = num_shards
         self._start_index = start_index
-        self._transform   = _imagenet_transform()
+        self._transform = _imagenet_transform()
 
     def __iter__(self) -> Iterator[Tuple[torch.Tensor, int]]:
         try:
@@ -273,7 +285,7 @@ class _HFStreamDataset(IterableDataset):
             ds = ds.skip(self._start_index)
 
         for item in ds:
-            img   = item["image"]
+            img = item["image"]
             label = item["label"]
 
             # Asegurar que la imagen es RGB (algunas son escala de grises)
@@ -324,7 +336,7 @@ def get_imagenet_stream_dataloader(
         )
 
     hf_split = _hf_split_name(split)
-    dataset  = _HFStreamDataset(
+    dataset = _HFStreamDataset(
         hf_split=hf_split,
         token=resolved_token,
         shard_index=shard_index,
@@ -335,7 +347,7 @@ def get_imagenet_stream_dataloader(
     return DataLoader(
         dataset,
         batch_size=batch_size,
-        num_workers=0,    # IterableDataset + HF no admite multiprocessing
+        num_workers=0,  # IterableDataset + HF no admite multiprocessing
         pin_memory=torch.cuda.is_available(),
     )
 
@@ -359,8 +371,7 @@ def load_imagenet_labels_stream(
         from datasets import load_dataset  # type: ignore
     except ImportError as e:
         raise ImportError(
-            "El modo streaming requiere 'datasets'. "
-            "Instala con: pip install datasets"
+            "El modo streaming requiere 'datasets'. Instala con: pip install datasets"
         ) from e
 
     resolved_token = token or os.environ.get("HF_TOKEN", "")
@@ -370,9 +381,11 @@ def load_imagenet_labels_stream(
         )
 
     hf_split = _hf_split_name(split)
-    total    = _HF_SPLIT_SIZES.get(hf_split, 0)
-    print(f"[Loader] Descargando etiquetas de {hf_split} ({total:,} imgs) "
-          f"desde HuggingFace (streaming)...")
+    total = _HF_SPLIT_SIZES.get(hf_split, 0)
+    print(
+        f"[Loader] Descargando etiquetas de {hf_split} ({total:,} imgs) "
+        f"desde HuggingFace (streaming)..."
+    )
 
     # streaming=True: los parquets se descargan bajo demanda.
     # Solo se leen los necesarios para obtener todas las etiquetas,
@@ -391,26 +404,3 @@ def load_imagenet_labels_stream(
     arr = np.array(labels, dtype=np.int32)
     print(f"[Loader] {len(arr):,} etiquetas cargadas.")
     return arr
-
-
-def get_stream_shard_size(
-    split: str = "train",
-    num_shards: int = 1,
-    shard_index: int = 0,
-) -> int:
-    """
-    Estima el número de imágenes que corresponden a un shard.
-
-    Usa los tamaños oficiales de ILSVRC-2012.
-    El último shard puede tener ligeramente menos imágenes.
-
-    :param split: "train" o "val".
-    :param num_shards: Total de shards.
-    :param shard_index: Índice del shard.
-    :return: Número estimado de imágenes en el shard.
-    """
-    hf_split = _hf_split_name(split)
-    total    = _HF_SPLIT_SIZES.get(hf_split, 0)
-    base     = total // num_shards
-    extra    = 1 if shard_index < (total % num_shards) else 0
-    return base + extra

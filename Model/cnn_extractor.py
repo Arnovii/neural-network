@@ -117,8 +117,8 @@ class _SimpleCNN(nn.Module):
         # 5 bloques para ImageNet 224x224. AdaptiveAvgPool hace
         # que funcione con cualquier tamaño de entrada.
         self.features = nn.Sequential(
-            _block(3,   64),   # 224->112 | 32->16
-            _block(64,  128),  # 112->56  | 16->8
+            _block(3, 64),  # 224->112 | 32->16
+            _block(64, 128),  # 112->56  | 16->8
             _block(128, 256),  # 56->28   | 8->4
             _block(256, 512),  # 28->14   (solo ImageNet)
             _block(512, 512),  # 14->7    (solo ImageNet)
@@ -193,7 +193,7 @@ class CNNExtractor:
         # Convierte el string en un objeto PyTorch que controla dónde correr la CNN
         self.device = torch.device(device)
 
-        self._cache_dir  = cache_dir or self._default_cache_dir()
+        self._cache_dir = cache_dir or self._default_cache_dir()
         self._input_size = input_size
         os.makedirs(self._cache_dir, exist_ok=True)
 
@@ -257,9 +257,7 @@ class CNNExtractor:
         model.fc = nn.Identity()  # type: ignore  — expone el vector de 512 features
         return model
 
-    def _make_resnet_wrapper(
-        self, base: nn.Module, input_size: int = 224
-    ) -> nn.Module:
+    def _make_resnet_wrapper(self, base: nn.Module, input_size: int = 224) -> nn.Module:
         """
         Envuelve ResNet-18 con upscale solo si las imágenes son más pequeñas
         que 224×224. Para ImageNet (224×224 nativo) devuelve el modelo sin
@@ -389,6 +387,10 @@ class CNNExtractor:
         Garantiza que PS y Worker usan exactamente la misma CNN sin
         necesitar filesystem compartido entre máquinas.
 
+        Por defecto, congela los parámetros (requires_grad=False).
+        Para entrenar la CNN localmente, es necesario cambiar esto
+        explícitamente con requires_grad_(True) después de cargar.
+
         :param weights_bytes: Bytes generados por _get_weights_bytes().
         :type weights_bytes: bytes.
 
@@ -403,6 +405,10 @@ class CNNExtractor:
         base = getattr(self._model, "model", self._model)
         base.load_state_dict(state)
         self._model.eval()
+
+        # Congelar parámetros por defecto (se descongelan solo si se entrena localmente)
+        for param in self._model.parameters():
+            param.requires_grad_(False)
 
     def _metadata_path(self) -> str:
         """
@@ -837,7 +843,6 @@ class CNNExtractor:
     def feature_dim(self) -> int:
         return FEATURE_DIM
 
-
     # ── Sistema de shards ──────────────────────────────────────────
 
     def shard_path(self, shard_idx: int, split: str) -> "tuple[str, str]":
@@ -852,7 +857,7 @@ class CNNExtractor:
         :param split: "train" o "val".
         :return: (ruta_X, ruta_Y).
         """
-        wh  = self._weights_hash()
+        wh = self._weights_hash()
         key = f"{self.arch}_{wh}_{split}_shard{shard_idx:04d}"
         return (
             os.path.join(self._cache_dir, f"{key}_X.npy"),

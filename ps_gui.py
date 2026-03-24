@@ -250,7 +250,6 @@ class DistributedPSApp:
     # ── Panel izquierdo ──────────────────────────────────────────
 
     def _build_left_panel(self) -> None:
-
         def _snap_int(var):
             return lambda v: var.set(int(round(float(v))))
 
