@@ -72,9 +72,7 @@ FEATURE_DIM = 512
 
 class _SimpleCNN(nn.Module):
     """
-    CNN convolucional propia de 5 bloques (Conv→BN→ReLU→MaxPool).
-    Funciona con cualquier tamano de entrada gracias a AdaptiveAvgPool.
-    Produce FEATURE_DIM=512 features — misma interfaz que ResNet-18.
+    CNN de 3 bloques convolucionales diseñada para CIFAR-10 (32×32).
 
     Bloque = Conv2d → BatchNorm → ReLU → MaxPool
 
@@ -116,25 +114,23 @@ class _SimpleCNN(nn.Module):
                 nn.MaxPool2d(2),
             )
 
-        # Canales ampliados para ImageNet (224x224):
-        #   32x32  (CIFAR-10):  3 bloques → 4x4  → 256 canales
-        #   224x224 (ImageNet): 5 bloques → 7x7  → 512 canales
-        # AdaptiveAvgPool(1,1) hace el pooling final independiente del tamano.
+        # 5 bloques para ImageNet 224x224. AdaptiveAvgPool hace
+        # que funcione con cualquier tamaño de entrada.
         self.features = nn.Sequential(
-            _block(3, 64),  # 224→112  |  32→16
-            _block(64, 128),  # 112→56   |  16→8
-            _block(128, 256),  # 56→28    |  8→4
-            _block(256, 512),  # 28→14    (ImageNet: extrae detalle fino)
-            _block(512, 512),  # 14→7     (ImageNet: receptive field amplio)
-            nn.AdaptiveAvgPool2d((1, 1)),  # → (512,1,1) cualquier input
+            _block(3,   64),   # 224->112 | 32->16
+            _block(64,  128),  # 112->56  | 16->8
+            _block(128, 256),  # 56->28   | 8->4
+            _block(256, 512),  # 28->14   (solo ImageNet)
+            _block(512, 512),  # 14->7    (solo ImageNet)
+            nn.AdaptiveAvgPool2d((1, 1)),  # (512,1,1) cualquier input
         )
 
         # Proyeccion a FEATURE_DIM=512 — misma interfaz que ResNet-18
         self.fc = nn.Sequential(
-            nn.Flatten(),  # (512,1,1) → (512,)
+            nn.Flatten(),
             nn.Linear(512, FEATURE_DIM),
             nn.ReLU(inplace=True),
-            nn.Dropout(0.3),  # regularizacion para ImageNet
+            nn.Dropout(0.3),
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -142,7 +138,7 @@ class _SimpleCNN(nn.Module):
         Forward pass a través de la CNN.
 
         :param x: Imágenes de entrada.
-        :type x: torch.Tensor de shape (batch_size, 3, H, W) float32. Cualquier H, W >= 32.
+        :type x: torch.Tensor de shape (batch_size, 3, 32, 32) float32.
 
         :return: Vector de características extraído.
         :rtype: torch.Tensor de shape (batch_size, FEATURE_DIM) float32.
@@ -183,7 +179,7 @@ class CNNExtractor:
         device: str = "cpu",
         seed: int | None = 42,
         cache_dir: str | None = None,
-        input_size: int = 32,
+        input_size: int = 224,
     ) -> None:
         if arch not in self.ARCHITECTURES:
             raise ValueError(
@@ -193,12 +189,12 @@ class CNNExtractor:
         self.arch = arch
         self.pretrained = pretrained
         self.seed = seed
-        self._input_size = input_size
 
         # Convierte el string en un objeto PyTorch que controla dónde correr la CNN
         self.device = torch.device(device)
 
-        self._cache_dir = cache_dir or self._default_cache_dir()
+        self._cache_dir  = cache_dir or self._default_cache_dir()
+        self._input_size = input_size
         os.makedirs(self._cache_dir, exist_ok=True)
 
         # Semilla antes de construir la red para reproducibilidad
@@ -261,7 +257,9 @@ class CNNExtractor:
         model.fc = nn.Identity()  # type: ignore  — expone el vector de 512 features
         return model
 
-    def _make_resnet_wrapper(self, base: nn.Module, input_size: int = 224) -> nn.Module:
+    def _make_resnet_wrapper(
+        self, base: nn.Module, input_size: int = 224
+    ) -> nn.Module:
         """
         Envuelve ResNet-18 con upscale solo si las imágenes son más pequeñas
         que 224×224. Para ImageNet (224×224 nativo) devuelve el modelo sin
@@ -376,7 +374,11 @@ class CNNExtractor:
         import io as _io
 
         buf = _io.BytesIO()
-        torch.save(self._model.state_dict(), buf)
+        # Serializar siempre el modelo BASE sin el _ResNetWrapper.
+        # Esto garantiza que PS y Worker intercambian el mismo
+        # state_dict independientemente de si usan wrapper o no.
+        base = getattr(self._model, "model", self._model)
+        torch.save(base.state_dict(), buf)
         return buf.getvalue()
 
     def load_weights_from_bytes(self, weights_bytes: bytes) -> None:
@@ -397,7 +399,9 @@ class CNNExtractor:
 
         buf = _io.BytesIO(weights_bytes)
         state = torch.load(buf, map_location=self.device, weights_only=True)
-        self._model.load_state_dict(state)
+        # Cargar en el modelo BASE sin el wrapper.
+        base = getattr(self._model, "model", self._model)
+        base.load_state_dict(state)
         self._model.eval()
 
     def _metadata_path(self) -> str:
@@ -526,7 +530,8 @@ class CNNExtractor:
         import torch
 
         state = torch.load(weights_path, map_location=self.device, weights_only=True)
-        self._model.load_state_dict(state)
+        base = getattr(self._model, "model", self._model)
+        base.load_state_dict(state)
         self._model.eval()
 
     def _load_weights_if_cached(self) -> bool:
@@ -600,37 +605,34 @@ class CNNExtractor:
         n_classes: int = 1000,
     ) -> None:
         """
-        Preentrenamiento supervisado de la CNN simple (arch="simple").
+        Preentrenamiento supervisado de la CNN simple en CIFAR-10.
 
-        Entrena la CNN con un clasificador temporal para que aprenda
-        a extraer features discriminativos antes de pasarla al MLP.
-        Guarda pesos y metadata en cache_dir al terminar.
+        Solo aplica para arch="simple". Guarda los pesos en caché al
+        terminar para que los arranques posteriores sean instantáneos.
+        También guarda metadata con información sobre el entrenamiento
+        (épocas, precisión, pérdida, número de muestras, tiempo).
 
-        :param X_train: Imágenes de entrenamiento en formato NCHW.
-        :type X_train: np.ndarray de shape (N, 3, H, W) float32 normalizado.
-                       H y W pueden ser 32 (CIFAR-10) o 224 (ImageNet).
+        :param X_train: Imágenes de entrenamiento.
+        :type X_train: np.ndarray de shape (N, 3, 32, 32) float32 normalizado.
 
         :param Y_train: Etiquetas de entrenamiento.
-        :type Y_train: np.ndarray de shape (N,) int32, valores en [0, n_classes).
+        :type Y_train: np.ndarray de shape (N,) int32.
 
-        :param epochs: Épocas de preentrenamiento.
+        :param epochs: Número de épocas de preentrenamiento.
         :type epochs: int, default=10.
 
         :param lr: Tasa de aprendizaje del optimizador Adam.
         :type lr: float, default=1e-3.
 
-        :param batch_size: Imágenes por batch.
+        :param batch_size: Número de ejemplos por batch.
         :type batch_size: int, default=256.
 
-        :param verbose: Si True, imprime progreso.
+        :param verbose: Si True, imprime el progreso del entrenamiento.
         :type verbose: bool, default=True.
 
-        :param on_epoch: Callback al final de cada época.
-                         Firma: (epoch, total, loss, acc).
-
-        :param n_classes: Número de clases del dataset.
-                          1000 para ImageNet, 10 para CIFAR-10.
-        :type n_classes: int, default=1000.
+        :param on_epoch: Callback opcional llamado al final de cada época.
+                         Firma: (epoch: int, total_epochs: int, loss: float, acc: float).
+        :type on_epoch: Callable[[int, int, float, float], None] | None, default=None.
 
         :return: None
         :rtype: NoneType.
@@ -835,6 +837,7 @@ class CNNExtractor:
     def feature_dim(self) -> int:
         return FEATURE_DIM
 
+
     # ── Sistema de shards ──────────────────────────────────────────
 
     def shard_path(self, shard_idx: int, split: str) -> "tuple[str, str]":
@@ -849,7 +852,7 @@ class CNNExtractor:
         :param split: "train" o "val".
         :return: (ruta_X, ruta_Y).
         """
-        wh = self._weights_hash()
+        wh  = self._weights_hash()
         key = f"{self.arch}_{wh}_{split}_shard{shard_idx:04d}"
         return (
             os.path.join(self._cache_dir, f"{key}_X.npy"),
