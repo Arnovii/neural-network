@@ -123,6 +123,12 @@ def main() -> None:
         action="store_true",
         help="Suprime mensajes de progreso",
     )
+    parser.add_argument(
+        "--feature-cache",
+        action="store_true",
+        default=True,
+        help="Enable per-batch feature caching for ResNet18 mode (default: enabled)",
+    )
     args = parser.parse_args()
 
     data_dir = args.data_dir or _default_data_dir()
@@ -176,6 +182,7 @@ def main() -> None:
         verbose=not args.quiet,
         cache_dir=cache_dir,
         hf_token=hf_token,
+        feature_cache_enabled=args.feature_cache,
     )
 
     print(f"\nConectando al PS en {args.server_host}:{args.server_port}...")

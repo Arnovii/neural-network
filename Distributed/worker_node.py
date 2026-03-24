@@ -56,6 +56,54 @@ from Utils.imagenet_loader import (
 from Utils.feature_scaler import FeatureScaler
 
 
+# ═════════════════════════════════════════════════════════════════
+# BATCH FEATURE CACHE — Optional incremental caching
+# ═════════════════════════════════════════════════════════════════
+
+
+class BatchFeatureCache:
+    """
+    Per-batch feature cache to avoid recomputing features for the same
+    batch indices across epochs. Uses simple dict-based lookup.
+
+    Constraints:
+    - Max 500 MB per cache (roughly 1000 batches of 50k features)
+    - Cleared per epoch to prevent memory bloat
+    - Optional (can be disabled via flag)
+    """
+
+    def __init__(self, max_bytes: int = 500 * 1024 * 1024) -> None:
+        self._cache: dict[int, np.ndarray] = {}
+        self._max_bytes = max_bytes
+        self._current_bytes = 0
+
+    def _batch_hash(self, indices: np.ndarray) -> int:
+        """Simple hash of batch indices."""
+        return hash(tuple(indices.tolist()))
+
+    def get(self, indices: np.ndarray) -> Optional[np.ndarray]:
+        """Retrieve cached features if available."""
+        hsh = self._batch_hash(indices)
+        return self._cache.get(hsh)
+
+    def put(self, indices: np.ndarray, features: np.ndarray) -> None:
+        """Store features if cache has space."""
+        hsh = self._batch_hash(indices)
+        feature_bytes = features.nbytes
+
+        # Don't cache if it would exceed limit
+        if self._current_bytes + feature_bytes > self._max_bytes:
+            return
+
+        self._cache[hsh] = features
+        self._current_bytes += feature_bytes
+
+    def clear(self) -> None:
+        """Clear cache (call this per epoch)."""
+        self._cache.clear()
+        self._current_bytes = 0
+
+
 class WorkerNode:
     """
     Worker Node persistente para ImageNet con extracción de features por shards.
@@ -70,6 +118,7 @@ class WorkerNode:
         verbose: bool = True,
         cache_dir: Optional[str] = None,
         hf_token: str = "",
+        feature_cache_enabled: bool = True,
     ) -> None:
         self._data_dir = data_dir
         # Inicializar worker_id antes de cualquier _log
@@ -112,6 +161,9 @@ class WorkerNode:
 
         self._sock: Optional[socket.socket] = None
         self._scaler: Optional[FeatureScaler] = None
+        self._feature_cache = BatchFeatureCache() if feature_cache_enabled else None
+        self._lazy_scaler_initialized = False  # For lazy FeatureScaler computation
+
         # En modo stream _Y_raw es None hasta que se extraen los shards.
         self._class_indices: List[np.ndarray] = (
             [np.where(self._Y_raw == c)[0] for c in range(NUM_CLASSES)]
@@ -343,56 +395,98 @@ class WorkerNode:
 
         if arch == "resnet18":
             # ═══════════════════════════════════════════════════════
-            # MODO RESNET18: CNN CONGELADA → Extraer features a shards
+            # MODO RESNET18: CNN CONGELADA → Streaming per-batch
             # ═══════════════════════════════════════════════════════
-            self._log("Iniciando extracción de features en modo RESNET18...")
+            self._log(
+                "Modo RESNET18 detectado. Preparando para extracción de features "
+                "on-the-fly durante entrenamiento..."
+            )
 
-            # Extracción por shards — features se cachean
-            n_shards = (self._n_train + SHARD_SIZE - 1) // SHARD_SIZE
-            n_cached = self._cnn.count_cached_shards("train")
-
-            if n_cached >= n_shards:
-                self._log(f"Todos los shards ({n_shards}) ya en caché.")
-            else:
-                if self._data_source == "local":
-                    self._extract_shards_local(n_cached, n_shards)
-                else:
-                    self._extract_shards_stream(n_cached, n_shards)
-
-            # FeatureScaler sobre shard 0
-            if not FeatureScaler.exists(self._cnn._cache_dir, wh):
-                self._log("Calculando FeatureScaler sobre shard 0...")
-                s0 = self._cnn.load_shard(0, "train")
-                if s0 is not None:
-                    self._scaler = FeatureScaler().fit(s0[0])
-                    self._scaler.save(self._cnn._cache_dir, wh)
-                    del s0
-                    self._log("FeatureScaler guardado en caché.")
-            else:
-                self._scaler = FeatureScaler.load(self._cnn._cache_dir, wh)
-                self._log("FeatureScaler cargado desde caché.")
-
-            # Reconstruir índices por clase desde los shards cacheados
+            # Cargar etiquetas de train para reconstrucción de índices
+            # (necesario para estratificación)
             if self._Y_raw is None:
-                all_labels: list = []
-                n_shards = self._cnn.count_cached_shards("train")
-                for sid in range(n_shards):
-                    shard = self._cnn.load_shard(sid, "train")
-                    if shard is not None:
-                        all_labels.append(shard[1])
-                if all_labels:
-                    self._Y_raw = np.concatenate(all_labels)
-                    self.Y_train = self._Y_raw
-                    self._n_train = len(self._Y_raw)
+                import time
+
+                self._log("Cargando etiquetas de train para estratificación...")
+                t_start = time.perf_counter()
+
+                if self._data_source == "local":
+                    self._log("  ► Leyendo etiquetas desde ImageNet local...")
+                    loader = get_imagenet_dataloader(
+                        split="train",
+                        data_dir=self._data_dir,
+                        batch_size=512,
+                        num_workers=4,
+                    )
+                    all_y = []
+                    batch_count = 0
+                    for _, y in loader:
+                        batch_count += 1
+                        all_y.append(y.cpu().numpy())
+                        if batch_count % 20 == 0:
+                            self._log(
+                                f"  ► {min(batch_count * 512, 1281167):,} etiquetas procesadas..."
+                            )
+                    self._Y_raw = np.concatenate(all_y)
+                else:
+                    # Modo stream
+                    if not self._hf_token:
+                        self._log("⚠ Sin HF_TOKEN para cargar etiquetas en streaming.")
+                        return
+
+                    self._log(
+                        "  ► Descargando etiquetas desde HuggingFace (ILSVRC/imagenet-1k)..."
+                    )
+                    loader = get_imagenet_stream_dataloader(
+                        split="train",
+                        token=self._hf_token,
+                        batch_size=512,
+                        shard_index=0,
+                        num_shards=1,
+                    )
+                    all_y = []
+                    batch_count = 0
+                    for _, y in loader:
+                        batch_count += 1
+                        all_y.append(y.cpu().numpy())
+                        if batch_count % 20 == 0:
+                            self._log(
+                                f"  ► {batch_count * 512:,} etiquetas descargadas..."
+                            )
+                    self._Y_raw = np.concatenate(all_y)
+
+                t_elapsed = time.perf_counter() - t_start
+                self._log(
+                    f"✓ Etiquetas cargadas ({len(self._Y_raw):,} etiquetas) "
+                    f"en {t_elapsed:.2f}s"
+                )
+
+                self.Y_train = self._Y_raw
+                self._n_train = len(self._Y_raw)
+
+            # Reconstruir índices por clase
+            self._log("Reconstruyendo índices por clase para estratificación...")
+            t_idx = time.perf_counter()
             self._class_indices = (
                 [np.where(self._Y_raw == c)[0] for c in range(NUM_CLASSES)]
                 if self._Y_raw is not None
                 else []
             )
+            t_idx = time.perf_counter() - t_idx
+            self._log(
+                f"✓ Índices por clase construidos en {t_idx:.2f}s "
+                f"({[len(c) for c in self._class_indices[:5]]}...)"
+            )
+
+            # IMPORTANTE: Lazy FeatureScaler initialization
+            # Se computará a partir del primer batch durante el entrenamiento
+            self._scaler = None
+            self._lazy_scaler_initialized = False
 
             self._log(
-                f"Modo RESNET18: Features extraídas y cacheadas. "
-                f"Índices por clase = {[len(c) for c in self._class_indices]}"
+                f"Modo RESNET18 listo para entrenamiento (streaming on-the-fly). "
+                f"Índices por clase cargados = {[len(c) for c in self._class_indices]}. "
+                f"Training puede comenzar inmediatamente sin esperar preprocessing."
             )
 
         else:
@@ -404,9 +498,14 @@ class WorkerNode:
             # Cargar etiquetas de train para reconstrucción de índices
             # (necesario para saber cuántos ejemplos hay de cada clase)
             if self._Y_raw is None:
+                import time
+
                 self._log("Cargando etiquetas de entrenamiento...")
+                t_start = time.perf_counter()
+
                 if self._data_source == "local":
                     # Cargar etiquetas desde disco
+                    self._log("  ► Leyendo etiquetas desde ImageNet local...")
                     loader = get_imagenet_dataloader(
                         split="train",
                         data_dir=self._data_dir,
@@ -414,8 +513,14 @@ class WorkerNode:
                         num_workers=4,
                     )
                     all_y = []
+                    batch_count = 0
                     for _, y in loader:
+                        batch_count += 1
                         all_y.append(y.cpu().numpy())
+                        if batch_count % 20 == 0:
+                            self._log(
+                                f"  ► {min(batch_count * 512, 1281167):,} etiquetas procesadas..."
+                            )
                     self._Y_raw = np.concatenate(all_y)
                 else:
                     # Modo stream: cargar desde HF
@@ -423,6 +528,9 @@ class WorkerNode:
                         self._log("⚠ Sin HF_TOKEN para cargar etiquetas en streaming.")
                         return
 
+                    self._log(
+                        "  ► Descargando etiquetas desde HuggingFace (ILSVRC/imagenet-1k)..."
+                    )
                     loader = get_imagenet_stream_dataloader(
                         split="train",
                         token=self._hf_token,
@@ -431,9 +539,22 @@ class WorkerNode:
                         num_shards=1,
                     )
                     all_y = []
+                    batch_count = 0
+                    self._log("  ► Preparando etiquetas...")
                     for _, y in loader:
+                        batch_count += 1
                         all_y.append(y.cpu().numpy())
+                        if batch_count % 20 == 0:
+                            self._log(
+                                f"  ► {batch_count * 512:,} etiquetas descargadas..."
+                            )
                     self._Y_raw = np.concatenate(all_y)
+
+                t_elapsed = time.perf_counter() - t_start
+                self._log(
+                    f"✓ Etiquetas cargadas ({len(self._Y_raw):,} etiquetas) "
+                    f"en {t_elapsed:.2f}s"
+                )
 
                 self.Y_train = self._Y_raw
                 # En simple mode, self._n_train ya fue establecido en __init__
@@ -441,14 +562,23 @@ class WorkerNode:
                 self._n_train = min(len(self._Y_raw), self._n_train)
 
             # Reconstruir índices por clase
+            self._log("Reconstruyendo índices por clase para estratificación...")
+            t_idx = time.perf_counter()
             self._class_indices = (
                 [np.where(self._Y_raw == c)[0] for c in range(NUM_CLASSES)]
                 if self._Y_raw is not None
                 else []
             )
+            t_idx = time.perf_counter() - t_idx
+            self._log(
+                f"✓ Índices por clase construidos en {t_idx:.2f}s "
+                f"({[len(c) for c in self._class_indices[:5]]}...)"
+            )
 
             self._log(
-                f"Modo SIMPLE: Etiquetas cargadas. "
+                f"Modo SIMPLE: Listo para entrenamiento.  "
+                f"Índices por clase cargados ({[len(c) for c in self._class_indices][:5]}...). "
+                f"Training puede comenzar."
                 f"Índices por clase = {[len(c) for c in self._class_indices]}"
             )
             # self._scaler = None en simple mode (se entrena end-to-end sin normalización previa)
@@ -611,16 +741,30 @@ class WorkerNode:
         self, epochs: int, n_train: int, n_workers: int, worker_rank: int
     ) -> None:
         """
-        Entrenamiento en modo ResNet18: Features pre-extraídas, MLP trainable.
+        Entrenamiento en modo ResNet18: Features on-the-fly con lazy scaling.
 
-        Los features ya están en caché (extraídos en _handle_cnn_weights).
-        Se cargan de los shards, se normalizan con FeatureScaler, y se
-        pasan al MLP para forward/backward.
+        **NEW STREAMING APPROACH**:
+        - Features se computan per-batch durante entrenamiento (NO preprocessing!)
+        - FeatureScaler se inicializa lazy desde el primer batch
+        - Datos se cargan bajo demanda (Local o HuggingFace Stream)
+        - Escalado adaptativo: se aplica a medida que se encuentran features
         """
+        import time
+
+        self._log(
+            f"[Worker {self.worker_id}] Iniciando entrenamiento RESNET18 (streaming). "
+            f"Épocas: {epochs}, Total de ejemplos: {n_train:,}"
+        )
+
         for epoch in range(1, epochs + 1):
+            self._log(f"[Worker {self.worker_id}] " + "═" * 70)
+            self._log(
+                f"[Worker {self.worker_id}] EPOCH {epoch}/{epochs} — Esperando parámetros del PS..."
+            )
+
             msg = receive_message(self._sock) if self._sock else None
             if msg is None or msg["type"] == MsgType.STOP:
-                self._log("STOP recibido durante entrenamiento.")
+                self._log(f"[Worker {self.worker_id}] STOP recibido.")
                 raise SystemExit(0)
             if msg["type"] != MsgType.PARAMS:
                 continue
@@ -628,20 +772,102 @@ class WorkerNode:
             params = msg["payload"]["params"]
             epoch_seed = msg["payload"]["seed"]
 
+            self._log(
+                f"[Worker {self.worker_id}] Parámetros recibidos. Procesando índices..."
+            )
+
+            t_start = time.perf_counter()
+
             indices = self._reconstruct_indices(
                 epoch_seed, n_train, n_workers, worker_rank
             )
+            t_indices = time.perf_counter() - t_start
+            self._log(
+                f"[Worker {self.worker_id}] Índices procesados ({len(indices):,} ejemplos) "
+                f"en {t_indices:.2f}s"
+            )
 
-            X_epoch, Y_epoch = self._load_features_for_indices(indices)
+            # Cargar raw images y computar features on-the-fly
+            self._log(f"[Worker {self.worker_id}] Cargando imágenes...")
+            t_load = time.perf_counter()
 
+            X_raw, Y_epoch = self._load_raw_images_for_indices(indices)
+
+            t_load = time.perf_counter() - t_load
+
+            if X_raw is None or Y_epoch is None or len(X_raw) == 0:
+                self._log(
+                    f"[Worker {self.worker_id}] ✗ ERROR: Sin imágenes para época {epoch}"
+                )
+                continue
+
+            self._log(
+                f"[Worker {self.worker_id}] Imágenes cargadas ({X_raw.shape[0]:,} imgs) "
+                f"en {t_load:.2f}s | Shape: {X_raw.shape}"
+            )
+
+            # Computar features: images → CNN (frozen) → features
+            self._log(
+                f"[Worker {self.worker_id}] Extrayendo features desde ResNet18..."
+            )
+            t_feat = time.perf_counter()
+
+            with torch.no_grad():
+                X_epoch = self._cnn.extract_batched(X_raw, verbose=True)
+
+            t_feat = time.perf_counter() - t_feat
+            self._log(
+                f"[Worker {self.worker_id}] Features extraídos en {t_feat:.2f}s | "
+                f"Shape: {X_epoch.shape}"
+            )
+
+            # Lazy FeatureScaler initialization (primera vez)
+            if not self._lazy_scaler_initialized:
+                self._log(
+                    f"[Worker {self.worker_id}] ► Inicializando FeatureScaler desde primer batch..."
+                )
+                t_scale = time.perf_counter()
+                self._scaler = FeatureScaler().fit(X_epoch)
+                t_scale = time.perf_counter() - t_scale
+                self._lazy_scaler_initialized = True
+                self._log(
+                    f"[Worker {self.worker_id}] ► FeatureScaler inicializado en {t_scale:.3f}s "
+                    f"(mean={self._scaler.mean_[:3]}... std={self._scaler.std_[:3]}...)"
+                )
+
+            # Aplicar escalado
+            self._log(f"[Worker {self.worker_id}] Aplicando FeatureScaler...")
             if self._scaler is not None:
                 X_epoch = self._scaler.transform(X_epoch)
+                self._log(
+                    f"[Worker {self.worker_id}] Features escalados a N(0,1). "
+                    f"Min={X_epoch.min():.4f}, Max={X_epoch.max():.4f}"
+                )
+
+            # Optional feature caching (per-batch)
+            if self._feature_cache is not None:
+                self._log(f"[Worker {self.worker_id}] Almacenando features en cache...")
+                self._feature_cache.put(indices, X_epoch.copy())
+                self._log(
+                    f"[Worker {self.worker_id}] Features en cache "
+                    f"(próximas épocas pueden reutilizar)"
+                )
 
             from Model.mlp import forward_and_gradients
 
+            self._log(f"[Worker {self.worker_id}] Computando gradientes MLP...")
+            t_mlp = time.perf_counter()
+
             gradients, loss, accuracy = forward_and_gradients(params, X_epoch, Y_epoch)
 
+            t_mlp = time.perf_counter() - t_mlp
+            self._log(
+                f"[Worker {self.worker_id}] ✓ EPOCH {epoch}/{epochs} COMPLETADA | "
+                f"Loss: {loss:.4f} | Accuracy: {accuracy:.2f}% | MLP time: {t_mlp:.2f}s"
+            )
+
             if self._sock:
+                self._log(f"[Worker {self.worker_id}] Enviando gradientes al PS...")
                 send_message(
                     self._sock,
                     MsgType.GRADIENTS,
@@ -653,6 +879,17 @@ class WorkerNode:
                         "accuracy": accuracy,
                     },
                 )
+                self._log(f"[Worker {self.worker_id}] Gradientes enviados.")
+
+            # Clear batch cache at end of epoch
+            if self._feature_cache is not None:
+                self._feature_cache.clear()
+
+            t_total = time.perf_counter() - t_start
+            self._log(
+                f"[Worker {self.worker_id}] Epoch {epoch} completada en {t_total:.2f}s total "
+                f"(carga: {t_load:.2f}s, features: {t_feat:.2f}s, MLP: {t_mlp:.2f}s)"
+            )
 
     def _run_training_simple(
         self, epochs: int, n_train: int, n_workers: int, worker_rank: int
@@ -663,10 +900,19 @@ class WorkerNode:
         Los features se computan bajo demanda desde raw images (CNN forward pass).
         Los gradientes solo se propagan a MLP (CNN permanece congelada por ahora).
         """
-        # Preparar dataloader en modo raw (imágenes sin normalizar a features)
-        self._log("Preparando dataloader para modo SIMPLE (raw images)...")
+        import time
+
+        self._log(
+            f"[Worker {self.worker_id}] Iniciando entrenamiento SIMPLE (features on-the-fly). "
+            f"Épocas: {epochs}, Total de ejemplos: {n_train:,}"
+        )
 
         for epoch in range(1, epochs + 1):
+            self._log(f"[Worker {self.worker_id}] " + "═" * 70)
+            self._log(
+                f"[Worker {self.worker_id}] EPOCH {epoch}/{epochs} — Esperando parámetros del PS..."
+            )
+
             msg = receive_message(self._sock) if self._sock else None
             if msg is None or msg["type"] == MsgType.STOP:
                 self._log("STOP recibido durante entrenamiento.")
@@ -677,28 +923,70 @@ class WorkerNode:
             params = msg["payload"]["params"]
             epoch_seed = msg["payload"]["seed"]
 
+            self._log(
+                f"[Worker {self.worker_id}] Parámetros recibidos. Procesando índices..."
+            )
+            t_start = time.perf_counter()
+
+            t_idx = time.perf_counter()
             indices = self._reconstruct_indices(
                 epoch_seed, n_train, n_workers, worker_rank
             )
+            t_idx = time.perf_counter() - t_idx
+            self._log(
+                f"[Worker {self.worker_id}] Índices procesados ({len(indices):,} ejemplos) "
+                f"en {t_idx:.2f}s"
+            )
 
             # Cargar raw images (no features) para los índices asignados a este Worker
+            self._log(f"[Worker {self.worker_id}] Cargando imágenes...")
+            t_load = time.perf_counter()
+
             X_raw, Y_raw = self._load_raw_images_for_indices(indices)
 
+            t_load = time.perf_counter() - t_load
+
             if X_raw is None or Y_raw is None or len(X_raw) == 0:
-                self._log(f"Advertencia: Sin imágenes para época {epoch}")
+                self._log(
+                    f"[Worker {self.worker_id}] ✗ ERROR: Sin imágenes para época {epoch}"
+                )
                 continue
 
+            self._log(
+                f"[Worker {self.worker_id}] Imágenes cargadas ({X_raw.shape[0]:,} imgs) "
+                f"en {t_load:.2f}s | Shape: {X_raw.shape}"
+            )
+
             # Computar features on-the-fly: images → CNN (forward) → features
+            self._log(f"[Worker {self.worker_id}] Extrayendo features desde CNN...")
+            t_feat = time.perf_counter()
+
             with torch.no_grad():
-                X_epoch = self._cnn.extract_batched(X_raw, verbose=False)
+                X_epoch = self._cnn.extract_batched(X_raw, verbose=True)
+
+            t_feat = time.perf_counter() - t_feat
+            self._log(
+                f"[Worker {self.worker_id}] Features extraídos en {t_feat:.2f}s | "
+                f"Shape: {X_epoch.shape}"
+            )
 
             Y_epoch = Y_raw
 
             from Model.mlp import forward_and_gradients
 
+            self._log(f"[Worker {self.worker_id}] Computando gradientes CNN+MLP...")
+            t_mlp = time.perf_counter()
+
             gradients, loss, accuracy = forward_and_gradients(params, X_epoch, Y_epoch)
 
+            t_mlp = time.perf_counter() - t_mlp
+            self._log(
+                f"[Worker {self.worker_id}] ✓ EPOCH {epoch}/{epochs} COMPLETADA | "
+                f"Loss: {loss:.4f} | Accuracy: {accuracy:.2f}% | MLP time: {t_mlp:.2f}s"
+            )
+
             if self._sock:
+                self._log(f"[Worker {self.worker_id}] Enviando gradientes al PS...")
                 send_message(
                     self._sock,
                     MsgType.GRADIENTS,
@@ -807,6 +1095,8 @@ class WorkerNode:
                             y Y es arr de labels (N,) int32.
                  Si no hay imágenes, devuelve (None, None).
         """
+        import time
+
         if len(indices) == 0:
             return None, None
 
@@ -815,7 +1105,11 @@ class WorkerNode:
 
         if self._data_source == "local":
             # Modo LOCAL: cargar desde disco usando ImageFolder
-            self._log(f"Cargando {len(indices)} imágenes (MODO LOCAL)...")
+            t_start = time.perf_counter()
+            self._log(
+                f"[Worker {self.worker_id}] Cargando {len(indices)} imágenes "
+                f"(MODO LOCAL) desde disco..."
+            )
             try:
                 loader = get_imagenet_dataloader(
                     split="train",
@@ -824,15 +1118,32 @@ class WorkerNode:
                     num_workers=4,
                     indices=indices,
                 )
+                batch_count = 0
                 for X_batch, Y_batch in loader:
+                    batch_count += 1
                     img_parts.append(X_batch.numpy())
                     label_parts.append(Y_batch.numpy())
+                    if batch_count % 10 == 0 or batch_count == 1:
+                        self._log(
+                            f"[Worker {self.worker_id}] ... {min(batch_count * 256, len(indices)):,} "
+                            f"imágenes procesadas"
+                        )
+                t_elapsed = time.perf_counter() - t_start
+                self._log(
+                    f"[Worker {self.worker_id}] Carga local completada en {t_elapsed:.2f}s"
+                )
             except Exception as e:
-                self._log(f"Error cargando imágenes locales: {e}")
+                self._log(
+                    f"[Worker {self.worker_id}] ✗ Error cargando imágenes locales: {e}"
+                )
                 return None, None
         else:
             # Modo STREAM: cargar desde HuggingFace
-            self._log(f"Cargando {len(indices)} imágenes (MODO STREAM)...")
+            t_start = time.perf_counter()
+            self._log(
+                f"[Worker {self.worker_id}] Cargando {len(indices)} imágenes "
+                f"(MODO STREAM) desde HuggingFace..."
+            )
             try:
                 loader = get_imagenet_stream_dataloader(
                     split="train",
@@ -846,6 +1157,7 @@ class WorkerNode:
                 # Procesamos secuencialmente y tomamos solo los que coinciden
                 current_idx = 0
                 indices_set = set(indices)
+                batches_processed = 0
 
                 for X_batch, Y_batch in loader:
                     batch_size = len(X_batch)
@@ -858,17 +1170,33 @@ class WorkerNode:
                         img_parts.append(X_batch[mask].numpy())
                         label_parts.append(Y_batch[mask].numpy())
 
+                    batches_processed += 1
+                    if batches_processed % 20 == 0:
+                        self._log(
+                            f"[Worker {self.worker_id}] ... {current_idx + batch_size:,} "
+                            f"imágenes procesadas del stream"
+                        )
+
                     current_idx += batch_size
 
                     # Detener si ya procesamos todos los índices pedidos
                     if current_idx > indices.max():
                         break
+
+                t_elapsed = time.perf_counter() - t_start
+                self._log(
+                    f"[Worker {self.worker_id}] Carga stream completada en {t_elapsed:.2f}s"
+                )
             except Exception as e:
-                self._log(f"Error cargando imágenes stream: {e}")
+                self._log(
+                    f"[Worker {self.worker_id}] ✗ Error cargando imágenes stream: {e}"
+                )
                 return None, None
 
         if not img_parts:
-            self._log("Advertencia: Sin imágenes cargadas.")
+            self._log(
+                f"[Worker {self.worker_id}] ⚠ Advertencia: Sin imágenes cargadas."
+            )
             return None, None
 
         return (

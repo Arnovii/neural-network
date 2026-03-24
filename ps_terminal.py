@@ -246,6 +246,12 @@ def main() -> None:
         help="Cargar modelo CNN guardado por hash (modo 'simple')",
     )
     parser.add_argument(
+        "--feature-cache",
+        action="store_true",
+        default=True,
+        help="Enable per-batch feature caching for ResNet18 mode (default: enabled)",
+    )
+    parser.add_argument(
         "--cnn-list",
         action="store_true",
         help="Listar modelos CNN guardados y salir",
@@ -283,6 +289,7 @@ def main() -> None:
     print(f"  Learning rate   : {args.lr}")
     print(f"  Ejemplos train  : {args.n_train}")
     print(f"  Semilla         : {args.seed if args.seed is not None else 'aleatoria'}")
+    print(f"  Feature cache   : {'enabled' if args.feature_cache else 'disabled'}")
     print("=" * 70)
 
     # Espera hasta que se conecten los N Workers requeridos
@@ -491,6 +498,7 @@ def main() -> None:
         "n_train": args.n_train,
         "workers": args.workers,
         "seed": args.seed,
+        "feature_cache": args.feature_cache,
     }
     json_path = export_results(history, config, elapsed)
     print(f"\n  Resultados exportados a: {json_path}")
