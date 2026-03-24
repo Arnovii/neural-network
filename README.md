@@ -168,7 +168,7 @@ python ps_terminal.py --workers 3 --epochs 500 --hidden1 256 --hidden2 128 --lr 
 | `--hidden2` | Neuronas en la segunda capa oculta del MLP | `128` |
 | `--lr` | Tasa de aprendizaje | `0.01` |
 | `--momentum` | Momentum SGD (0.0 = SGD puro) | `0.9` |
-| `--n-train` | Total de ejemplos de entrenamiento | `50000` |
+| `--n-train` | Total de ejemplos de entrenamiento | `None` (resuelve a 1,281,167) |
 | `--seed` | Semilla aleatoria (reproducibilidad) | ninguna |
 | `--cnn-arch` | Arquitectura CNN: `simple` o `resnet18` | `resnet18` |
 | `--cnn-device` | Dispositivo PyTorch para CNN: `cpu`, `cuda`, `mps` | `cpu` |
@@ -344,50 +344,50 @@ La pipeline completa se divide en dos etapas con responsabilidades distintas:
 │         ▼                                                      │
 │  ┌──────────────────────┐                                      │
 │  │ CNN Extractor        │  ← PyTorch (pesos ImageNet)          │
-│  │ (ResNet18/SimpleCNN) │    Idéntica en todos Workers        │
-│  │ Modos:              │    Semilla reproducible              │
-│  │ • resnet18: frozen  │    (same features everywhere)        │
-│  │ • simple: trainable │                                      │
-│  └──────────┬──────────┘                                      │
-│             │ feature vector  (512,)                          │
+│  │ (ResNet18/SimpleCNN) │    Idéntica en todos Workers         │
+│  │ Modos:              │    Semilla reproducible               │
+│  │ • resnet18: frozen  │    (same features everywhere)         │
+│  │ • simple: trainable │                                       │
+│  └──────────┬──────────┘                                       │
+│             │ feature vector  (512,)                           │
 │             ▼                                                  │
 │  ┌──────────────────────┐                                      │
-│  │ Feature Scaler       │  ← StandardScaler (μ=0, σ=1)        │
-│  │ (Normalization)      │    Calculado sobre train features   │
+│  │ Feature Scaler       │  ← StandardScaler (μ=0, σ=1)         │
+│  │ (Normalization)      │    Calculado sobre train features    │
 │  │ Solo en resnet18     │                                      │
-│  └──────────┬──────────┘                                      │
+│  └──────────┬──────────┘                                       │
 │             │                                                  │
 │             ▼                                                  │
-│  ┌──────────────────────────────────────────────────────────┐ │
-│  │ MLP (NumPy) — Distributed Training                        │ │
-│  │                                                          │ │
-│  │  Input:  512-dims (features)                            │ │
-│  │  Output: 1000-dims (logits para 1000 clases ImageNet)   │ │
-│  │                                                          │ │
-│  │  ┌─────────────────────────────────────────────────┐   │ │
-│  │  │ Worker i                                        │   │ │
-│  │  │ ────────────────────────────────────────────    │   │ │
-│  │  │ Batch i = n_train / n_workers  (estratificado) │   │ │
-│  │  │ ▼                                               │   │ │
-│  │  │ logits = MLP.forward(X_batch_i)                │   │ │
-│  │  │ loss = softmax_cross_entropy(logits_i, Y_i)    │   │ │
-│  │  │ grads_i = backward(loss)  [solo MLP!]          │   │ │
-│  │  │ ▼                                               │   │ │
-│  │  │ Envía gradientes al Parameter Server            │   │ │
-│  │  └─────────────────────────────────────────────────┘   │ │
-│  │  + [Worker 2, Worker 3, ...]                           │ │
-│  │                                                          │ │
-│  │  ┌──────────────────────────────────────────────────┐   │ │
-│  │  │ Parameter Server (Agregación)                    │   │ │
-│  │  │ ────────────────────────────────────────────     │   │ │
-│  │  │ params_global = params - lr * mean(all_grads)    │   │ │
-│  │  │ Broadcast params_global to all Workers ↺         │   │ │
-│  │  └──────────────────────────────────────────────────┘   │ │
-│  │                                                          │ │
-│  └──────────────────────────────────────────────────────────┘ │
-│                                                              │
-│  ▼                                                          │
-│  [Predicción en Test Set — validación accuracy]             │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │ MLP (NumPy) — Distributed Training                       │  │
+│  │                                                          │  │
+│  │  Input:  512-dims (features)                             │  │
+│  │  Output: 1000-dims (logits para 1000 clases ImageNet)    │  │
+│  │                                                          │  │
+│  │  ┌─────────────────────────────────────────────────┐     │  │
+│  │  │ Worker i                                        │     │  │
+│  │  │ ────────────────────────────────────────────    │     │  │
+│  │  │ Batch i = n_train / n_workers  (estratificado)  │     │  │
+│  │  │ ▼                                               │     │  │
+│  │  │ logits = MLP.forward(X_batch_i)                 │     │  │
+│  │  │ loss = softmax_cross_entropy(logits_i, Y_i)     │     │  │
+│  │  │ grads_i = backward(loss)  [solo MLP!]           │     │  │
+│  │  │ ▼                                               │     │  │
+│  │  │ Envía gradientes al Parameter Server            │     │  │
+│  │  └─────────────────────────────────────────────────┘     │  │
+│  │  + [Worker 2, Worker 3, ...]                             │  │
+│  │                                                          │  │
+│  │  ┌──────────────────────────────────────────────────┐    │  │
+│  │  │ Parameter Server (Agregación)                    │    │  │
+│  │  │ ────────────────────────────────────────────     │    │  │
+│  │  │ params_global = params - lr * mean(all_grads)    │    │  │
+│  │  │ Broadcast params_global to all Workers ↺         │    │  │
+│  │  └──────────────────────────────────────────────────┘    │  │
+│  │                                                          │  │
+│  └──────────────────────────────────────────────────────────┘  │
+│                                                                │
+│  ▼                                                             │
+│  [Predicción en Test Set — validación accuracy]                │
 └────────────────────────────────────────────────────────────────┘
 ```
 
@@ -419,7 +419,7 @@ La pipeline completa se divide en dos etapas con responsabilidades distintas:
 ### Modo "simple" (CNN + MLP Conjuntamente)
 
 ```bash
-python ps_terminal.py --mode simple --epochs 10
+python ps_terminal.py --cnn-arch simple --epochs 10
 ```
 
 **Comportamiento:**
@@ -435,7 +435,7 @@ python ps_terminal.py --mode simple --epochs 10
 ### Modo "resnet18" (CNN Congelada + MLP Distribuido)
 
 ```bash
-python ps_terminal.py --mode resnet18 --epochs 10
+python ps_terminal.py --cnn-arch resnet18 --epochs 10
 ```
 
 **Comportamiento:**
@@ -455,17 +455,17 @@ python ps_terminal.py --mode resnet18 --epochs 10
 
 **Uso básico (resnet18, full dataset):**
 ```bash
-python ps_terminal.py --workers 3 --epochs 100 --mode resnet18
+python ps_terminal.py --workers 3 --epochs 100 --cnn-arch resnet18
 ```
 
 **Con ImageNet local:**
 ```bash
-python ps_terminal.py --workers 3 --epochs 100 --data-source local --imagenet-dir /path/to/ImageNet
+python ps_terminal.py --workers 3 --epochs 100 --data-dir /path/to/ImageNet
 ```
 
-**Con streaming (HuggingFace):**
+**Con streaming (HuggingFace, automático si no existe --data-dir):**
 ```bash
-python ps_terminal.py --workers 3 --epochs 100 --data-source stream --hf-token your_token
+python ps_terminal.py --workers 3 --epochs 100 --hf-token your_token
 ```
 
 **Limitar dataset (n_train):**
@@ -491,7 +491,7 @@ python ps_terminal.py --cnn-list
 ### Worker Node
 
 ```bash
-python worker.py --ps-host localhost --ps-port 9090
+python worker.py --server-host localhost --server-port 9090
 ```
 
 ---
@@ -542,7 +542,7 @@ python ps_terminal.py --workers 3 --epochs 10 --cnn-hash abc123def456
 # Data/ImageNet/val/{synset_id}/{image.JPEG}
 
 # O especifica ruta alternativa:
-python ps_terminal.py --imagenet-dir /ruta/a/ImageNet
+python ps_terminal.py --data-dir /ruta/a/ImageNet
 ```
 
 ### Error: "Connection refused" (Worker → PS)
@@ -561,11 +561,11 @@ python worker.py --ps-port 9090
 **Solución:**
 ```bash
 # Opción 1: pasar token como argumento
-python ps_terminal.py --data-source stream --hf-token tu_token
+python ps_terminal.py --hf-token tu_token
 
 # Opción 2: exportar variable de entorno
 export HF_TOKEN=tu_token
-python ps_terminal.py --data-source stream
+python ps_terminal.py
 ```
 
 ### Entrenamiento muy lento
