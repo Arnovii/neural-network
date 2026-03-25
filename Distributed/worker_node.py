@@ -397,6 +397,8 @@ class WorkerNode:
             # ═══════════════════════════════════════════════════════
             # MODO RESNET18: CNN CONGELADA → Streaming per-batch
             # ═══════════════════════════════════════════════════════
+            import time
+
             self._log(
                 "Modo RESNET18 detectado. Preparando para extracción de features "
                 "on-the-fly durante entrenamiento..."
@@ -405,8 +407,6 @@ class WorkerNode:
             # Cargar etiquetas de train para reconstrucción de índices
             # (necesario para estratificación)
             if self._Y_raw is None:
-                import time
-
                 self._log("Cargando etiquetas de train para estratificación...")
                 t_start = time.perf_counter()
 
@@ -446,6 +446,7 @@ class WorkerNode:
                     )
                     all_y = []
                     batch_count = 0
+                    self._log("  ► Preparando etiquetas...")
                     for _, y in loader:
                         batch_count += 1
                         all_y.append(y.cpu().numpy())
@@ -493,13 +494,15 @@ class WorkerNode:
             # ═══════════════════════════════════════════════════════
             # MODO SIMPLE: CNN ENTRENABLE → Sin prefetching de features
             # ═══════════════════════════════════════════════════════
+            # MODO SIMPLE: CNN ENTRENABLE → Sin prefetching de features
+            # ═══════════════════════════════════════════════════════
+            import time
+
             self._log("Modo SIMPLE: CNN entrenable, sin caching de features.")
 
             # Cargar etiquetas de train para reconstrucción de índices
             # (necesario para saber cuántos ejemplos hay de cada clase)
             if self._Y_raw is None:
-                import time
-
                 self._log("Cargando etiquetas de entrenamiento...")
                 t_start = time.perf_counter()
 
@@ -832,7 +835,7 @@ class WorkerNode:
                 self._lazy_scaler_initialized = True
                 self._log(
                     f"[Worker {self.worker_id}] ► FeatureScaler inicializado en {t_scale:.3f}s "
-                    f"(mean={self._scaler.mean_[:3]}... std={self._scaler.std_[:3]}...)"
+                    f"(computo adaptativo desde primer batch)"
                 )
 
             # Aplicar escalado

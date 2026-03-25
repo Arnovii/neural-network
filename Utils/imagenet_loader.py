@@ -355,9 +355,13 @@ def get_imagenet_stream_dataloader(
 def load_imagenet_labels_stream(
     split: str = "val",
     token: str = "",
+    cache_dir: Optional[str] = None,
 ) -> np.ndarray:
     """
     Carga etiquetas de ImageNet desde HuggingFace en modo streaming.
+
+    Con caché en disco: la primera ejecución descarga etiquetas del stream
+    y las guarda en .npy. Siguientes ejecuciones cargan desde .npy sin internet.
 
     Usa streaming=True para descargar los parquets de forma lazy —
     solo los necesarios para obtener las etiquetas, no el dataset completo.
@@ -365,8 +369,45 @@ def load_imagenet_labels_stream(
 
     :param split: "train" o "val".
     :param token: Token HuggingFace. También lee HF_TOKEN del entorno.
+    :param cache_dir: Directorio para almacenar etiquetas en caché (.npy).
+                      Si None, usa Data/feature_cache/.
     :return: (N,) int32 con etiquetas en [0, 999].
     """
+    # Resolver cache_dir
+    if cache_dir is None:
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        cache_dir = os.path.join(root, "Data", "feature_cache")
+
+    # Crear directorio si no existe
+    os.makedirs(cache_dir, exist_ok=True)
+
+    # Generar nombre del archivo de caché basado en split
+    # Usar el nombre de HuggingFace para la clave del archivo
+    hf_split = _hf_split_name(split)
+    cache_file = os.path.join(cache_dir, f"imagenet_{hf_split}_labels.npy")
+
+    # INTENTO 1: Cargar desde caché si existe
+    if os.path.exists(cache_file):
+        try:
+            arr = np.load(cache_file)
+            if arr.dtype == np.int32:
+                print(
+                    f"[Loader] ✓ Etiquetas {hf_split} cargadas desde caché "
+                    f"({len(arr):,} etiquetas). Sin streaming necesario."
+                )
+                return arr
+            else:
+                print(
+                    f"[Loader] ⚠ Archivo de caché corrupto (dtype={arr.dtype}). "
+                    f"Descargando nuevamente desde HuggingFace..."
+                )
+        except Exception as e:
+            print(
+                f"[Loader] ⚠ Error al cargar caché: {e}. "
+                f"Descargando nuevamente desde HuggingFace..."
+            )
+
+    # INTENTO 2: Descargar desde HuggingFace si no hay caché o está corrupto
     try:
         from datasets import load_dataset  # type: ignore
     except ImportError as e:
@@ -377,10 +418,12 @@ def load_imagenet_labels_stream(
     resolved_token = token or os.environ.get("HF_TOKEN", "")
     if not resolved_token:
         raise ValueError(
-            "Se requiere HF_TOKEN para cargar etiquetas desde HuggingFace."
+            "Se requiere HF_TOKEN para cargar etiquetas desde HuggingFace.\n"
+            "Opciones:\n"
+            "  1. --hf-token <token>\n"
+            "  2. export HF_TOKEN=<token>"
         )
 
-    hf_split = _hf_split_name(split)
     total = _HF_SPLIT_SIZES.get(hf_split, 0)
     print(
         f"[Loader] Descargando etiquetas de {hf_split} ({total:,} imgs) "
@@ -398,9 +441,26 @@ def load_imagenet_labels_stream(
     )
 
     labels = []
-    for item in ds:
+    for idx, item in enumerate(ds):
         labels.append(item["label"])
+        # Progreso cada 100k etiquetas
+        if (idx + 1) % 100_000 == 0:
+            print(f"[Loader]   ... {idx + 1:,} etiquetas procesadas")
 
     arr = np.array(labels, dtype=np.int32)
-    print(f"[Loader] {len(arr):,} etiquetas cargadas.")
+    print(f"[Loader] {len(arr):,} etiquetas descargadas.")
+
+    # GUARDADO en caché
+    try:
+        np.save(cache_file, arr)
+        print(
+            f"[Loader] ✓ Etiquetas guardadas en caché: {cache_file} "
+            f"({arr.nbytes // 1024 // 1024} MB)"
+        )
+    except Exception as e:
+        print(
+            f"[Loader] ⚠ No se pudieron guardar etiquetas en caché: {e}. "
+            f"Siguientes ejecuciones descargarán nuevamente."
+        )
+
     return arr
