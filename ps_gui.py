@@ -216,6 +216,16 @@ class DistributedPSApp:
         self._lbl_info_seed: ttk.Label | None = None
         self._lbl_info_n_sample: ttk.Label | None = None
 
+        # Referencias a widgets que se deshabilitarán según el modo de operación
+        # (en lugar de usar pack_forget/pack)
+        self._wdg_mlp_epochs_scale: ttk.Scale | None = None
+        self._wdg_mlp_epochs_entry: ttk.Entry | None = None
+        self._wdg_e2e_epochs_scale: ttk.Scale | None = None
+        self._wdg_e2e_epochs_entry: ttk.Entry | None = None
+        # Labels también se pueden deshabiitar para dar feedback visual
+        self._wdg_mlp_epochs_label: ttk.Label | None = None
+        self._wdg_e2e_epochs_label: ttk.Label | None = None
+
         self._build_ui()
         self._refresh_buttons()
 
@@ -227,6 +237,9 @@ class DistributedPSApp:
         self._build_left_panel()
         self._build_right_panel()
         self._build_status_bar()
+        # Inicializar visibilidad de controles según modo actual
+        # (después de que todas las widgets estén construidas)
+        self._on_system_mode_change()
 
     # ── Panel izquierdo ──────────────────────────────────────────
 
@@ -242,10 +255,11 @@ class DistributedPSApp:
 
             return (parent.register(_validate), "%P")
 
-        def _add_slider(parent, label, var, lo, hi):
+        def _add_slider(parent, label, var, lo, hi, return_widgets=False):
             max_digits = len(str(hi))
-            ttk.Label(parent, text=label).pack(anchor=tk.W, pady=(6, 0))
-            ttk.Scale(
+            label_widget = ttk.Label(parent, text=label)
+            label_widget.pack(anchor=tk.W, pady=(6, 0))
+            scale_widget = ttk.Scale(
                 parent,
                 from_=lo,
                 to=hi,
@@ -253,7 +267,8 @@ class DistributedPSApp:
                 variable=var,
                 length=200,
                 command=_snap_int(var),
-            ).pack(fill=tk.X, pady=5)
+            )
+            scale_widget.pack(fill=tk.X, pady=5)
             vcmd = _make_int_validator(parent, max_digits)
             entry = ttk.Entry(
                 parent,
@@ -274,6 +289,12 @@ class DistributedPSApp:
 
             entry.bind("<Return>", _commit)
             entry.bind("<FocusOut>", _commit)
+
+            # Siempre retornar una tupla para mantener consistencia
+            # de tipos (tipos no retornan None cuando return_widgets=False)
+            if return_widgets:
+                return label_widget, scale_widget, entry
+            return (None, None, None)
 
         def _add_float_input(parent, label, var, lo, hi, max_chars=8):
             ttk.Label(parent, text=label).pack(anchor=tk.W, pady=(6, 0))
@@ -381,6 +402,7 @@ class DistributedPSApp:
         self._v_host = tk.StringVar(value="0.0.0.0")
         self._v_port = tk.IntVar(value=9999)
         self._v_epochs = tk.IntVar(value=100)
+        self._v_e2e_epochs = tk.IntVar(value=200)  # Épocas para End-to-End
         self._v_hidden1 = tk.IntVar(value=256)
         self._v_hidden2 = tk.IntVar(value=128)
         self._v_lr = tk.StringVar(value="0.01")
@@ -399,13 +421,11 @@ class DistributedPSApp:
         _add_text_input(frame, "Host (IP de escucha):", self._v_host)
         _add_integer_input(frame, "Puerto:", self._v_port, 1024, 65535, max_digits=5)
 
-        # ── Sección: Entrenamiento ────────────────────────────────
-        ttk.Label(frame, text="Entrenamiento", font=("Helvetica", 11, "bold")).pack(
-            anchor=tk.W, pady=(18, 0)
-        )
+        # ── Sección: Configuración del Sistema ────────────────────
+        ttk.Label(
+            frame, text="Configuración del Sistema", font=("Helvetica", 11, "bold")
+        ).pack(anchor=tk.W, pady=(18, 0))
         ttk.Separator(frame, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=2)
-
-        _add_slider(frame, "Épocas (50 – 1000):", self._v_epochs, 50, 1000)
 
         # ── Selector de modo de operación ──────────────────────────
         ttk.Label(
@@ -650,6 +670,45 @@ class DistributedPSApp:
         ttk.Separator(frame, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=2)
         _add_slider(frame, "Neuronas ocultas 1 (32 – 1024):", self._v_hidden1, 32, 1024)
         _add_slider(frame, "Neuronas ocultas 2 (32 – 512):", self._v_hidden2, 32, 512)
+
+        # ── Épocas MLP (solo visible en modo precomputed) ───────────
+        self._frame_mlp_epochs = ttk.Frame(frame)
+        self._frame_mlp_epochs.pack(fill=tk.X, pady=(4, 0))
+        (
+            self._wdg_mlp_epochs_label,
+            self._wdg_mlp_epochs_scale,
+            self._wdg_mlp_epochs_entry,
+        ) = _add_slider(
+            self._frame_mlp_epochs,
+            "Épocas MLP (50 – 1000):",
+            self._v_epochs,
+            50,
+            1000,
+            return_widgets=True,
+        )
+
+        # ── Entrenamiento Distribuido ──────────────────────────────
+        ttk.Label(
+            frame, text="Entrenamiento Distribuido:", font=("Helvetica", 10, "bold")
+        ).pack(anchor=tk.W, pady=(14, 4))
+        ttk.Separator(frame, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=2)
+
+        # ── Épocas E2E (solo visible en modo end_to_end) ───────────
+        self._frame_e2e_epochs = ttk.Frame(frame)
+        self._frame_e2e_epochs.pack(fill=tk.X, pady=(4, 0))
+        (
+            self._wdg_e2e_epochs_label,
+            self._wdg_e2e_epochs_scale,
+            self._wdg_e2e_epochs_entry,
+        ) = _add_slider(
+            self._frame_e2e_epochs,
+            "Épocas E2E (50 – 1000):",
+            self._v_e2e_epochs,
+            50,
+            1000,
+            return_widgets=True,
+        )
+
         _add_float_input(
             frame, "Tasa de aprendizaje (0.0001 - 10):", self._v_lr, 0.0001, 10.0
         )
@@ -1055,12 +1114,52 @@ class DistributedPSApp:
         """
         Maneja el cambio del modo de operación del sistema.
 
-        Actualmente solo soporta "precomputed". Si en el futuro se habilita
-        "end_to_end", aquí se ocultarían/mostrarían controles diferentes.
+        Control de habilitación/deshabilitación de controles según el modo:
+        - "precomputed": Habilita épocas MLP, deshabilita épocas E2E
+        - "end_to_end": Deshabilita épocas MLP, habilita épocas E2E
+
+        Todos los controles permanecen siempre visibles para mantener
+        la estabilidad del layout.
         """
         mode = self._v_system_mode.get()
-        # Por ahora solo registrar el cambio
-        self._log(f"[INFO] Modo de operación seleccionado: {mode}")
+
+        if mode == "precomputed":
+            # Habilitar control de épocas MLP
+            for widget in [
+                self._wdg_mlp_epochs_label,
+                self._wdg_mlp_epochs_scale,
+                self._wdg_mlp_epochs_entry,
+            ]:
+                if widget:
+                    widget.config(state=tk.NORMAL)
+            # Deshabilitar control de épocas E2E
+            for widget in [
+                self._wdg_e2e_epochs_label,
+                self._wdg_e2e_epochs_scale,
+                self._wdg_e2e_epochs_entry,
+            ]:
+                if widget:
+                    widget.config(state=tk.DISABLED)
+            self._log(f"[INFO] Modo cambiado a: Precomputación (MLP distribuido)")
+        else:  # end_to_end
+            # Deshabilitar control de épocas MLP
+            for widget in [
+                self._wdg_mlp_epochs_label,
+                self._wdg_mlp_epochs_scale,
+                self._wdg_mlp_epochs_entry,
+            ]:
+                if widget:
+                    widget.config(state=tk.DISABLED)
+            # Habilitar control de épocas E2E
+            for widget in [
+                self._wdg_e2e_epochs_label,
+                self._wdg_e2e_epochs_scale,
+                self._wdg_e2e_epochs_entry,
+            ]:
+                if widget:
+                    widget.config(state=tk.NORMAL)
+            self._log(f"[INFO] Modo cambiado a: End-to-End (CNN+MLP juntos)")
+        self._log(f"[INFO] Épocas de entrenamiento ajustadas para modo: {mode}")
 
     def _on_cnn_mode_change(self) -> None:
         """
@@ -1220,7 +1319,19 @@ class DistributedPSApp:
 
         # Recoger parámetros de entrenamiento
         try:
-            epochs = int(self._v_epochs.get())
+            # Seleccionar épocas según el modo de operación
+            training_mode = self._v_system_mode.get()
+            if training_mode == "precomputed":
+                epochs = int(self._v_epochs.get())
+                self._log(
+                    f"[INFO] Modo Precomputación: usando {epochs} épocas para MLP"
+                )
+            else:  # end_to_end
+                epochs = int(self._v_e2e_epochs.get())
+                self._log(
+                    f"[INFO] Modo End-to-End: usando {epochs} épocas para CNN+MLP"
+                )
+
             hidden1 = int(self._v_hidden1.get())
             hidden2 = int(self._v_hidden2.get())
             lr = float(self._v_lr.get())
