@@ -319,6 +319,86 @@ def forward_and_gradients(
 
 
 # ================================================================
+# BACKWARD A TRAVÉS DE MLP — para modo End-to-End
+# ================================================================
+
+
+def mlp_backward_to_input(
+    params: Dict[str, np.ndarray],
+    X: np.ndarray,
+    Y: np.ndarray,
+) -> Tuple[np.ndarray, Dict[str, np.ndarray], float, float]:
+    """
+    Realiza forward + backward completo sobre el MLP y retorna:
+    1. Gradiente respecto a la entrada (X) — necesario para backprop CNN
+    2. Gradientes respecto a los pesos del MLP (como forward_and_gradients)
+    3. Loss y accuracy
+
+    Usado en modo End-to-End donde se necesita backpropagar a través de la CNN
+    después de calcular el gradiente de loss respecto a los features.
+
+    :param params: Pesos del MLP.
+    :type params: Dict[str, np.ndarray]
+
+    :param X: Features de entrada.
+    :type X: np.ndarray de shape (N, feature_dim) float32.
+
+    :param Y: Etiquetas.
+    :type Y: np.ndarray de shape (N,) int32.
+
+    :return: Tupla (dX, gradients, mean_loss, accuracy_pct) donde:
+                - dX: gradiente respecto a X, shape (N, feature_dim).
+                  Se usa para backpropagar a través de la CNN.
+                - gradients: Dict con dW1, db1, ..., db3 (mismo que forward_and_gradients).
+                - mean_loss: Cross-entropy loss promediada.
+                - accuracy_pct: Porcentaje de aciertos 0-100.
+    :rtype: Tuple[np.ndarray, Dict[str, np.ndarray], float, float].
+    """
+    N = len(X)
+    W1, W2, W3 = params["W1"], params["W2"], params["W3"]
+
+    # Forward
+    Z1, A1, Z2, A2, A3 = _forward(params, X)
+
+    # Métricas
+    preds = np.argmax(A3, axis=0)
+    correct = int(np.sum(preds == Y))
+
+    log_p = np.log(np.clip(A3, 1e-15, 1.0))
+    total_loss = -float(np.sum(log_p[Y, np.arange(N)]))
+
+    # Backward — igual que en forward_and_gradients
+    delta3 = A3.copy()
+    delta3[Y, np.arange(N)] -= 1.0
+    dW3 = (1.0 / N) * (delta3 @ A2.T)
+    db3 = (1.0 / N) * delta3.sum(axis=1)
+
+    delta2 = (W3.T @ delta3) * _relu_grad(Z2)
+    dW2 = (1.0 / N) * (delta2 @ A1.T)
+    db2 = (1.0 / N) * delta2.sum(axis=1)
+
+    delta1 = (W2.T @ delta2) * _relu_grad(Z1)
+    dW1 = (1.0 / N) * (delta1 @ X)
+    db1 = (1.0 / N) * delta1.sum(axis=1)
+
+    # MLP gradients respecto a su entrada X
+    # Necesario para backpropagar a la CNN en modo E2E
+    dX = W1.T @ delta1  # (feature_dim, hidden1) @ (hidden1, N) = (feature_dim, N)
+    dX = dX.T  # Transponer a (N, feature_dim)
+
+    gradients = {
+        "dW1": dW1,
+        "db1": db1,
+        "dW2": dW2,
+        "db2": db2,
+        "dW3": dW3,
+        "db3": db3,
+    }
+
+    return dX, gradients, total_loss / N, 100.0 * correct / N
+
+
+# ================================================================
 # SOLO EVALUACIÓN — para el PS
 # ================================================================
 

@@ -849,6 +849,28 @@ class CNNExtractor:
             t = torch.from_numpy(X).to(self.device)
             return self._model(t).cpu().numpy()
 
+    def set_trainable(self, trainable: bool = True) -> None:
+        """
+        Habilita o deshabilita el entrenamiento de la CNN.
+
+        Usado en modo End-to-End para permitir que la CNN compute gradientes.
+        En modo precomputado, la CNN siempre tiene requires_grad=False.
+
+        :param trainable: Si True, habilita gradientes (requires_grad=True, mode train).
+                         Si False, congela parámetros (requires_grad=False, mode eval).
+        :type trainable: bool.
+
+        :return: None
+        :rtype: NoneType.
+        """
+        for param in self._model.parameters():
+            param.requires_grad_(trainable)
+
+        if trainable:
+            self._model.train()  # Activa BatchNorm training, Dropout, etc.
+        else:
+            self._model.eval()  # Desactiva componentes estocásticos
+
     def extract_batched(
         self,
         X: np.ndarray,

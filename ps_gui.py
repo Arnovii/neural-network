@@ -435,14 +435,13 @@ class DistributedPSApp:
             variable=self._v_system_mode,
             value="end_to_end",
             command=self._on_system_mode_change,
-            state=tk.DISABLED,  # Por ahora deshabilitado, para implementar después
         ).pack(anchor=tk.W)
         
         ttk.Label(
             frame,
-            text="⚠ End-to-End aún no disponible",
+            text="ℹ End-to-End: Mayor ancho de banda, CNN se adapta a los datos",
             font=("Helvetica", 8, "italic"),
-            foreground="#D32F2F",
+            foreground="#1976D2",
         ).pack(anchor=tk.W, pady=(0, 8))
         
         # ── Separator ──────────────────────────────────────────────
@@ -1149,6 +1148,7 @@ class DistributedPSApp:
         self._server = ParameterServer(
             host=host,
             port=port,
+            training_mode=self._v_system_mode.get(),
             on_worker_connected=lambda wid, addr: q.put(
                 ("worker_connected", {"id": wid, "addr": addr})
             ),
