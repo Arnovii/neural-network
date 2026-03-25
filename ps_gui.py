@@ -244,6 +244,14 @@ class DistributedPSApp:
         self._wdg_n_train_global_label: ttk.Label | None = None
         self._wdg_n_train_global_entry: ttk.Entry | None = None
 
+        # Referencias a widgets de Muestras CNN y Semilla MLP
+        # Muestras CNN: solo activa cuando CNN en modo entrenamiento
+        self._wdg_cnn_samples_label: ttk.Label | None = None
+        self._wdg_cnn_samples_entry: ttk.Entry | None = None
+        # Semilla MLP: se agrupa en Clasificador MLP
+        self._wdg_mlp_seed_label: ttk.Label | None = None
+        self._wdg_mlp_seed_entry: ttk.Entry | None = None
+
         self._build_ui()
         self._refresh_buttons()
 
@@ -382,11 +390,15 @@ class DistributedPSApp:
                 return label_widget, entry
             return (None, None)
 
-        def _add_text_input(parent, label, var, max_chars=20):
-            ttk.Label(parent, text=label).pack(anchor=tk.W, pady=(6, 0))
-            ttk.Entry(parent, textvariable=var, width=max_chars).pack(
-                pady=(0, 6), fill=tk.X
-            )
+        def _add_text_input(parent, label, var, max_chars=20, return_widgets=False):
+            label_widget = ttk.Label(parent, text=label)
+            label_widget.pack(anchor=tk.W, pady=(6, 0))
+            entry_widget = ttk.Entry(parent, textvariable=var, width=max_chars)
+            entry_widget.pack(pady=(0, 6), fill=tk.X)
+
+            if return_widgets:
+                return label_widget, entry_widget
+            return (None, None)
 
         # ── Contenedor scrollable ─────────────────────────────────
         container = ttk.Frame(self.root, width=300)
@@ -658,15 +670,17 @@ class DistributedPSApp:
             justify="center",
         ).pack(pady=(0, 6))
 
-        ttk.Label(self._frm_train_cnn, text="Muestras CNN (100–50000):").pack(
-            anchor=tk.W, pady=(4, 0)
+        self._wdg_cnn_samples_label = ttk.Label(
+            self._frm_train_cnn, text="Muestras CNN (100–50000):"
         )
-        ttk.Entry(
+        self._wdg_cnn_samples_label.pack(anchor=tk.W, pady=(4, 0))
+        self._wdg_cnn_samples_entry = ttk.Entry(
             self._frm_train_cnn,
             textvariable=self._v_cnn_pretrain_samples,
             width=10,
             justify="center",
-        ).pack(pady=(0, 6))
+        )
+        self._wdg_cnn_samples_entry.pack(pady=(0, 6))
 
         ttk.Label(self._frm_train_cnn, text="Semilla CNN (vacío = aleatoria):").pack(
             anchor=tk.W, pady=(4, 0)
@@ -736,6 +750,11 @@ class DistributedPSApp:
             return_widgets=True,
         )
 
+        # ── Semilla MLP (vacío = aleatoria) ──────────────────────
+        self._wdg_mlp_seed_label, self._wdg_mlp_seed_entry = _add_text_input(
+            frame, "Semilla MLP (vacío = aleatoria):", self._v_seed, return_widgets=True
+        )
+
         # ── Épocas MLP (solo activo en modo precomputed) ──────────
         self._frame_mlp_epochs = ttk.Frame(frame)
         self._frame_mlp_epochs.pack(fill=tk.X, pady=(4, 0))
@@ -785,9 +804,6 @@ class DistributedPSApp:
                 return_widgets=True,
             )
         )
-
-        # ── Semilla global ────────────────────────────────────────
-        _add_text_input(frame, "Semilla (vacío = aleatoria):", self._v_seed)
 
         # ── Botones ───────────────────────────────────────────────
         ttk.Separator(frame, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=(18, 8))
@@ -1175,137 +1191,111 @@ class DistributedPSApp:
         date = meta.get("created_at", "")[:10]  # solo la fecha
         return f"{arch}  |  {acc:.2f}%  |  {date}"
 
+    def _update_widget_states(self) -> None:
+        """
+        Actualiza el estado (NORMAL/DISABLED) de todos los widgets dependientes
+        del modo del sistema (precomputed vs end_to_end) y del modo de CNN
+        (load vs train).
+
+        Esta función centraliza toda la lógica de habilitación/deshabilitación
+        para garantizar consistencia total entre los modos.
+
+        **Lógica:**
+
+        ÉPOCAS CNN y MUESTRAS CNN:
+        - ENABLED si: (precomputed AND cnn_mode=="train")
+        - DISABLED si: (precomputed AND cnn_mode=="load") OR (end_to_end)
+
+        OTROS WIDGETS DE ÉPOCAS y PARÁMETROS:
+        - Dependen solo del modo del sistema
+        """
+        system_mode = self._v_system_mode.get()
+        cnn_mode = self._v_cnn_mode.get() if hasattr(self, "_v_cnn_mode") else "load"
+
+        # Determinar si épocas y muestras CNN deben estar activas
+        # Solo en precomputed + CNN en modo "train"
+        cnn_active = system_mode == "precomputed" and cnn_mode == "train"
+
+        # ── Épocas CNN y Muestras CNN ──────────────────────────────
+        for widget in [
+            self._wdg_cnn_epochs_label,
+            self._wdg_cnn_epochs_scale,
+            self._wdg_cnn_epochs_entry,
+            self._wdg_cnn_samples_label,
+            self._wdg_cnn_samples_entry,
+        ]:
+            if widget:
+                widget.config(state=tk.NORMAL if cnn_active else tk.DISABLED)
+
+        # ── Épocas MLP ─────────────────────────────────────────────
+        mlp_epochs_active = system_mode == "precomputed"
+        for widget in [
+            self._wdg_mlp_epochs_label,
+            self._wdg_mlp_epochs_scale,
+            self._wdg_mlp_epochs_entry,
+        ]:
+            if widget:
+                widget.config(state=tk.NORMAL if mlp_epochs_active else tk.DISABLED)
+
+        # ── Épocas E2E ─────────────────────────────────────────────
+        e2e_epochs_active = system_mode == "end_to_end"
+        for widget in [
+            self._wdg_e2e_epochs_label,
+            self._wdg_e2e_epochs_scale,
+            self._wdg_e2e_epochs_entry,
+        ]:
+            if widget:
+                widget.config(state=tk.NORMAL if e2e_epochs_active else tk.DISABLED)
+
+        # ── LR y Momentum (siempre activos, para MLP en ambos modos) ─
+        for widget in [
+            self._wdg_mlp_lr_label,
+            self._wdg_mlp_lr_entry,
+            self._wdg_mlp_momentum_label,
+            self._wdg_mlp_momentum_entry,
+        ]:
+            if widget:
+                widget.config(state=tk.NORMAL)
+
+        # ── Ejemplos de entrenamiento ──────────────────────────────
+        mlp_samples_active = system_mode == "precomputed"
+        e2e_samples_active = system_mode == "end_to_end"
+
+        if self._wdg_n_train_mlp_label:
+            self._wdg_n_train_mlp_label.config(
+                state=tk.NORMAL if mlp_samples_active else tk.DISABLED
+            )
+        if self._wdg_n_train_mlp_entry:
+            self._wdg_n_train_mlp_entry.config(
+                state=tk.NORMAL if mlp_samples_active else tk.DISABLED
+            )
+
+        if self._wdg_n_train_global_label:
+            self._wdg_n_train_global_label.config(
+                state=tk.NORMAL if e2e_samples_active else tk.DISABLED
+            )
+        if self._wdg_n_train_global_entry:
+            self._wdg_n_train_global_entry.config(
+                state=tk.NORMAL if e2e_samples_active else tk.DISABLED
+            )
+
+        # ── Semilla y otros parámetros globales (siempre activos) ───
+        for widget in [
+            self._wdg_mlp_seed_label,
+            self._wdg_mlp_seed_entry,
+        ]:
+            if widget:
+                widget.config(state=tk.NORMAL)
+
     def _on_system_mode_change(self) -> None:
-        """
-        Maneja el cambio del modo de operación del sistema.
-
-        Controla la habilitación/deshabilitación de widgets según el modo:
-
-        MODO PRECOMPUTED:
-        - Épocas MLP: ENABLED (se entrena el MLP distribuido)
-        - Épocas E2E: DISABLED
-        - Épocas CNN: DISABLED (CNN está congelada)
-        - LR y Momentum: ENABLED (para MLP)
-        - Ejemplos entrenamiento MLP: ENABLED
-        - Ejemplos entrenamiento Global: DISABLED
-
-        MODO END-TO-END:
-        - Épocas MLP: DISABLED
-        - Épocas E2E: ENABLED (CNN+MLP se entrenan juntos)
-        - Épocas CNN: DISABLED (CNN en background, controlada por E2E)
-        - LR y Momentum: ENABLED (para CNN+MLP)
-        - Ejemplos entrenamiento MLP: DISABLED
-        - Ejemplos entrenamiento Global: ENABLED
-
-        Todos los controles permanecen visibles para mantener estabilidad del layout.
-        """
+        """Maneja el cambio del modo de operación del sistema y actualiza estados."""
         mode = self._v_system_mode.get()
+        self._update_widget_states()
 
         if mode == "precomputed":
-            # ── Modo Precomputed ──────────────────────────────────
-            # Épocas MLP: ENABLED
-            for widget in [
-                self._wdg_mlp_epochs_label,
-                self._wdg_mlp_epochs_scale,
-                self._wdg_mlp_epochs_entry,
-            ]:
-                if widget:
-                    widget.config(state=tk.NORMAL)
-
-            # Épocas E2E: DISABLED
-            for widget in [
-                self._wdg_e2e_epochs_label,
-                self._wdg_e2e_epochs_scale,
-                self._wdg_e2e_epochs_entry,
-            ]:
-                if widget:
-                    widget.config(state=tk.DISABLED)
-
-            # Épocas CNN: DISABLED (CNN está congelada)
-            for widget in [
-                self._wdg_cnn_epochs_label,
-                self._wdg_cnn_epochs_scale,
-                self._wdg_cnn_epochs_entry,
-            ]:
-                if widget:
-                    widget.config(state=tk.DISABLED)
-
-            # LR y Momentum: ENABLED (para MLP)
-            for widget in [
-                self._wdg_mlp_lr_label,
-                self._wdg_mlp_lr_entry,
-                self._wdg_mlp_momentum_label,
-                self._wdg_mlp_momentum_entry,
-            ]:
-                if widget:
-                    widget.config(state=tk.NORMAL)
-
-            # Ejemplos entrenamiento MLP: ENABLED
-            if self._wdg_n_train_mlp_label:
-                self._wdg_n_train_mlp_label.config(state=tk.NORMAL)
-            if self._wdg_n_train_mlp_entry:
-                self._wdg_n_train_mlp_entry.config(state=tk.NORMAL)
-
-            # Ejemplos entrenamiento Global: DISABLED
-            if self._wdg_n_train_global_label:
-                self._wdg_n_train_global_label.config(state=tk.DISABLED)
-            if self._wdg_n_train_global_entry:
-                self._wdg_n_train_global_entry.config(state=tk.DISABLED)
-
-            self._log(f"[INFO] Modo: Precomputación (CNN fija → MLP distribuido)")
-
+            self._log("[INFO] Modo: Precomputación (CNN fija → MLP distribuido)")
         else:  # end_to_end
-            # ── Modo End-to-End───────────────────────────────────
-            # Épocas MLP: DISABLED
-            for widget in [
-                self._wdg_mlp_epochs_label,
-                self._wdg_mlp_epochs_scale,
-                self._wdg_mlp_epochs_entry,
-            ]:
-                if widget:
-                    widget.config(state=tk.DISABLED)
-
-            # Épocas E2E: ENABLED (CNN+MLP se entrenan juntos)
-            for widget in [
-                self._wdg_e2e_epochs_label,
-                self._wdg_e2e_epochs_scale,
-                self._wdg_e2e_epochs_entry,
-            ]:
-                if widget:
-                    widget.config(state=tk.NORMAL)
-
-            # Épocas CNN: DISABLED (controladas implícitamente por E2E)
-            for widget in [
-                self._wdg_cnn_epochs_label,
-                self._wdg_cnn_epochs_scale,
-                self._wdg_cnn_epochs_entry,
-            ]:
-                if widget:
-                    widget.config(state=tk.DISABLED)
-
-            # LR y Momentum: ENABLED (para CNN+MLP)
-            for widget in [
-                self._wdg_mlp_lr_label,
-                self._wdg_mlp_lr_entry,
-                self._wdg_mlp_momentum_label,
-                self._wdg_mlp_momentum_entry,
-            ]:
-                if widget:
-                    widget.config(state=tk.NORMAL)
-
-            # Ejemplos entrenamiento MLP: DISABLED
-            if self._wdg_n_train_mlp_label:
-                self._wdg_n_train_mlp_label.config(state=tk.DISABLED)
-            if self._wdg_n_train_mlp_entry:
-                self._wdg_n_train_mlp_entry.config(state=tk.DISABLED)
-
-            # Ejemplos entrenamiento Global: ENABLED
-            if self._wdg_n_train_global_label:
-                self._wdg_n_train_global_label.config(state=tk.NORMAL)
-            if self._wdg_n_train_global_entry:
-                self._wdg_n_train_global_entry.config(state=tk.NORMAL)
-
-            self._log(f"[INFO] Modo: End-to-End (CNN+MLP entrenan juntos)")
+            self._log("[INFO] Modo: End-to-End (CNN+MLP entrenan juntos)")
 
     def _on_cnn_mode_change(self) -> None:
         """
@@ -1314,6 +1304,8 @@ class DistributedPSApp:
         Usa tkraise() en lugar de pack/pack_forget para que el frame
         visible suba al frente sin cambiar la posición en el layout.
         Ambos frames ocupan el mismo espacio en el contenedor.
+
+        También actualiza los estados de controles dependientes del modo CNN.
         """
         mode = self._v_cnn_mode.get()
         if mode == "load":
@@ -1322,6 +1314,9 @@ class DistributedPSApp:
             self._frm_train_cnn.tkraise()  # type: ignore
         # Actualizar altura del contenedor al frame visible
         self._frm_cnn_container.update_idletasks()
+
+        # Actualizar estados de widgets que dependen del modo CNN
+        self._update_widget_states()
 
     def _on_cnn_model_selected(self, event=None) -> None:
         """Actualiza la tarjeta de información al seleccionar un modelo."""
