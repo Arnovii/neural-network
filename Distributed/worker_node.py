@@ -499,7 +499,7 @@ class WorkerNode:
         :param worker_rank: Posición de este Worker (0-based).
         """
         import torch
-        from Model.mlp import mlp_backward_to_input, forward_and_gradients
+        from Model.mlp import mlp_backward_to_input
 
         epoch = payload["epoch"]
         mlp_params = payload["params"]

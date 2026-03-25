@@ -845,7 +845,7 @@ class ParameterServer:
                 metric = f"train_acc={epoch_acc:.2f}% | test_acc={test_acc:.2f}% | pérdida={epoch_loss:.4f}"
             else:
                 metric = f"acc={epoch_acc:.2f}% | pérdida={epoch_loss:.4f}"
-            _logger.train(f"Época en progreso", progress=progress, metric=metric)
+            _logger.train("Época en progreso", progress=progress, metric=metric)
 
             if self.on_epoch_end is not None:
                 self.on_epoch_end(
