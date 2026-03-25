@@ -197,6 +197,10 @@ class DistributedPSApp:
         self._v_cnn_lr: tk.StringVar = tk.StringVar(value="1e-3")
         self._v_cnn_seed: tk.StringVar = tk.StringVar(value="42")
         self._saved_models: list = []
+        
+        # Modo de operación del sistema: "precomputed" (CNN fija) o "end_to_end" (CNN+MLP)
+        # Por ahora solo soportamos "precomputed". "end_to_end" es para futuro.
+        self._v_system_mode: tk.StringVar = tk.StringVar(value="precomputed")
         # Widgets del panel CNN (se crean en _build_left_panel)
         self._rb_load: ttk.Radiobutton | None = None
         self._rb_train: ttk.Radiobutton | None = None
@@ -402,6 +406,48 @@ class DistributedPSApp:
         ttk.Separator(frame, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=2)
 
         _add_slider(frame, "Épocas (50 – 1000):", self._v_epochs, 50, 1000)
+        
+        # ── Selector de modo de operación ──────────────────────────
+        ttk.Label(frame, text="Modo de operación:", font=("Helvetica", 10, "bold")).pack(
+            anchor=tk.W, pady=(10, 4)
+        )
+        
+        mode_desc_frame = ttk.Frame(frame)
+        mode_desc_frame.pack(fill=tk.X, pady=(0, 6))
+        
+        ttk.Radiobutton(
+            mode_desc_frame,
+            text="🔒 Precomputación (CNN fija + MLP distribuido)",
+            variable=self._v_system_mode,
+            value="precomputed",
+            command=self._on_system_mode_change,
+        ).pack(anchor=tk.W, pady=(0, 2))
+        ToolTip(
+            mode_desc_frame,
+            "CNN preentrenada y congelada.\n"
+            "MLP distribuido entre Workers.\n"
+            "Más eficiente, menor transferencia de datos."
+        )
+        
+        ttk.Radiobutton(
+            mode_desc_frame,
+            text="⚙️  End-to-End (CNN + MLP se entrenan juntos)",
+            variable=self._v_system_mode,
+            value="end_to_end",
+            command=self._on_system_mode_change,
+            state=tk.DISABLED,  # Por ahora deshabilitado, para implementar después
+        ).pack(anchor=tk.W)
+        
+        ttk.Label(
+            frame,
+            text="⚠ End-to-End aún no disponible",
+            font=("Helvetica", 8, "italic"),
+            foreground="#D32F2F",
+        ).pack(anchor=tk.W, pady=(0, 8))
+        
+        # ── Separator ──────────────────────────────────────────────
+        ttk.Separator(frame, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=2)
+
         # ── CNN Extractor ─────────────────────────────────────
         ttk.Label(frame, text="CNN Extractor:", font=("Helvetica", 10, "bold")).pack(
             anchor=tk.W, pady=(14, 0)
@@ -995,6 +1041,17 @@ class DistributedPSApp:
         acc = meta.get("final_acc", 0.0)
         date = meta.get("created_at", "")[:10]  # solo la fecha
         return f"{arch}  |  {acc:.2f}%  |  {date}"
+
+    def _on_system_mode_change(self) -> None:
+        """
+        Maneja el cambio del modo de operación del sistema.
+        
+        Actualmente solo soporta "precomputed". Si en el futuro se habilita
+        "end_to_end", aquí se ocultarían/mostrarían controles diferentes.
+        """
+        mode = self._v_system_mode.get()
+        # Por ahora solo registrar el cambio
+        self._log(f"[INFO] Modo de operación seleccionado: {mode}")
 
     def _on_cnn_mode_change(self) -> None:
         """

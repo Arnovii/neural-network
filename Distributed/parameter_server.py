@@ -69,6 +69,10 @@ import numpy as np
 from Distributed.protocol import MsgType, receive_message, send_message
 from Model.cnn_extractor import CNNExtractor
 from Model.mlp import apply_gradients, evaluate
+from Utils.logging_util import get_logger
+
+# Logger unificado para mensajes consistentes
+_logger = get_logger(use_colors=True)
 
 
 class ParameterServer:
@@ -216,14 +220,14 @@ class ParameterServer:
         self._accept_thread = threading.Thread(target=self._accept_loop, daemon=True)
         self._accept_thread.start()
 
-        print(f"[PS] Escuchando en {self.host}:{self.port}")
+        _logger.ps(f"Escuchando en {self.host}:{self.port}")
 
     def shutdown(self) -> None:
         """
         Envía STOP a todos los Workers, cierra conexiones y detiene
         el hilo de aceptación.
         """
-        print("[PS] Apagando servidor...")
+        _logger.ps("Apagando servidor...")
         self._shutdown_flag.set()
 
         with self._lock:
@@ -243,7 +247,7 @@ class ParameterServer:
             self._accept_thread.join(timeout=3)  # Espera a que el hilo termine
             self._accept_thread = None
 
-        print("[PS] Servidor apagado.")
+        _logger.ps("Servidor apagado")
 
     @property
     def connected_workers(self) -> List[int]:
@@ -448,9 +452,7 @@ class ParameterServer:
         if self._cnn is not None:
             weights_bytes = self._cnn._get_weights_bytes()
             arch = self._cnn.arch
-            print(
-                f"[PS] Distribuyendo CNN a {len(worker_ids)} Worker(s) (arch={arch})..."
-            )
+            _logger.ps(f"Distribuyendo CNN a {len(worker_ids)} Worker(s)", progress=f"arch={arch}")
             self._cnn_ready_event.clear()
             self._cnn_ready_count = 0
             self._X_test_features = None
@@ -596,6 +598,8 @@ class ParameterServer:
         print(f"  Momentum        : {momentum if momentum > 0 else 'desactivado'}")
         print(f"  Ejemplos train  : {n_train}")
         print("=" * 70)
+        
+        _logger.section("INICIANDO ENTRENAMIENTO DISTRIBUIDO")
 
         # Notifica a los Workers. Cada uno recibe su rank dentro de la
         # sesión para que pueda reconstruir su chunk localmente.
@@ -617,12 +621,12 @@ class ParameterServer:
                     },
                 )
             except Exception as exc:
-                print(f"[PS] Error enviando TRAIN_START a Worker {wid}: {exc}")
-                self._remove_worker(wid)
+                    _logger.error(f"Error enviando TRAIN_START a Worker {wid}: {exc}")
+                    self._remove_worker(wid)
+
+        t_start = time.perf_counter()
 
         for epoch in range(1, epochs + 1):
-            print(f"[PS] ── Época {epoch}/{epochs} ──────────────────────────")
-            t_start = time.perf_counter()
 
             # Limpia los gradientes anteriores
             self._epoch_gradients.clear()
@@ -656,7 +660,7 @@ class ParameterServer:
                             done_event.set()
 
                 except Exception as exc:
-                    print(f"[PS] Error recibiendo de Worker {wid}: {exc}")
+                    _logger.error(f"Error recibiendo de Worker {wid}: {exc}")
                     self._remove_worker(wid)
                     with self._lock:
                         received_count[0] += 1
@@ -671,7 +675,7 @@ class ParameterServer:
                         {"epoch": epoch, "params": params, "seed": epoch_seed},
                     )
                 except Exception as exc:
-                    print(f"[PS] Error enviando a Worker {wid}: {exc}")
+                    _logger.error(f"Error enviando PARAMS a Worker {wid}: {exc}")
                     self._remove_worker(wid)
 
             param_threads = [
@@ -706,7 +710,7 @@ class ParameterServer:
                 t.join()
 
             if not self._epoch_gradients:
-                print("[PS] Sin gradientes — todos los Workers fallaron.")
+                _logger.error("Sin gradientes — todos los Workers fallaron")
                 break
 
             avg_grads = self._average_gradients(list(self._epoch_gradients.values()))
@@ -732,22 +736,21 @@ class ParameterServer:
                 history["test_losses"].append(test_loss)
 
             elapsed = time.perf_counter() - t_start
-            test_str = (
-                f"  precisión_prueba={test_acc:.2f}%  pérdida_prueba={test_loss:.4f}"
-                if test_acc is not None
-                else ""
-            )
-            print(
-                f"[PS]   precisión={epoch_acc:.2f}%  pérdida={epoch_loss:.4f}"
-                f"{test_str}  ({elapsed:.2f}s)"
-            )
+            
+            # Log formateado con progreso y métricas
+            progress = f"{epoch}/{epochs}"
+            if test_acc is not None:
+                metric = f"train_acc={epoch_acc:.2f}% | test_acc={test_acc:.2f}% | pérdida={epoch_loss:.4f}"
+            else:
+                metric = f"acc={epoch_acc:.2f}% | pérdida={epoch_loss:.4f}"
+            _logger.train(f"Época en progreso", progress=progress, metric=metric)
 
             if self.on_epoch_end is not None:
                 self.on_epoch_end(
                     epoch, epochs, epoch_acc, epoch_loss, test_acc, test_loss
                 )
 
-        print("[PS] Entrenamiento completado.\n")
+        _logger.ps("Entrenamiento completado")
         self._active_training_workers = None
         return history
 
@@ -781,7 +784,7 @@ class ParameterServer:
             try:
                 send_message(sock, msg_type, payload)
             except Exception as exc:
-                print(f"[PS] Error haciendo broadcast a Worker {wid}: {exc}")
+                _logger.error(f"Error en broadcast a Worker {wid}: {exc}")
                 self._remove_worker(wid)
 
     def _stop_worker(self, worker_id: int) -> None:
