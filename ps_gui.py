@@ -197,7 +197,7 @@ class DistributedPSApp:
         self._v_cnn_lr: tk.StringVar = tk.StringVar(value="1e-3")
         self._v_cnn_seed: tk.StringVar = tk.StringVar(value="42")
         self._saved_models: list = []
-        
+
         # Modo de operación del sistema: "precomputed" (CNN fija) o "end_to_end" (CNN+MLP)
         # Por ahora solo soportamos "precomputed". "end_to_end" es para futuro.
         self._v_system_mode: tk.StringVar = tk.StringVar(value="precomputed")
@@ -406,15 +406,15 @@ class DistributedPSApp:
         ttk.Separator(frame, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=2)
 
         _add_slider(frame, "Épocas (50 – 1000):", self._v_epochs, 50, 1000)
-        
+
         # ── Selector de modo de operación ──────────────────────────
-        ttk.Label(frame, text="Modo de operación:", font=("Helvetica", 10, "bold")).pack(
-            anchor=tk.W, pady=(10, 4)
-        )
-        
+        ttk.Label(
+            frame, text="Modo de operación:", font=("Helvetica", 10, "bold")
+        ).pack(anchor=tk.W, pady=(10, 4))
+
         mode_desc_frame = ttk.Frame(frame)
         mode_desc_frame.pack(fill=tk.X, pady=(0, 6))
-        
+
         ttk.Radiobutton(
             mode_desc_frame,
             text="🔒 Precomputación (CNN fija + MLP distribuido)",
@@ -426,9 +426,9 @@ class DistributedPSApp:
             mode_desc_frame,
             "CNN preentrenada y congelada.\n"
             "MLP distribuido entre Workers.\n"
-            "Más eficiente, menor transferencia de datos."
+            "Más eficiente, menor transferencia de datos.",
         )
-        
+
         ttk.Radiobutton(
             mode_desc_frame,
             text="⚙️  End-to-End (CNN + MLP se entrenan juntos)",
@@ -436,14 +436,14 @@ class DistributedPSApp:
             value="end_to_end",
             command=self._on_system_mode_change,
         ).pack(anchor=tk.W)
-        
+
         ttk.Label(
             frame,
             text="ℹ End-to-End: Mayor ancho de banda, CNN se adapta a los datos",
             font=("Helvetica", 8, "italic"),
             foreground="#1976D2",
         ).pack(anchor=tk.W, pady=(0, 8))
-        
+
         # ── Separator ──────────────────────────────────────────────
         ttk.Separator(frame, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=2)
 
@@ -1044,7 +1044,7 @@ class DistributedPSApp:
     def _on_system_mode_change(self) -> None:
         """
         Maneja el cambio del modo de operación del sistema.
-        
+
         Actualmente solo soporta "precomputed". Si en el futuro se habilita
         "end_to_end", aquí se ocultarían/mostrarían controles diferentes.
         """

@@ -188,7 +188,7 @@ class ParameterServer:
     def _get_cnn_params_bytes(self) -> bytes:
         """
         Serializa los pesos CNN actuales para enviarlos a los Workers en E2E.
-        
+
         En precomputado, esto es básicamente lo mismo que _get_weights_bytes().
         En E2E, se usa en cada época para redistribuir pesos tras actualización.
         """
@@ -203,9 +203,9 @@ class ParameterServer:
     ) -> None:
         """
         Promedia y aplica gradientes CNN recibidos de los Workers.
-        
+
         Usado únicamente en modo E2E. En precomputado, la CNN no se entrena.
-        
+
         :param cnn_gradients_list: Lista de dicts con gradientes CNN de cada Worker.
         :param learning_rate: Tasa de aprendizaje para SGD.
         """
@@ -228,7 +228,7 @@ class ParameterServer:
             if name in averaged_cnn_grads:
                 grad = averaged_cnn_grads[name]
                 param.data -= learning_rate * torch.from_numpy(grad).to(param.device)
-        
+
         self._cnn._model.load_state_dict(state_dict)
 
     # ================================================================
@@ -508,7 +508,10 @@ class ParameterServer:
         if self._cnn is not None:
             weights_bytes = self._cnn._get_weights_bytes()
             arch = self._cnn.arch
-            _logger.ps(f"Distribuyendo CNN a {len(worker_ids)} Worker(s)", progress=f"arch={arch}")
+            _logger.ps(
+                f"Distribuyendo CNN a {len(worker_ids)} Worker(s)",
+                progress=f"arch={arch}",
+            )
             self._cnn_ready_event.clear()
             self._cnn_ready_count = 0
             self._X_test_features = None
@@ -654,7 +657,7 @@ class ParameterServer:
         print(f"  Momentum        : {momentum if momentum > 0 else 'desactivado'}")
         print(f"  Ejemplos train  : {n_train}")
         print("=" * 70)
-        
+
         _logger.section("INICIANDO ENTRENAMIENTO DISTRIBUIDO")
 
         # Notifica a los Workers. Cada uno recibe su rank dentro de la
@@ -677,13 +680,12 @@ class ParameterServer:
                     },
                 )
             except Exception as exc:
-                    _logger.error(f"Error enviando TRAIN_START a Worker {wid}: {exc}")
-                    self._remove_worker(wid)
+                _logger.error(f"Error enviando TRAIN_START a Worker {wid}: {exc}")
+                self._remove_worker(wid)
 
         t_start = time.perf_counter()
 
         for epoch in range(1, epochs + 1):
-
             # Limpia los gradientes anteriores
             self._epoch_gradients.clear()
             self._epoch_metrics.clear()
@@ -706,7 +708,9 @@ class ParameterServer:
                         with self._lock:
                             self._epoch_gradients[wid] = {
                                 "mlp": payload["gradients"],
-                                "cnn": payload.get("cnn_gradients"),  # None en precomputed
+                                "cnn": payload.get(
+                                    "cnn_gradients"
+                                ),  # None en precomputed
                             }
                             self._epoch_metrics[wid] = (loss, accuracy)
                             received_count[0] += 1
@@ -729,7 +733,7 @@ class ParameterServer:
             def _send_params_to_worker(wid: int) -> None:
                 try:
                     send_dict = {"epoch": epoch, "params": params, "seed": epoch_seed}
-                    
+
                     # En E2E, enviar también los pesos CNN
                     if self.training_mode == "end_to_end" and self._cnn is not None:
                         # Obtener estado actual de CNN como dict
@@ -737,7 +741,7 @@ class ParameterServer:
                         for name, param in self._cnn._model.named_parameters():
                             cnn_state[name] = param.detach().cpu().numpy()
                         send_dict["cnn_params"] = cnn_state
-                    
+
                     send_message(
                         self._worker_sockets[wid],
                         MsgType.PARAMS,
@@ -784,7 +788,7 @@ class ParameterServer:
 
             # En precomputado: _epoch_gradients[wid] contiene solo gradientes MLP
             # En E2E: _epoch_gradients[wid] contiene {"mlp": ..., "cnn": ...}
-            
+
             if self.training_mode == "precomputed":
                 # Modo precomputado: solo gradientes MLP
                 mlp_grads_list: List[Dict[str, np.ndarray]] = [
@@ -801,15 +805,17 @@ class ParameterServer:
                     g["mlp"] for g in self._epoch_gradients.values()
                 ]
                 cnn_grads_list: List[Dict[str, np.ndarray]] = [
-                    g["cnn"] for g in self._epoch_gradients.values() if g["cnn"] is not None
+                    g["cnn"]
+                    for g in self._epoch_gradients.values()
+                    if g["cnn"] is not None
                 ]
-                
+
                 # Aplicar gradientes MLP
                 avg_mlp_grads = self._average_gradients(mlp_grads_list)
                 self._apply_gradients(
                     params, avg_mlp_grads, learning_rate, momentum, velocities
                 )
-                
+
                 # Aplicar gradientes CNN si hay
                 if cnn_grads_list:
                     self._apply_cnn_gradients(cnn_grads_list, learning_rate)
@@ -832,7 +838,7 @@ class ParameterServer:
                 history["test_losses"].append(test_loss)
 
             elapsed = time.perf_counter() - t_start
-            
+
             # Log formateado con progreso y métricas
             progress = f"{epoch}/{epochs}"
             if test_acc is not None:

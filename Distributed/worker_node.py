@@ -47,6 +47,7 @@ Coste único: ~50 000 forward passes CNN al arrancar (~segundos).
 Coste por época: indexación + MLP forward/backward (puro NumPy).
 """
 
+import os
 import socket
 import time
 from typing import Any, Dict, List, Optional
@@ -234,18 +235,57 @@ class WorkerNode:
                     p["epochs"], p["n_train"], p["n_workers"], p["worker_rank"]
                 )
 
-    def _optimal_batch_size(self, base: int = 2048) -> int:
+    def _optimal_batch_size(self) -> int:
         """
-        Devuelve el batch size óptimo según el dispositivo.
-        CPU: batch pequeño → feedback más frecuente.
-        GPU: batch grande → maximiza la ocupación.
+        Calcula el batch size óptimo mediante heurística adaptativa.
+
+        Considera:
+        - Arquitectura CNN (simple es más ligera que resnet18)
+        - Dispositivo (CPU tiene restricciones severas)
+        - Número de CPUs disponibles
+
+        Dataset: CIFAR-10 (imágenes 32×32), no ImageNet.
+
+        Heurística conservadora para evitar congelamiento:
+        - CNN simple: 512-2048 (arquitectura ligera, más batches tolerables)
+        - ResNet18: 64-256 (arquitectura pesada, batches muy pequeños)
+        - CPU: reducción del 50% vs GPU (mucho más lenta)
         """
         device_type = str(self._cnn.device).split(":")[0]
-        if device_type == "cpu":
-            return 256
-        elif device_type == "mps":
-            return 512
-        return base
+        arch = self._cnn.arch
+        n_cpus = os.cpu_count() or 1
+
+        # Escalar según CPUs disponibles
+        if n_cpus <= 2:
+            cpu_factor = 1.0
+        elif n_cpus <= 8:
+            cpu_factor = 1.5
+        else:
+            cpu_factor = 2.0
+
+        # Base según arquitectura CNN
+        if arch == "resnet18":
+            # ResNet-18 es muy profunda (18 capas convolucionales + upscale 32→224)
+            # Batches pequeños incluso en CPU para CIFAR-10
+            if device_type == "cpu":
+                return max(32, min(128, int(64 * cpu_factor)))
+            elif device_type == "cuda":
+                return max(128, min(512, int(256 * cpu_factor)))
+            elif device_type == "mps":
+                return max(64, min(256, int(128 * cpu_factor)))
+            else:
+                return 128
+        else:
+            # CNN simple es más ligera (3 bloques convolucionales)
+            # Permite batches más grandes
+            if device_type == "cpu":
+                return max(256, min(1024, int(512 * cpu_factor)))
+            elif device_type == "cuda":
+                return max(512, min(4096, int(2048 * cpu_factor)))
+            elif device_type == "mps":
+                return max(256, min(2048, int(1024 * cpu_factor)))
+            else:
+                return 512
 
     def _handle_request_test_features(self) -> None:
         """
@@ -346,6 +386,16 @@ class WorkerNode:
             self._log(f"Pesos cargados (hash={wh}). Preparando features de train...")
             self._cnn.set_trainable(False)  # Congelar para evaluación
 
+            # Calcular batch size óptimo basado en heurística adaptativa
+            optimal_bs = self._optimal_batch_size()
+            n_cpus = os.cpu_count() or 1
+            device_str = str(self._cnn.device)
+
+            self._log(
+                f"Batch size dinámico: {optimal_bs} "
+                f"(CNN={arch}, CPUs={n_cpus}, device={device_str}, dataset=CIFAR-10)"
+            )
+
             # Regenerar features con la CNN del PS.
             # prepare() comprueba la caché local primero — si ya existe
             # {arch}_{wh}_train_50000_X.npy, la carga sin re-extraer.
@@ -354,7 +404,7 @@ class WorkerNode:
                 self._Y_raw,
                 split="train",
                 pretrain_epochs=0,  # pesos ya vienen del PS, no reentrenar
-                batch_size=2048,
+                batch_size=optimal_bs,
                 verbose=self.verbose,
             )
 
@@ -366,7 +416,9 @@ class WorkerNode:
             self._log("Features listos. Enviando CNN_READY al PS.")
         else:
             # ── MODO END-TO-END: CNN entrenable, NOT cachear features ──────
-            self._log(f"Pesos cargados (hash={wh}). Habilitando CNN para entrenamiento...")
+            self._log(
+                f"Pesos cargados (hash={wh}). Habilitando CNN para entrenamiento..."
+            )
             self._cnn.set_trainable(True)  # Habilitar gradientes
 
             # NO extraer features — se calcularán durante el forward en cada época
@@ -494,9 +546,10 @@ class WorkerNode:
 
             # Crear un escalar ficticio de loss basado en ∇features
             # Para cada parámetro de CNN, computar gradiente respecto a ∇L/∂features
-            loss_proxy = (features_torch * torch.from_numpy(
-                dX_features.T / len(Y_batch)
-            ).to(self._cnn.device)).sum()
+            loss_proxy = (
+                features_torch
+                * torch.from_numpy(dX_features.T / len(Y_batch)).to(self._cnn.device)
+            ).sum()
 
             loss_proxy.backward()
 
