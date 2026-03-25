@@ -415,27 +415,37 @@ class DistributedPSApp:
         mode_desc_frame = ttk.Frame(frame)
         mode_desc_frame.pack(fill=tk.X, pady=(0, 6))
 
-        ttk.Radiobutton(
+        rb_precomputed = ttk.Radiobutton(
             mode_desc_frame,
             text="🔒 Precomputación (CNN fija + MLP distribuido)",
             variable=self._v_system_mode,
             value="precomputed",
             command=self._on_system_mode_change,
-        ).pack(anchor=tk.W, pady=(0, 2))
-        ToolTip(
-            mode_desc_frame,
-            "CNN preentrenada y congelada.\n"
-            "MLP distribuido entre Workers.\n"
-            "Más eficiente, menor transferencia de datos.",
         )
+        rb_precomputed.pack(anchor=tk.W, pady=(0, 2))
 
-        ttk.Radiobutton(
+        rb_end_to_end = ttk.Radiobutton(
             mode_desc_frame,
             text="⚙️  End-to-End (CNN + MLP se entrenan juntos)",
             variable=self._v_system_mode,
             value="end_to_end",
             command=self._on_system_mode_change,
-        ).pack(anchor=tk.W)
+        )
+        rb_end_to_end.pack(anchor=tk.W)
+
+        ToolTip(
+            rb_precomputed,
+            "CNN preentrenada y congelada.\n"
+            "MLP distribuido entre Workers.\n"
+            "Más eficiente, menor transferencia de datos.",
+        )
+
+        ToolTip(
+            rb_end_to_end,
+            "CNN y MLP se entrenan conjuntamente.\n"
+            "Mayor costo computacional y de red.\n"
+            "Permite adaptar la CNN a los datos.",
+        )
 
         ttk.Label(
             frame,
