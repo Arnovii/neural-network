@@ -637,7 +637,7 @@ class WorkerNode:
             mini_bs = max(16, int(base_opt_bs / 2.5))
             n_total = len(indices)
             n_batches = (n_total + mini_bs - 1) // mini_bs
-            
+
             self._log(
                 f"[END-TO-END] Procesando {n_total} ejemplos en {n_batches} "
                 f"mini-batches (size={mini_bs})..."
@@ -684,7 +684,7 @@ class WorkerNode:
                 # Recalcular forward en modo gradiente para backward
                 # (forward anterior fue .detach(), no propagaba gradientes)
                 self._cnn._model.zero_grad()  # Limpiar gradientes previos
-                
+
                 X_mini_torch = torch.from_numpy(X_mini).to(self._cnn.device)
 
                 # ✓ CRÍTICO: torch.enable_grad() para construir el computation graph
@@ -706,12 +706,15 @@ class WorkerNode:
 
                 # ━━━ VALIDACIONES DE SHAPES ━━━
                 # [DEBUG] Detectar mismatches temprano
-                assert features_torch.shape[0] == len(Y_mini), \
+                assert features_torch.shape[0] == len(Y_mini), (
                     f"[E2E] features batch size {features_torch.shape[0]} != Y size {len(Y_mini)}"
-                assert dX_mini.shape == (len(Y_mini), 512), \
+                )
+                assert dX_mini.shape == (len(Y_mini), 512), (
                     f"[E2E] dX_mini shape {dX_mini.shape} != expected ({len(Y_mini)}, 512)"
-                assert features_torch.shape == dX_mini.shape, \
+                )
+                assert features_torch.shape == dX_mini.shape, (
                     f"[E2E] features_torch {features_torch.shape} != dX_mini {dX_mini.shape}"
+                )
 
                 # Extraer y acumular gradientes CNN (SIN normalizar aquí)
                 # [R2.1] CNN se actualiza acumulando gradientes de mini-batches
@@ -735,8 +738,7 @@ class WorkerNode:
             # Normalizar gradientes CNN por número TOTAL de ejemplos (no por n_batches)
             # Esto es matemáticamente correcto: suma(gradientes) / n_total
             cnn_gradients = {
-                name: grad / n_total 
-                for name, grad in accumulated_cnn_grads.items()
+                name: grad / n_total for name, grad in accumulated_cnn_grads.items()
             }
 
             # Promediar loss y accuracy
