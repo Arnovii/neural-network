@@ -161,8 +161,9 @@ class DistributedPSApp:
     _S_LISTENING = "LISTENING"
     _S_TRAINING = "TRAINING"
 
-    def __init__(self, root: tk.Tk) -> None:
+    def __init__(self, root: tk.Tk, debug: bool = False) -> None:
         self.root = root
+        self.debug = debug  # Flag para modo debug
         self.root.title("Parameter Server — Algoritmo de Diego Distribuido")
         self.root.state("zoomed")
         self.root.columnconfigure(0, weight=0, minsize=310)
@@ -1399,6 +1400,7 @@ class DistributedPSApp:
             host=host,
             port=port,
             training_mode=self._v_system_mode.get(),
+            debug=self.debug,  # Pasar el flag debug
             on_worker_connected=lambda wid, addr: q.put(
                 ("worker_connected", {"id": wid, "addr": addr})
             ),
@@ -2002,8 +2004,19 @@ class DistributedPSApp:
 
 
 def main() -> None:
+    # Parsear argumentos de línea de comandos
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Parameter Server GUI")
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Activar modo debug (mostrar mensajes de debug)",
+    )
+    args = parser.parse_args()
+
     root = tk.Tk()
-    app = DistributedPSApp(root)
+    app = DistributedPSApp(root, debug=args.debug)
 
     def on_close():
         if app._state == app._S_TRAINING:

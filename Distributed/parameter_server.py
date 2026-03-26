@@ -126,9 +126,11 @@ class ParameterServer:
         on_worker_joined_late: Optional[Callable] = None,
         on_cnn_ready: Optional[Callable] = None,
         training_mode: str = "precomputed",
+        debug: bool = False,
     ) -> None:
         self.host = host
         self.port = port
+        self.debug = debug  # Flag para mostrar mensajes de debug
 
         self.on_worker_connected = on_worker_connected
         self.on_worker_disconnected = on_worker_disconnected
@@ -248,6 +250,19 @@ class ParameterServer:
                 self._cnn_ready_event.set()
 
     # ================================================================
+    # FUNCIÓN DE DEBUG
+    # ================================================================
+
+    def _debug_print(self, msg: str) -> None:
+        """
+        Imprime un mensaje de debug solo si self.debug es True.
+
+        :param msg: Mensaje a imprimir.
+        """
+        if self.debug:
+            print(msg)
+
+    # ================================================================
     # RESET DE ESTADO DE ENTRENAMIENTO
     # ================================================================
 
@@ -260,11 +275,13 @@ class ParameterServer:
 
         :param new_training_mode: "precomputed" o "end_to_end"
         """
-        print(
+        self._debug_print(
             "\n[PS][RESET] ════════════════════════════════════════════════════════════"
         )
-        print("[PS][RESET] Limpiando estado anterior")
-        print(f"[PS][RESET] training_mode: {self.training_mode} → {new_training_mode}")
+        self._debug_print("[PS][RESET] Limpiando estado anterior")
+        self._debug_print(
+            f"[PS][RESET] training_mode: {self.training_mode} → {new_training_mode}"
+        )
 
         # ━━━ Actualizar training_mode EXPLÍCITAMENTE ━━━
         if new_training_mode not in ("precomputed", "end_to_end"):
@@ -274,15 +291,17 @@ class ParameterServer:
             )
 
         self.training_mode = new_training_mode
-        print(f"[PS][RESET] ✓ training_mode actualizado a: {self.training_mode}")
+        self._debug_print(
+            f"[PS][RESET] ✓ training_mode actualizado a: {self.training_mode}"
+        )
 
         # ━━━ CNN se reutiliza (fue configurada en set_cnn) ━━━
         # pero sus pesos pueden cambiar según el modo
         if self._cnn is not None:
             # En precomputed: CNN es inmutable (congelada)
             # En E2E: CNN se entrena, pesos se actualizarán
-            print(f"[PS][RESET] CNN presente (arch={self._cnn.arch})")
-            print(
+            self._debug_print(f"[PS][RESET] CNN presente (arch={self._cnn.arch})")
+            self._debug_print(
                 "[PS][RESET]   - Modo PRECOMPUTED → CNN CONGELADA (sin cambios)"
                 if self.training_mode == "precomputed"
                 else "[PS][RESET]   - Modo END-TO-END → CNN ENTRENABLE (pesos se actualizarán)"
@@ -297,8 +316,8 @@ class ParameterServer:
         self._epoch_gradients.clear()
         self._epoch_metrics.clear()
 
-        print("[PS][RESET] ✓ Estado de sesión limpiado")
-        print(
+        self._debug_print("[PS][RESET] ✓ Estado de sesión limpiado")
+        self._debug_print(
             "[PS][RESET] ════════════════════════════════════════════════════════════\n"
         )
 
@@ -583,7 +602,7 @@ class ParameterServer:
             f"[SANITY CHECK] training_mode inválido: {self.training_mode}"
         )
 
-        print(f"[PS][DEBUG] CONFIG FINAL: mode={self.training_mode}")
+        self._debug_print(f"[PS][DEBUG] CONFIG FINAL: mode={self.training_mode}")
 
         worker_ids = self.connected_workers
         if not worker_ids:
@@ -823,10 +842,12 @@ class ParameterServer:
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         # [DEBUG FASE 1] ENVÍO DE TRAIN_START
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        print("[PS][DEBUG] ========== INICIANDO ENVÍO TRAIN_START =========")
-        print(f"[PS][DEBUG] Modo entrenamiento: {self.training_mode}")
-        print(f"[PS][DEBUG] Workers activos: {worker_ids}")
-        print(f"[PS][DEBUG] Total épocas a entrenar: {epochs}")
+        self._debug_print(
+            "[PS][DEBUG] ========== INICIANDO ENVÍO TRAIN_START ========="
+        )
+        self._debug_print(f"[PS][DEBUG] Modo entrenamiento: {self.training_mode}")
+        self._debug_print(f"[PS][DEBUG] Workers activos: {worker_ids}")
+        self._debug_print(f"[PS][DEBUG] Total épocas a entrenar: {epochs}")
 
         # Notificar TRAIN_START
         n_workers = len(worker_ids)
@@ -834,11 +855,13 @@ class ParameterServer:
             with self._lock:
                 sock = self._worker_sockets.get(wid)
             if sock is None:
-                print(f"[PS][DEBUG] ERROR: Socket para Worker {wid} es None")
+                self._debug_print(
+                    f"[PS][DEBUG] ERROR: Socket para Worker {wid} es None"
+                )
                 continue
             try:
                 # [DEBUG] ANTES de crear payload
-                print(
+                self._debug_print(
                     f"[PS][DEBUG] Preparando TRAIN_START para Worker {wid} (rank {rank}/{n_workers})"
                 )
 
@@ -851,8 +874,10 @@ class ParameterServer:
                     "training_mode": "precomputed",  # ← CRÍTICO: DEBE estar aquí
                 }
 
-                print(f"[PS][DEBUG] Payload keys: {list(payload_train_start.keys())}")
-                print(
+                self._debug_print(
+                    f"[PS][DEBUG] Payload keys: {list(payload_train_start.keys())}"
+                )
+                self._debug_print(
                     f"[PS][DEBUG] training_mode en payload: {payload_train_start.get('training_mode', 'AUSENTE')}"
                 )
 
@@ -865,7 +890,7 @@ class ParameterServer:
                 )
 
                 # [DEBUG] ANTES de enviar
-                print(
+                self._debug_print(
                     f"[PS][DEBUG] (ANTES send) Socket para W{wid}: {'Open' if sock else 'Closed'}"
                 )
 
@@ -873,7 +898,9 @@ class ParameterServer:
                 send_message(sock, MsgType.TRAIN_START, payload_train_start)
 
                 # [DEBUG] DESPUÉS de enviar
-                print(f"[PS][DEBUG] TRAIN_START enviado exitosamente a Worker {wid}")
+                self._debug_print(
+                    f"[PS][DEBUG] TRAIN_START enviado exitosamente a Worker {wid}"
+                )
 
             except Exception as exc:
                 print(
@@ -883,28 +910,32 @@ class ParameterServer:
                 _logger.error(f"Error enviando TRAIN_START a Worker {wid}: {exc}")
                 self._remove_worker(wid)
 
-        print("[PS][DEBUG] ========== TRAIN_START ENVIADO A TODOS ==========")
-        print("[PS][DEBUG] Esperando que Workers lean TRAIN_START...\n")
+        self._debug_print(
+            "[PS][DEBUG] ========== TRAIN_START ENVIADO A TODOS =========="
+        )
+        self._debug_print("[PS][DEBUG] Esperando que Workers lean TRAIN_START...\n")
 
         t_start = time.perf_counter()
 
         # ═════════════════════════════════════════════════════════════════
         # [CRÍTICO] VERIFICACIÓN ANTES DE ENTRAR AL LOOP
         # ═════════════════════════════════════════════════════════════════
-        print(
+        self._debug_print(
             "\n[PS][DEBUG] ¡¡¡ PUNTO CRÍTICO: A punto de entrar al loop de épocas !!!"
         )
-        print(f"[PS][DEBUG] worker_ids: {worker_ids}")
-        print(
+        self._debug_print(f"[PS][DEBUG] worker_ids: {worker_ids}")
+        self._debug_print(
             f"[PS][DEBUG] self._worker_sockets.keys(): {list(self._worker_sockets.keys())}"
         )
-        print(f"[PS][DEBUG] epochs: {epochs}")
-        print(f"[PS][DEBUG] range(1, {epochs + 1})\n")
+        self._debug_print(f"[PS][DEBUG] epochs: {epochs}")
+        self._debug_print(f"[PS][DEBUG] range(1, {epochs + 1})\n")
 
         # ── LOOP DE ÉPOCAS ────────────────────────────────────────────
         for epoch in range(1, epochs + 1):
-            print(f"\n[PS][DEBUG] ✓✓✓ ENTRANDO A ITERACIÓN epoch={epoch}/{epochs}")
-            print(
+            self._debug_print(
+                f"\n[PS][DEBUG] ✓✓✓ ENTRANDO A ITERACIÓN epoch={epoch}/{epochs}"
+            )
+            self._debug_print(
                 f"[PS][DEBUG]   self._worker_sockets.keys() AHORA: {list(self._worker_sockets.keys())}"
             )
 
@@ -989,15 +1020,17 @@ class ParameterServer:
             # ═════════════════════════════════════════════════════════════════
             # [DEBUG] ENVÍO DE PARAMS
             # ═════════════════════════════════════════════════════════════════
-            print(f"[PS][DEBUG] ┌─ ENVIANDO PARAMS para época {epoch}")
+            self._debug_print(f"[PS][DEBUG] ┌─ ENVIANDO PARAMS para época {epoch}")
 
             # MOSTRAR EXACTAMENTE QUÉ WORKERS VAN A RECIBIR PARAMS
             workers_for_params = [w for w in worker_ids if w in self._worker_sockets]
-            print(f"[PS][DEBUG] │ worker_ids original: {worker_ids}")
-            print(
+            self._debug_print(f"[PS][DEBUG] │ worker_ids original: {worker_ids}")
+            self._debug_print(
                 f"[PS][DEBUG] │ _worker_sockets.keys() ahora: {list(self._worker_sockets.keys())}"
             )
-            print(f"[PS][DEBUG] │ Workers que RECIBIRÁN PARAMS: {workers_for_params}")
+            self._debug_print(
+                f"[PS][DEBUG] │ Workers que RECIBIRÁN PARAMS: {workers_for_params}"
+            )
 
             param_threads = [
                 threading.Thread(
@@ -1008,7 +1041,7 @@ class ParameterServer:
             ]
 
             # [CRÍTICO] Verificación de threads de PARAMS
-            print(
+            self._debug_print(
                 f"[PS][DEBUG] Construcción de param_threads ({len(param_threads)} threads creados)"
             )
             if not param_threads:
@@ -1033,14 +1066,16 @@ class ParameterServer:
                 _logger.error(error_msg)
                 raise RuntimeError(error_msg)
 
-            print(f"[PS][DEBUG] │ Creados {len(param_threads)} threads de envío")
-            print("[PS][DEBUG] │ Iniciando threads...")
+            self._debug_print(
+                f"[PS][DEBUG] │ Creados {len(param_threads)} threads de envío"
+            )
+            self._debug_print("[PS][DEBUG] │ Iniciando threads...")
             for t in param_threads:
                 t.start()
-            print("[PS][DEBUG] │ Esperando a que terminen threads...")
+            self._debug_print("[PS][DEBUG] │ Esperando a que terminen threads...")
             for t in param_threads:
                 t.join()
-            print(f"[PS][DEBUG] └─ PARAMS ENVIADOS para época {epoch}")
+            self._debug_print(f"[PS][DEBUG] └─ PARAMS ENVIADOS para época {epoch}")
 
             threads = [
                 threading.Thread(
@@ -1106,15 +1141,19 @@ class ParameterServer:
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         # [DEBUG FASE 3] FIN DEL LOOP
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        print("\n[PS][DEBUG] ========== SALIENDO DEL LOOP DE ÉPOCAS =========")
-        print(f"[PS][DEBUG] Épocas completadas: {epochs}")
-        print(f"[PS][DEBUG] Historial de pérdidas: {history['losses']}")
-        print(f"[PS][DEBUG] Historial de precisiones: {history['accuracies']}")
+        self._debug_print(
+            "\n[PS][DEBUG] ========== SALIENDO DEL LOOP DE ÉPOCAS ========="
+        )
+        self._debug_print(f"[PS][DEBUG] Épocas completadas: {epochs}")
+        self._debug_print(f"[PS][DEBUG] Historial de pérdidas: {history['losses']}")
+        self._debug_print(
+            f"[PS][DEBUG] Historial de precisiones: {history['accuracies']}"
+        )
 
         _logger.ps("Entrenamiento PRECOMPUTED completado")
         self._active_training_workers = None
 
-        print("[PS][DEBUG] ========== ENTRENAMIENTO TERMINADO ==========")
+        self._debug_print("[PS][DEBUG] ========== ENTRENAMIENTO TERMINADO ==========")
         return history
 
     # ================================================================
