@@ -351,25 +351,41 @@ class WorkerNode:
     def _handle_cnn_weights(self, payload: dict) -> None:
         """
         Procesa CNN_WEIGHTS del PS: reconstruye la CNN si el arch cambió,
-        carga los pesos, regenera features y confirma con CNN_READY.
+        carga los pesos, regenera features (si precomputed) y confirma con CNN_READY.
 
-        El Worker puede haber arrancado con arch=simple y recibir pesos
-        de resnet18 (o viceversa) si el usuario cambió la arquitectura en
-        el PS entre sesiones. En ese caso se reconstruye el modelo antes
-        de cargar los pesos para evitar un RuntimeError de state_dict.
+        ╔════════════════════════════════════════════════════════════════╗
+        ║ DOS FLUJOS MUTUAMENTE EXCLUYENTES SEGÚN training_mode         ║
+        ╚════════════════════════════════════════════════════════════════╝
+
+        PRECOMPUTED:
+        ───────────
+        - Congelar CNN (set_trainable=False)
+        - Extraer y cachear features de todo el dataset AQUÍ (no en cada época)
+        - Esto es correcto porque la CNN es fija: los features no cambian
+        - Costo: ~50 000 forward passes CNN UNA SOLA VEZ (~30-60s)
+        - Beneficio: Cada época cuesta solo ~1-5s en MLP (NumPy)
+
+        END-TO-END:
+        ───────────
+        - Habilitar CNN (set_trainable=True)
+        - NO extraer features precalculados
+        - Guardar imágenes raw en memoria
+        - Features se calculan dinámicamente en cada época forward
+        - Costo setup: <1s (solo carga pesos)
+        - Costo por época: ~5-30s (CNN forward/backward PyTorch + MLP)
+
+        :param payload: Dict con ``arch`` y ``weights_bytes``
         """
         arch = payload["arch"]
         weights_bytes = payload["weights_bytes"]
 
-        self._log(f"CNN_WEIGHTS recibido del PS (arch={arch}). Cargando pesos...")
+        self._log(f"CNN_WEIGHTS recibido (arch={arch}). Cargando pesos...")
 
-        # Reconstruir el extractor si la arquitectura es diferente a la actual.
-        # Es necesario porque load_state_dict falla si los pesos no coinciden
-        # con la arquitectura del modelo — por ejemplo, ResNet-18 sobre _SimpleCNN.
+        # Reconstruir CNN si la arquitectura cambió
         if self._cnn.arch != arch:
             self._log(
                 f"Arquitectura cambió ({self._cnn.arch} → {arch}). "
-                f"Reconstruyendo extractor CNN..."
+                f"Reconstruyendo..."
             )
             self._cnn = CNNExtractor(
                 arch=arch,
@@ -381,60 +397,86 @@ class WorkerNode:
         self._cnn.load_weights_from_bytes(weights_bytes)
         wh = self._cnn._weights_hash()
 
+        # ════════════════════════════════════════════════════════════════
+        # RAMA 1: PRECOMPUTED — CNN CONGELADA, FEATURES CACHEADOS
+        # ════════════════════════════════════════════════════════════════
         if self.training_mode == "precomputed":
-            # ── MODO PRECOMPUTADO: CNN congelada, cachear features ──────────
-            self._log(f"Pesos cargados (hash={wh}). Preparando features de train...")
-            self._cnn.set_trainable(False)  # Congelar para evaluación
+            self._log(
+                f"[PRECOMPUTED] Congelando CNN y extrayendo features "
+                f"(hash={wh})..."
+            )
+            
+            # [R1.2] Congelar CNN: no se entrenan gradientes
+            self._cnn.set_trainable(False)
 
-            # Calcular batch size óptimo basado en heurística adaptativa
+            # Calcular batch size óptimo
             optimal_bs = self._optimal_batch_size()
             n_cpus = os.cpu_count() or 1
             device_str = str(self._cnn.device)
 
             self._log(
                 f"Batch size dinámico: {optimal_bs} "
-                f"(CNN={arch}, CPUs={n_cpus}, device={device_str}, dataset=CIFAR-10)"
+                f"(arch={arch}, CPUs={n_cpus}, device={device_str})"
             )
 
-            # Regenerar features con la CNN del PS.
-            # prepare() comprueba la caché local primero — si ya existe
-            # {arch}_{wh}_train_50000_X.npy, la carga sin re-extraer.
+            # [R1.2] Extraer y cachear features UNA SOLA VEZ
+            # prepare() valida caché automáticamente por hash de pesos
             self._X_features, self.Y_train = self._cnn.prepare(
                 self._X_raw,
                 self._Y_raw,
                 split="train",
-                pretrain_epochs=0,  # pesos ya vienen del PS, no reentrenar
+                pretrain_epochs=0,  # CNN ya viene del PS, no preentrenar
                 batch_size=optimal_bs,
                 verbose=self.verbose,
             )
 
-            # Reconstruir índices por clase con el Y_train actualizado
+            # Reconstruir índices estratificados
             self._class_indices = [
                 np.where(self.Y_train == digit)[0] for digit in range(10)
             ]
 
-            self._log("Features listos. Enviando CNN_READY al PS.")
-        else:
-            # ── MODO END-TO-END: CNN entrenable, NOT cachear features ──────
             self._log(
-                f"Pesos cargados (hash={wh}). Habilitando CNN para entrenamiento..."
+                f"[PRECOMPUTED] Features cacheados (shape={self._X_features.shape}). "
+                f"CNN_READY ✓"
             )
-            self._cnn.set_trainable(True)  # Habilitar gradientes
 
-            # NO extraer features — se calcularán durante el forward en cada época
-            # Reutilizar self._X_raw directamente
-            self._X_features = np.empty((0,), dtype=np.float32)  # Placeholder
+        # ════════════════════════════════════════════════════════════════
+        # RAMA 2: END-TO-END — CNN ENTRENABLE, SIN CACHEAR FEATURES
+        # ════════════════════════════════════════════════════════════════
+        else:  # end_to_end
+            self._log(
+                f"[END-TO-END] Habilitando CNN para entrenamiento "
+                f"(hash={wh})..."
+            )
+            
+            # [R2.1/R2.6] Habilitar CNN: entrenable con gradientes
+            self._cnn.set_trainable(True)
+
+            # [R2.3] NO extraer features: se calcularán cada época
+            # Placeholder para mantener consistencia de atributos
+            self._X_features = np.empty((0,), dtype=np.float32)
             self._Y_train = self._Y_raw.copy()
 
-            # Índices por clase para distribución estratificada
+            # Índices estratificados para distribución de datos
             self._class_indices = [
-                np.where(self._Y_raw == digit)[0] for digit in range(10)
+                np.where(self.Y_train == digit)[0] for digit in range(10)
             ]
 
-            self._log("CNN habilitada para entrenamiento. Enviando CNN_READY al PS.")
+            self._log(
+                f"[END-TO-END] CNN entrenable. "
+                f"Features dinámicos (calculados por época). "
+                f"CNN_READY ✓"
+            )
 
+        # ═══════════════════════════════════════════════════════════════
+        # CONFIRMACIÓN (mismo mensaje para ambas ramas, pero con diferentes estados)
+        # ═══════════════════════════════════════════════════════════════
         assert self._sock is not None
-        send_message(self._sock, MsgType.CNN_READY, {"worker_id": self.worker_id})
+        try:
+            send_message(self._sock, MsgType.CNN_READY, {"worker_id": self.worker_id})
+        except Exception as exc:
+            self._log(f"ERROR enviando CNN_READY: {exc}")
+            raise
 
         # Los features de prueba se envían solo cuando el PS
         # los solicita explícitamente con REQUEST_TEST_FEATURES.
@@ -486,17 +528,32 @@ class WorkerNode:
         worker_rank: int,
     ) -> None:
         """
-        Recibe PARAMS (pesos MLP+CNN + semilla), reconstruye los índices localmente
-        y calcula gradientes.
+        Procesa PARAMS en una época: ejecuta forward/backward según training_mode.
 
-        Comportamiento dual según training_mode:
-        - "precomputed": Solo MLP, usa features cacheados
-        - "end_to_end": CNN+MLP completo, usa imágenes raw
+        ╔════════════════════════════════════════════════════════════════╗
+        ║ DOS FLUJOS MUTUAMENTE EXCLUYENTES SEGÚN training_mode         ║
+        ╚════════════════════════════════════════════════════════════════╝
 
-        :param payload:     Dict con ``epoch``, ``params``, ``seed``, [``cnn_params``].
-        :param n_train:     Total de ejemplos (recibido en TRAIN_START).
-        :param n_workers:   Número de Workers en la sesión.
-        :param worker_rank: Posición de este Worker (0-based).
+        PRECOMPUTED:
+        ───────────
+        - Recibe: PARAMS con {"epoch", "params" (MLP), "seed"}
+        - Lo que NO recibe: "cnn_params" (invariante [R1.3])
+        - Procesa: Features ya cacheados + MLP forward/backward
+        - Envía: GRADIENTS con gradientes MLP, cnn_gradients=None
+        - CNN nunca se actualiza (invariante [R1.1])
+
+        END-TO-END:
+        ───────────
+        - Recibe: PARAMS con {"epoch", "params" (MLP), "seed", "cnn_params" (CNN)}
+        - Si NO recibe "cnn_params": ERROR (invariante [R2.4])
+        - Procesa: Raw images + CNN forward/backward + MLP forward/backward
+        - Envía: GRADIENTS con gradientes MLP + CNN (ambos obligatorios)
+        - CNN se actualiza cada época (invariante [R2.1])
+
+        :param payload:     Dict con parámetros y configuración de época
+        :param n_train:     Total de ejemplos (para reconstruir índices)
+        :param n_workers:   Número de Workers en sesión
+        :param worker_rank: Índice de este Worker (0-based)
         """
         import torch
         from Model.mlp import mlp_backward_to_input
@@ -504,48 +561,76 @@ class WorkerNode:
         epoch = payload["epoch"]
         mlp_params = payload["params"]
         seed = payload["seed"]
-        cnn_params = payload.get("cnn_params")  # Solo en E2E
+        cnn_params = payload.get("cnn_params")  # None en precomputed
 
         indices = self._reconstruct_indices(seed, n_train, n_workers, worker_rank)
         self._log(f"Época {epoch} — {len(indices)} ejemplos")
 
         t_start = time.perf_counter()
 
+        # ════════════════════════════════════════════════════════════════
+        # RAMA 1: PRECOMPUTED — MLP DISTRIBUIDO, CNN FIJA
+        # ════════════════════════════════════════════════════════════════
         if self.training_mode == "precomputed":
-            # ── MODO PRECOMPUTADO: Features ya cacheados ──────────────────
+            # Validación [R1.3]: NO debe haber cnn_params en precomputed
+            if cnn_params is not None:
+                raise RuntimeError(
+                    "[VALIDACIÓN PRECOMPUTED] Recibí cnn_params pero "
+                    "NO debo recibirlos en precomputed (invariante [R1.3])"
+                )
+            
+            self._log("[PRECOMPUTED] Forward/backward MLP...")
+            
+            # [R1.2] Features ya cacheados (extraídos en _handle_cnn_weights)
             F_batch = self._X_features[indices]
             Y_batch = self.Y_train[indices]
+            
+            # Forward MLP + backward MLP
             gradients, loss, accuracy = forward_and_gradients(
                 mlp_params, F_batch, Y_batch
             )
+            
+            # [R1.3] NO hay gradientes CNN en precomputed
             cnn_gradients = None
 
-        else:
-            # ── MODO END-TO-END: Forward CNN+MLP, backward completo ────────
-            # 1. Seleccionar batch de imágenes raw
+        # ════════════════════════════════════════════════════════════════
+        # RAMA 2: END-TO-END — CNN + MLP CONJUNTAMENTE
+        # ════════════════════════════════════════════════════════════════
+        else:  # end_to_end
+            # Validación [R2.4]: DEBE haber cnn_params en E2E
+            if cnn_params is None:
+                raise RuntimeError(
+                    "[VALIDACIÓN E2E] NO recibí cnn_params pero SON "
+                    "obligatorios en end_to_end (invariante [R2.4])"
+                )
+            
+            self._log("[END-TO-END] Forward/backward CNN+MLP...")
+            
+            # Seleccionar batch de imágenes raw
+            # [R2.3/R2.6] Cada época se usan imágenes raw, no features cacheados
             X_batch = self._X_raw[indices]
             Y_batch = self._Y_raw[indices]
 
-            # 2. Forward CNN (PyTorch)
+            # ─ Forward CNN (PyTorch) ─
             X_batch_torch = torch.from_numpy(X_batch).to(self._cnn.device)
             with torch.enable_grad():
                 features_torch = self._cnn._model(X_batch_torch)
                 features = features_torch.detach().cpu().numpy()
 
-            # 3. Backward MLP para obtener ∇features y ∇MLP_params
+            # ─ Backward MLP para obtener ∇L/∂features ─
             dX_features, mlp_grads, loss, accuracy = mlp_backward_to_input(
                 mlp_params, features, Y_batch
             )
 
-            # 4. Backward CNN usando ∇features de MLP
-            # Recalcular forward con gradientes habilitados
+            # ─ Backward CNN usando proxy loss ─
+            # La técnica de proxy loss permite backprop a través de la CNN
+            # sin recargar todas las imágenes en modo gradiente nuevamente
             X_batch_torch = torch.from_numpy(X_batch).to(self._cnn.device)
-            X_batch_torch.requires_grad_(False)  # No queremos gradientes de entrada
-
+            X_batch_torch.requires_grad_(False)  # No queremos ∇ respecto a inputs
+            
             features_torch = self._cnn._model(X_batch_torch)
-
-            # Crear un escalar ficticio de loss basado en ∇features
-            # Para cada parámetro de CNN, computar gradiente respecto a ∇L/∂features
+            
+            # Escalar proxy basado en ∇L/∂features recibido del MLP
             loss_proxy = (
                 features_torch
                 * torch.from_numpy(dX_features.T / len(Y_batch)).to(self._cnn.device)
@@ -554,10 +639,10 @@ class WorkerNode:
             loss_proxy.backward()
 
             # Extraer gradientes CNN
+            # [R2.1] CNN se actualiza: sus gradientes se envían al PS
             cnn_gradients = {}
             for name, param in self._cnn._model.named_parameters():
                 if param.grad is not None:
-                    # Convertir a NumPy y promediar por batch
                     cnn_gradients[name] = param.grad.detach().cpu().numpy() / len(
                         Y_batch
                     )
@@ -565,10 +650,11 @@ class WorkerNode:
             gradients = mlp_grads
 
         elapsed = time.perf_counter() - t_start
-
         self._log(f"  loss={loss:.4f}  acc={accuracy:.2f}%  ({elapsed:.3f}s)")
 
-        # Enviar GRADIENTS con CNN si E2E
+        # ════════════════════════════════════════════════════════════════
+        # ENVIAR GRADIENTES (distinto según rama)
+        # ════════════════════════════════════════════════════════════════
         payload_send = {
             "worker_id": self.worker_id,
             "epoch": epoch,
@@ -577,8 +663,14 @@ class WorkerNode:
             "accuracy": accuracy,
         }
 
+        # Incluir cnn_gradients solo si no es None (E2E)
         if cnn_gradients is not None:
+            # [R2.4] En E2E, SIEMPRE incluir cnn_gradients
             payload_send["cnn_gradients"] = cnn_gradients
+        else:
+            # [R1.3] En precomputed, nunca incluir cnn_gradients (None es la marca)
+            # El PS espera que NO exista la clave o sea None
+            pass
 
         assert self._sock is not None
         send_message(

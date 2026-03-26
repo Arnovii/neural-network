@@ -1564,115 +1564,152 @@ class DistributedPSApp:
                 X_test_raw, Y_test = load_cifar10_test(verbose=False)
                 _gui_log(f"[PS] {len(Y_test)} imágenes de prueba cargadas.")
 
-                # ── Obtener CNN según el modo seleccionado ──────────
-                cnn_mode = self._v_cnn_mode.get()
-
-                if cnn_mode == "load":
-                    # Cargar modelo seleccionado en el dropdown
-                    cnn = self._get_cnn_for_training()
-                    if cnn is None:
-                        raise ValueError("No hay modelo CNN seleccionado.")
-                    _gui_log(
-                        f"[PS] Modelo cargado: {cnn.arch} (hash={cnn._weights_hash()})"
-                    )
-                    self._cnn = cnn
-
-                else:  # modo "train"
-                    arch_new = self._v_cnn_arch.get()
-                    cnn_pretrained_new = arch_new == "resnet18"
-                    cnn_epochs_new = int(self._v_cnn_epochs.get())
-                    try:
-                        cnn_lr_new = float(self._v_cnn_lr.get())
-                    except ValueError:
-                        cnn_lr_new = 0.001
-
-                    if arch_new == "resnet18":
-                        _gui_log("[PS] Descargando pesos ImageNet (~44 MB, 1ª vez)...")
-                    else:
+                # ──────────────────────────────────────────────────────────────
+                # SEPARACIÓN POR training_mode: PRECOMPUTED vs END-TO-END
+                # ──────────────────────────────────────────────────────────────
+                
+                if training_mode == "precomputed":
+                    # ════════════════════════════════════════════════════════
+                    # RAMA PRECOMPUTED: CNN fija + MLP distribuido
+                    # ════════════════════════════════════════════════════════
+                    _gui_log("[PS] MODO PRECOMPUTED — CNN fija, MLP distribuido")
+                    
+                    cnn_mode = self._v_cnn_mode.get()
+                    
+                    if cnn_mode == "load":
+                        # Cargar modelo seleccionado en el dropdown
+                        cnn = self._get_cnn_for_training()
+                        if cnn is None:
+                            raise ValueError("No hay modelo CNN seleccionado.")
                         _gui_log(
-                            f"[PS] Preentrenando CNN simple "
-                            f"({cnn_epochs_new} épocas)..."
+                            f"[PS] Modelo cargado: {cnn.arch} (hash={cnn._weights_hash()})"
                         )
+                        self._cnn = cnn
 
-                    # Siempre crear CNN nueva — nunca reutilizar la anterior.
+                    else:  # cnn_mode == "train"
+                        # Preentrenamiento SOLO EN PRECOMPUTED
+                        arch_new = self._v_cnn_arch.get()
+                        cnn_pretrained_new = arch_new == "resnet18"
+                        cnn_epochs_new = int(self._v_cnn_epochs.get())
+                        try:
+                            cnn_lr_new = float(self._v_cnn_lr.get())
+                        except ValueError:
+                            cnn_lr_new = 0.001
+
+                        if arch_new == "resnet18":
+                            _gui_log("[PS] Descargando pesos ImageNet (~44 MB, 1ª vez)...")
+                        else:
+                            _gui_log(
+                                f"[PS] Preentrenando CNN simple "
+                                f"({cnn_epochs_new} épocas)..."
+                            )
+
+                        # Siempre crear CNN nueva — nunca reutilizar la anterior.
+                        self._cnn = CNNExtractor(
+                            arch=arch_new,
+                            pretrained=cnn_pretrained_new,
+                            device="cpu",
+                            seed=cnn_seed,
+                        )
+                        cnn = self._cnn
+
+                        if arch_new == "simple":
+
+                            def _on_pretrain_epoch_check(
+                                epoch: int, total: int, loss: float, acc: float
+                            ) -> None:
+                                if epoch == 0:
+                                    _gui_log(
+                                        f"[CNN] Preentrenando  0/{total} — Iniciando..."
+                                    )
+                                else:
+                                    bar = "█" * int(acc / 5)
+                                    _gui_log(
+                                        f"[CNN] Preentrenando {epoch:2d}/{total} — "
+                                        f"loss={loss:.4f}  acc={acc:.1f}%  {bar}"
+                                    )
+
+                            # Pedir muestra de train al Worker para preentrenar
+                            # sin usar datos de prueba → elimina el sesgo.
+                            _gui_log(
+                                "[PS] Solicitando muestra de imágenes de train "
+                                "al Worker (sin sesgo en evaluación)..."
+                            )
+                            train_sample = server.request_train_sample(
+                                n_samples=int(self._v_cnn_pretrain_samples.get())
+                            )
+
+                            if train_sample is not None:
+                                X_pretrain, Y_pretrain = train_sample
+                                _gui_log(
+                                    f"[PS] Muestra recibida: {len(X_pretrain)} imgs "
+                                    f"de train — preentrenando CNN sin sesgo."
+                                )
+                            else:
+                                # Fallback: sin Workers disponibles, usar X_test
+                                X_pretrain, Y_pretrain = X_test_raw, Y_test
+                                _gui_log(
+                                    "[PS] ⚠ Sin Workers disponibles — "
+                                    "usando datos de prueba para pretrain (sesgo)."
+                                )
+
+                            cnn.pretrain(
+                                X_pretrain,
+                                Y_pretrain,
+                                epochs=cnn_epochs_new,
+                                lr=cnn_lr_new,
+                                verbose=False,
+                                on_epoch=_on_pretrain_epoch_check,
+                            )
+                            # Verificar duplicados: si ya existe un modelo con
+                            # el mismo hash, no guardar y avisar al usuario.
+                            new_hash = cnn._weights_hash()
+                            existing = CNNExtractor.list_saved_models()
+                            duplicate = next(
+                                (
+                                    m
+                                    for m in existing
+                                    if m.get("weights_hash") == new_hash
+                                    and m.get("metadata_path") != cnn._metadata_path()
+                                ),
+                                None,
+                            )
+                            if duplicate:
+                                _gui_log(
+                                    "⚠ El modelo entrenado es idéntico a uno "
+                                    f"ya guardado ({duplicate['created_at'][:10]}). "
+                                    "No se guardará una copia adicional."
+                                )
+
+                        # Al terminar, actualizar la lista de modelos y
+                        # activar el modo carga si es el primero que se guardó.
+                        q.put(("refresh_cnn_models", None))
+                        
+                else:
+                    # ════════════════════════════════════════════════════════
+                    # RAMA END-TO-END: CNN + MLP entrenan juntos distribuido
+                    # ════════════════════════════════════════════════════════
+                    _gui_log("[PS] MODO END-TO-END — CNN + MLP entrenan juntos")
+                    _gui_log("[PS] ⚠ Sin preentrenamiento de CNN (se entrena desde el inicio)")
+                    
+                    arch_new = self._v_cnn_arch.get()
+                    
+                    # En E2E nunca hay preentrenamiento
+                    # CNN comienza con pesos random o ImageNet
+                    if arch_new == "resnet18":
+                        _gui_log("[PS] Descargando pesos ImageNet base (~44 MB, 1ª vez)...")
+                    else:
+                        _gui_log(f"[PS] Inicializando CNN simple con pesos random...")
+                    
+                    # Crear CNN sin preentrenamiento (pretrained solo si es resnet18)
                     self._cnn = CNNExtractor(
                         arch=arch_new,
-                        pretrained=cnn_pretrained_new,
+                        pretrained=(arch_new == "resnet18"),  # Solo ImageNet para resnet18
                         device="cpu",
                         seed=cnn_seed,
                     )
                     cnn = self._cnn
-
-                    if arch_new == "simple":
-
-                        def _on_pretrain_epoch_check(
-                            epoch: int, total: int, loss: float, acc: float
-                        ) -> None:
-                            if epoch == 0:
-                                _gui_log(
-                                    f"[CNN] Preentrenando  0/{total} — Iniciando..."
-                                )
-                            else:
-                                bar = "█" * int(acc / 5)
-                                _gui_log(
-                                    f"[CNN] Preentrenando {epoch:2d}/{total} — "
-                                    f"loss={loss:.4f}  acc={acc:.1f}%  {bar}"
-                                )
-
-                        # Pedir muestra de train al Worker para preentrenar
-                        # sin usar datos de prueba → elimina el sesgo.
-                        _gui_log(
-                            "[PS] Solicitando muestra de imágenes de train "
-                            "al Worker (sin sesgo en evaluación)..."
-                        )
-                        train_sample = server.request_train_sample(
-                            n_samples=int(self._v_cnn_pretrain_samples.get())
-                        )
-
-                        if train_sample is not None:
-                            X_pretrain, Y_pretrain = train_sample
-                            _gui_log(
-                                f"[PS] Muestra recibida: {len(X_pretrain)} imgs "
-                                f"de train — preentrenando CNN sin sesgo."
-                            )
-                        else:
-                            # Fallback: sin Workers disponibles, usar X_test
-                            X_pretrain, Y_pretrain = X_test_raw, Y_test
-                            _gui_log(
-                                "[PS] ⚠ Sin Workers disponibles — "
-                                "usando datos de prueba para pretrain (sesgo)."
-                            )
-
-                        cnn.pretrain(
-                            X_pretrain,
-                            Y_pretrain,
-                            epochs=cnn_epochs_new,
-                            lr=cnn_lr_new,
-                            verbose=False,
-                            on_epoch=_on_pretrain_epoch_check,
-                        )
-                        # Verificar duplicados: si ya existe un modelo con
-                        # el mismo hash, no guardar y avisar al usuario.
-                        new_hash = cnn._weights_hash()
-                        existing = CNNExtractor.list_saved_models()
-                        duplicate = next(
-                            (
-                                m
-                                for m in existing
-                                if m.get("weights_hash") == new_hash
-                                and m.get("metadata_path") != cnn._metadata_path()
-                            ),
-                            None,
-                        )
-                        if duplicate:
-                            _gui_log(
-                                "⚠ El modelo entrenado es idéntico a uno "
-                                f"ya guardado ({duplicate['created_at'][:10]}). "
-                                "No se guardará una copia adicional."
-                            )
-
-                    # Al terminar, actualizar la lista de modelos y
-                    # activar el modo carga si es el primero que se guardó.
+                    _gui_log(f"[PS] CNN lista (no preentrenada). CNN se entrenará distribuida.")
                     q.put(("refresh_cnn_models", None))
 
                 _gui_log(
