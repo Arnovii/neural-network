@@ -1567,15 +1567,15 @@ class DistributedPSApp:
                 # ──────────────────────────────────────────────────────────────
                 # SEPARACIÓN POR training_mode: PRECOMPUTED vs END-TO-END
                 # ──────────────────────────────────────────────────────────────
-                
+
                 if training_mode == "precomputed":
                     # ════════════════════════════════════════════════════════
                     # RAMA PRECOMPUTED: CNN fija + MLP distribuido
                     # ════════════════════════════════════════════════════════
                     _gui_log("[PS] MODO PRECOMPUTED — CNN fija, MLP distribuido")
-                    
+
                     cnn_mode = self._v_cnn_mode.get()
-                    
+
                     if cnn_mode == "load":
                         # Cargar modelo seleccionado en el dropdown
                         cnn = self._get_cnn_for_training()
@@ -1597,7 +1597,9 @@ class DistributedPSApp:
                             cnn_lr_new = 0.001
 
                         if arch_new == "resnet18":
-                            _gui_log("[PS] Descargando pesos ImageNet (~44 MB, 1ª vez)...")
+                            _gui_log(
+                                "[PS] Descargando pesos ImageNet (~44 MB, 1ª vez)..."
+                            )
                         else:
                             _gui_log(
                                 f"[PS] Preentrenando CNN simple "
@@ -1684,32 +1686,40 @@ class DistributedPSApp:
                         # Al terminar, actualizar la lista de modelos y
                         # activar el modo carga si es el primero que se guardó.
                         q.put(("refresh_cnn_models", None))
-                        
+
                 else:
                     # ════════════════════════════════════════════════════════
                     # RAMA END-TO-END: CNN + MLP entrenan juntos distribuido
                     # ════════════════════════════════════════════════════════
                     _gui_log("[PS] MODO END-TO-END — CNN + MLP entrenan juntos")
-                    _gui_log("[PS] ⚠ Sin preentrenamiento de CNN (se entrena desde el inicio)")
-                    
+                    _gui_log(
+                        "[PS] ⚠ Sin preentrenamiento de CNN (se entrena desde el inicio)"
+                    )
+
                     arch_new = self._v_cnn_arch.get()
-                    
+
                     # En E2E nunca hay preentrenamiento
                     # CNN comienza con pesos random o ImageNet
                     if arch_new == "resnet18":
-                        _gui_log("[PS] Descargando pesos ImageNet base (~44 MB, 1ª vez)...")
+                        _gui_log(
+                            "[PS] Descargando pesos ImageNet base (~44 MB, 1ª vez)..."
+                        )
                     else:
-                        _gui_log(f"[PS] Inicializando CNN simple con pesos random...")
-                    
+                        _gui_log("[PS] Inicializando CNN simple con pesos random...")
+
                     # Crear CNN sin preentrenamiento (pretrained solo si es resnet18)
                     self._cnn = CNNExtractor(
                         arch=arch_new,
-                        pretrained=(arch_new == "resnet18"),  # Solo ImageNet para resnet18
+                        pretrained=(
+                            arch_new == "resnet18"
+                        ),  # Solo ImageNet para resnet18
                         device="cpu",
                         seed=cnn_seed,
                     )
                     cnn = self._cnn
-                    _gui_log(f"[PS] CNN lista (no preentrenada). CNN se entrenará distribuida.")
+                    _gui_log(
+                        "[PS] CNN lista (no preentrenada). CNN se entrenará distribuida."
+                    )
                     q.put(("refresh_cnn_models", None))
 
                 _gui_log(

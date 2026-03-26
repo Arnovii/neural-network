@@ -227,9 +227,30 @@ class WorkerNode:
 
             elif msg["type"] == MsgType.TRAIN_START:
                 p = msg["payload"]
+
+                # [SINCRONIZACIÓN] Actualizar training_mode desde PS
+                if "training_mode" in p:
+                    training_mode = p["training_mode"]
+                    if training_mode not in ("precomputed", "end_to_end"):
+                        raise RuntimeError(
+                            f"[ERROR] training_mode inválido: {training_mode}. "
+                            f"Debe ser 'precomputed' o 'end_to_end'."
+                        )
+                    if training_mode != self.training_mode:
+                        self._log(
+                            f"Sincronizando training_mode: {self.training_mode} → {training_mode}"
+                        )
+                    self.training_mode = training_mode
+                else:
+                    # Fallback para compatibilidad (PS viejo sin training_mode)
+                    self._log(
+                        "[ADVERTENCIA] TRAIN_START sin training_mode. Usando predeterminado."
+                    )
+
                 self._log(
                     f"TRAIN_START — {p['epochs']} épocas  "
-                    f"n_train={p['n_train']}  rank={p['worker_rank']}/{p['n_workers']}"
+                    f"n_train={p['n_train']}  rank={p['worker_rank']}/{p['n_workers']}  "
+                    f"mode={self.training_mode}"
                 )
                 self._run_training_session(
                     p["epochs"], p["n_train"], p["n_workers"], p["worker_rank"]
@@ -384,8 +405,7 @@ class WorkerNode:
         # Reconstruir CNN si la arquitectura cambió
         if self._cnn.arch != arch:
             self._log(
-                f"Arquitectura cambió ({self._cnn.arch} → {arch}). "
-                f"Reconstruyendo..."
+                f"Arquitectura cambió ({self._cnn.arch} → {arch}). Reconstruyendo..."
             )
             self._cnn = CNNExtractor(
                 arch=arch,
@@ -402,10 +422,9 @@ class WorkerNode:
         # ════════════════════════════════════════════════════════════════
         if self.training_mode == "precomputed":
             self._log(
-                f"[PRECOMPUTED] Congelando CNN y extrayendo features "
-                f"(hash={wh})..."
+                f"[PRECOMPUTED] Congelando CNN y extrayendo features (hash={wh})..."
             )
-            
+
             # [R1.2] Congelar CNN: no se entrenan gradientes
             self._cnn.set_trainable(False)
 
@@ -444,11 +463,8 @@ class WorkerNode:
         # RAMA 2: END-TO-END — CNN ENTRENABLE, SIN CACHEAR FEATURES
         # ════════════════════════════════════════════════════════════════
         else:  # end_to_end
-            self._log(
-                f"[END-TO-END] Habilitando CNN para entrenamiento "
-                f"(hash={wh})..."
-            )
-            
+            self._log(f"[END-TO-END] Habilitando CNN para entrenamiento (hash={wh})...")
+
             # [R2.1/R2.6] Habilitar CNN: entrenable con gradientes
             self._cnn.set_trainable(True)
 
@@ -463,9 +479,9 @@ class WorkerNode:
             ]
 
             self._log(
-                f"[END-TO-END] CNN entrenable. "
-                f"Features dinámicos (calculados por época). "
-                f"CNN_READY ✓"
+                "[END-TO-END] CNN entrenable. "
+                "Features dinámicos (calculados por época). "
+                "CNN_READY ✓"
             )
 
         # ═══════════════════════════════════════════════════════════════
@@ -578,18 +594,18 @@ class WorkerNode:
                     "[VALIDACIÓN PRECOMPUTED] Recibí cnn_params pero "
                     "NO debo recibirlos en precomputed (invariante [R1.3])"
                 )
-            
+
             self._log("[PRECOMPUTED] Forward/backward MLP...")
-            
+
             # [R1.2] Features ya cacheados (extraídos en _handle_cnn_weights)
             F_batch = self._X_features[indices]
             Y_batch = self.Y_train[indices]
-            
+
             # Forward MLP + backward MLP
             gradients, loss, accuracy = forward_and_gradients(
                 mlp_params, F_batch, Y_batch
             )
-            
+
             # [R1.3] NO hay gradientes CNN en precomputed
             cnn_gradients = None
 
@@ -603,9 +619,9 @@ class WorkerNode:
                     "[VALIDACIÓN E2E] NO recibí cnn_params pero SON "
                     "obligatorios en end_to_end (invariante [R2.4])"
                 )
-            
+
             self._log("[END-TO-END] Forward/backward CNN+MLP...")
-            
+
             # Seleccionar batch de imágenes raw
             # [R2.3/R2.6] Cada época se usan imágenes raw, no features cacheados
             X_batch = self._X_raw[indices]
@@ -627,9 +643,9 @@ class WorkerNode:
             # sin recargar todas las imágenes en modo gradiente nuevamente
             X_batch_torch = torch.from_numpy(X_batch).to(self._cnn.device)
             X_batch_torch.requires_grad_(False)  # No queremos ∇ respecto a inputs
-            
+
             features_torch = self._cnn._model(X_batch_torch)
-            
+
             # Escalar proxy basado en ∇L/∂features recibido del MLP
             loss_proxy = (
                 features_torch

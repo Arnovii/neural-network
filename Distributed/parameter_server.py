@@ -450,13 +450,13 @@ class ParameterServer:
     ) -> Dict[str, List[float]]:
         """
         Ejecuta una sesión de entrenamiento distribuida con los Workers conectados.
-        
+
         Dispatcher que elige entre DOS FLUJOS MUTUAMENTE EXCLUYENTES:
-        
+
         1. PRECOMPUTED: CNN fija + MLP distribuido
            - CNN nunca se actualiza
            - Solo gradientes MLP
-        
+
         2. END-TO-END: CNN + MLP entrenan juntos
            - CNN se actualiza cada época
            - Gradientes CNN + MLP
@@ -503,7 +503,7 @@ class ParameterServer:
                 "No hay Workers conectados. "
                 "Inicia al menos un Worker antes de entrenar."
             )
-        
+
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         # DISPATCHER: Elegir flujo según training_mode
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -513,8 +513,15 @@ class ParameterServer:
                 progress="CNN fija, MLP distribuido",
             )
             return self._train_precomputed(
-                epochs, initial_params, learning_rate, n_train,
-                X_test, Y_test, momentum, seed, worker_ids
+                epochs,
+                initial_params,
+                learning_rate,
+                n_train,
+                X_test,
+                Y_test,
+                momentum,
+                seed,
+                worker_ids,
             )
         elif self.training_mode == "end_to_end":
             _logger.ps(
@@ -522,8 +529,15 @@ class ParameterServer:
                 progress="CNN + MLP entrenan juntos",
             )
             return self._train_end_to_end(
-                epochs, initial_params, learning_rate, n_train,
-                X_test, Y_test, momentum, seed, worker_ids
+                epochs,
+                initial_params,
+                learning_rate,
+                n_train,
+                X_test,
+                Y_test,
+                momentum,
+                seed,
+                worker_ids,
             )
         else:
             raise ValueError(
@@ -549,12 +563,12 @@ class ParameterServer:
     ) -> Dict[str, List[float]]:
         """
         Entrenamiento PRECOMPUTED: CNN fija, MLP distribuido.
-        
+
         Fase de inicialización:
         1. Distribuir CNN congelada a todos los Workers
         2. Esperar a que Workers extraigan y cacheen features
         3. Solicitar features de prueba (si existen)
-        
+
         Fase de entrenamiento (por época):
         1. Enviar PARAMS con MLP (NO cnn_params)
         2. Recibir GRADIENTS con MLP (cnn_gradients será None)
@@ -563,10 +577,10 @@ class ParameterServer:
         5. Evaluar modelo
         """
         _logger.ps("[PRECOMPUTED] Iniciando flujo de entrenamiento")
-        
+
         # ── INICIALIZACIÓN COMÚN ──────────────────────────────────────
         self._active_training_workers = worker_ids
-        
+
         # Distribuir CNN congelada
         if self._cnn is not None:
             weights_bytes = self._cnn._get_weights_bytes()
@@ -754,7 +768,7 @@ class ParameterServer:
                         payload = msg["payload"]
                         loss = payload["loss"]
                         accuracy = payload["accuracy"]
-                        
+
                         # ━━━ VALIDACIÓN: En PRECOMPUTED, NO debe haber cnn_gradients ━━━
                         cnn_grads = payload.get("cnn_gradients")
                         if cnn_grads is not None:
@@ -792,7 +806,7 @@ class ParameterServer:
                     send_dict = {
                         "epoch": epoch,
                         "params": params,
-                        "seed": epoch_seed
+                        "seed": epoch_seed,
                         # NO enviar cnn_params en PRECOMPUTED
                     }
                     send_message(
@@ -838,8 +852,7 @@ class ParameterServer:
 
             # ━━━ Procesar gradientes MLP (ignore CNN) ━━━
             mlp_grads_list: List[Dict[str, np.ndarray]] = [
-                g if isinstance(g, dict) else g
-                for g in self._epoch_gradients.values()
+                g if isinstance(g, dict) else g for g in self._epoch_gradients.values()
             ]
             avg_grads = self._average_gradients(mlp_grads_list)
             self._apply_gradients(
@@ -900,12 +913,12 @@ class ParameterServer:
     ) -> Dict[str, List[float]]:
         """
         Entrenamiento END-TO-END: CNN + MLP entrenan juntos distribuido.
-        
+
         Fase de inicialización:
         1. Distribuir CNN entrenable a todos los Workers
         2. esperar a que Workers habiliten entrenamiento
         3. Solicitar features de prueba (si existen)
-        
+
         Fase de entrenamiento (por época):
         1. Enviar PARAMS con MLP + CNN
         2. Recibir GRADIENTS con MLP + CNN
@@ -914,10 +927,10 @@ class ParameterServer:
         5. Evaluar modelo
         """
         _logger.ps("[END-TO-END] Iniciando flujo de entrenamiento")
-        
+
         # ── INICIALIZACIÓN COMÚN ──────────────────────────────────────
         self._active_training_workers = worker_ids
-        
+
         # Distribuir CNN entrenable
         if self._cnn is not None:
             weights_bytes = self._cnn._get_weights_bytes()
@@ -1081,6 +1094,7 @@ class ParameterServer:
                         "n_train": n_train,
                         "n_workers": n_workers,
                         "worker_rank": rank,
+                        "training_mode": "end_to_end",  # [SINCRONIZACIÓN] Worker recibe modo
                     },
                 )
             except Exception as exc:
@@ -1106,7 +1120,7 @@ class ParameterServer:
                         payload = msg["payload"]
                         loss = payload["loss"]
                         accuracy = payload["accuracy"]
-                        
+
                         # ━━━ VALIDACIÓN: En E2E, SIEMPRE debe haber cnn_gradients ━━━
                         cnn_grads = payload.get("cnn_gradients")
                         if cnn_grads is None:
@@ -1148,12 +1162,12 @@ class ParameterServer:
                     if self._cnn is not None:
                         for name, param in self._cnn._model.named_parameters():
                             cnn_state[name] = param.detach().cpu().numpy()
-                    
+
                     send_dict = {
                         "epoch": epoch,
                         "params": params,
                         "seed": epoch_seed,
-                        "cnn_params": cnn_state  # Obligatorio en E2E
+                        "cnn_params": cnn_state,  # Obligatorio en E2E
                     }
                     send_message(
                         self._worker_sockets[wid],
@@ -1201,7 +1215,8 @@ class ParameterServer:
                 g["mlp"] for g in self._epoch_gradients.values()
             ]
             cnn_grads_list: List[Dict[str, np.ndarray]] = [
-                g["cnn"] for g in self._epoch_gradients.values()
+                g["cnn"]
+                for g in self._epoch_gradients.values()
                 if g.get("cnn") is not None
             ]
 
