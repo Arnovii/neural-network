@@ -335,17 +335,27 @@ class WorkerNode:
         El PS llama a este método (via REQUEST_TEST_FEATURES) después de la
         barrera CNN_READY, cuando ya sabe que este Worker tiene la CNN cargada.
         Solo un Worker recibe esta petición — el resto no hace nada.
+
+        Features de test están cacheados con la misma estrategia que train:
+        si el hash de pesos CNN no cambia, se reutiliza el caché (< 0.5s)
+        en lugar de re-extraer (~ 5-10s).
         """
         if self._X_test is None or self._Y_test is None:
             self._log("Sin datos de prueba — no puedo enviar TEST_FEATURES.")
             return
         self._log(
-            f"PS solicitó features de prueba. "
-            f"Extrayendo {len(self._X_test)} imgs con CNN actual..."
+            f"PS solicitó features de prueba ({len(self._X_test)} imgs). "
+            f"Verificando caché..."
         )
         bs = self._optimal_batch_size()
-        X_test_feat = self._cnn.extract_batched(
-            self._X_test, batch_size=bs, verbose=self.verbose
+        # Cargar features de test con caché inteligente
+        # Si el hash de CNN es el mismo, evita re-extraer
+        X_test_feat, _ = self._load_features_with_cache(
+            self._X_test,
+            self._Y_test,
+            arch=self._cnn.arch,
+            batch_size=bs,
+            split="test",
         )
         self._log(
             f"Enviando features de prueba al PS "
@@ -388,6 +398,121 @@ class WorkerNode:
             {"X_sample": X_sample, "Y_sample": Y_sample},
         )
         self._log("Muestra de train enviada al PS.")
+
+    def _load_features_with_cache(
+        self, X_raw: np.ndarray, Y_raw: np.ndarray, arch: str, batch_size: int, split: str = "train"
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """
+        Carga features con caché inteligente basado en hash de CNN.
+
+        Flujo:
+        1. Calcula hash MD5 de pesos CNN actuales
+        2. Define ruta de caché: Data/feature_cache/{arch}_{hash}_{split}_{X|Y}.npy
+        3. Si archivo existe y es válido → [CACHE HIT] carga instantaneamente
+        4. Si no existe o está corrupto → [CACHE MISS] extrae y guarda
+        5. Valida shape según split:
+           - "train": (50000, feature_dim)
+           - "test":  (10000, feature_dim)
+
+        Logging diferenciado:
+        - [CACHE HIT][TRAIN]    / [CACHE HIT][TEST]    Carga desde disco
+        - [CACHE MISS][TRAIN]   / [CACHE MISS][TEST]   Genera nuevo
+        - [CACHE CORRUPT][TRAIN] / [CACHE CORRUPT][TEST] Corrupto, regenerando
+        - [SHAPE INVALID]       Shape no coincide, regenerando
+
+        :param X_raw: Imágenes de entrada (N, 3, 32, 32)
+        :param Y_raw: Etiquetas (N,)
+        :param arch: Arquitectura CNN
+        :param batch_size: Batch size para extracción
+        :param split: Tipo de split: "train" (50k) o "test" (10k), default="train"
+        :return: Tupla (X_features, Y) donde X_features shape (N, feature_dim)
+        """
+        import os
+
+        weights_hash = self._cnn._weights_hash()
+        expected_feature_dim = self._cnn.feature_dim
+        n_samples = len(X_raw)
+
+        # Validar split válido
+        if split not in ("train", "test"):
+            raise ValueError(f"split debe ser 'train' o 'test', recibido: {split}")
+
+        # Definir rutas de caché (mismo formato que cnn_extractor)
+        cache_dir = os.path.join("Data", "feature_cache")
+        os.makedirs(cache_dir, exist_ok=True)
+        
+        # Cache key incluye el split
+        cache_key = f"{arch}_{weights_hash}_{split}"
+        cache_X_path = os.path.join(cache_dir, f"{cache_key}_X.npy")
+        cache_Y_path = os.path.join(cache_dir, f"{cache_key}_Y.npy")
+
+        # ────────────────────────────────────────────────────────────
+        # INTENTO 1: Cargar desde caché existente
+        # ────────────────────────────────────────────────────────────
+        if os.path.exists(cache_X_path) and os.path.exists(cache_Y_path):
+            try:
+                X_feat = np.load(cache_X_path, allow_pickle=False)
+                Y_cached = np.load(cache_Y_path, allow_pickle=False)
+
+                # Validar shape exacto según el split
+                expected_n_samples = n_samples  # Debe coincidir con lo que pasamos
+                if X_feat.shape == (expected_n_samples, expected_feature_dim):
+                    split_upper = split.upper()
+                    self._log(
+                        f"[CACHE HIT][{split_upper}] Features cargados desde caché "
+                        f"(hash={weights_hash}, shape={X_feat.shape}). {X_feat.nbytes // 1024 // 1024} MB."
+                    )
+                    return X_feat, Y_cached
+
+                else:
+                    # Shape inválido → regenerar
+                    self._log(
+                        f"[SHAPE INVALID][{split.upper()}] Caché tiene shape {X_feat.shape}, "
+                        f"pero esperamos ({expected_n_samples}, {expected_feature_dim}). "
+                        f"Regenerando features..."
+                    )
+
+            except Exception as e:
+                # Caché corrupto → regenerar
+                self._log(
+                    f"[CACHE CORRUPT][{split.upper()}] Error cargando caché: {e}. "
+                    f"Regenerando features..."
+                )
+
+        # ────────────────────────────────────────────────────────────
+        # INTENTO 2: Extraer nuevas features (CACHE MISS)
+        # ────────────────────────────────────────────────────────────
+        split_upper = split.upper()
+        self._log(
+            f"[CACHE MISS][{split_upper}] Extrayendo features con CNN "
+            f"(arch={arch}, hash={weights_hash}, split={split}, N={n_samples})..."
+        )
+
+        t0 = time.perf_counter()
+        X_feat = self._cnn.extract_batched(
+            X_raw, batch_size=batch_size, verbose=self.verbose
+        )
+        elapsed = time.perf_counter() - t0
+
+        # Validar shape después de extraer
+        assert (
+            X_feat.shape == (n_samples, expected_feature_dim)
+        ), f"Shape inválido tras extracción: {X_feat.shape} vs esperado ({n_samples}, {expected_feature_dim})"
+
+        # Guardar en caché
+        try:
+            os.makedirs(cache_dir, exist_ok=True)
+            np.save(cache_X_path, X_feat)
+            np.save(cache_Y_path, Y_raw)
+            self._log(
+                f"[CACHE SAVE][{split_upper}] Features guardados en caché: "
+                f"{cache_key} "
+                f"({X_feat.nbytes // 1024 // 1024} MB, {elapsed:.1f}s)"
+            )
+        except Exception as e:
+            self._log(f"[CACHE SAVE ERROR][{split_upper}] No se guardó caché: {e}. Continuando...")
+
+        return X_feat, Y_raw
 
     def _handle_cnn_weights(self, payload: dict) -> None:
         """
@@ -480,15 +605,14 @@ class WorkerNode:
                 f"(arch={arch}, CPUs={n_cpus}, device={device_str})"
             )
 
-            # [R1.2] Extraer y cachear features UNA SOLA VEZ
-            # prepare() valida caché automáticamente por hash de pesos
-            self._X_features, self.Y_train = self._cnn.prepare(
+            # [R1.2] Extraer features con caché inteligente
+            # Si los pesos (hash) son iguales a una sesión anterior,
+            # reutiliza las features del caché (< 0.5s) en lugar de re-extraer (30-60s)
+            self._X_features, self.Y_train = self._load_features_with_cache(
                 self._X_raw,
                 self._Y_raw,
-                split="train",
-                pretrain_epochs=0,  # CNN ya viene del PS, no preentrenar
+                arch,
                 batch_size=optimal_bs,
-                verbose=self.verbose,
             )
 
             # Reconstruir índices estratificados
@@ -497,7 +621,7 @@ class WorkerNode:
             ]
 
             self._log(
-                f"[PRECOMPUTED] Features cacheados (shape={self._X_features.shape}). "
+                f"[PRECOMPUTED] Features listos (shape={self._X_features.shape}). "
                 f"CNN_READY ✓"
             )
 
