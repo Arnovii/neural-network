@@ -610,7 +610,7 @@ class WorkerNode:
             cnn_gradients = None
 
         # ════════════════════════════════════════════════════════════════
-        # RAMA 2: END-TO-END — CNN + MLP CONJUNTAMENTE
+        # RAMA 2: END-TO-END — CNN + MLP CONJUNTAMENTE CON MINI-BATCHING
         # ════════════════════════════════════════════════════════════════
         else:  # end_to_end
             # Validación [R2.4]: DEBE haber cnn_params en E2E
@@ -620,50 +620,137 @@ class WorkerNode:
                     "obligatorios en end_to_end (invariante [R2.4])"
                 )
 
-            self._log("[END-TO-END] Forward/backward CNN+MLP...")
+            # ✓ CRÍTICO: Habilitar gradientes en la CNN para mode entrenamiento
+            # [R2.1] La CNN fue inicializada con requires_grad=False (modo precomputed).
+            # En end_to_end, necesitamos entrenar la CNN, así que:
+            # 1. Cambiar modelo a train() — BatchNorm diferenciable, Dropout activo
+            # 2. Habilitar requires_grad en todos los parámetros — computation graph activo
+            self._cnn._model.train()
+            for param in self._cnn._model.parameters():
+                param.requires_grad_(True)
 
-            # Seleccionar batch de imágenes raw
-            # [R2.3/R2.6] Cada época se usan imágenes raw, no features cacheados
-            X_batch = self._X_raw[indices]
-            Y_batch = self._Y_raw[indices]
-
-            # ─ Forward CNN (PyTorch) ─
-            X_batch_torch = torch.from_numpy(X_batch).to(self._cnn.device)
-            with torch.enable_grad():
-                features_torch = self._cnn._model(X_batch_torch)
-                features = features_torch.detach().cpu().numpy()
-
-            # ─ Backward MLP para obtener ∇L/∂features ─
-            dX_features, mlp_grads, loss, accuracy = mlp_backward_to_input(
-                mlp_params, features, Y_batch
+            # ─ MINI-BATCHING ─
+            # Forward+backward de CNN es 2-3× más caro que solo forward.
+            # Usar _optimal_batch_size() calculado para forward, dividir entre 2.5
+            # para acomodar backward + acumulación sin congelamiento.
+            base_opt_bs = self._optimal_batch_size()
+            mini_bs = max(16, int(base_opt_bs / 2.5))
+            n_total = len(indices)
+            n_batches = (n_total + mini_bs - 1) // mini_bs
+            
+            self._log(
+                f"[END-TO-END] Procesando {n_total} ejemplos en {n_batches} "
+                f"mini-batches (size={mini_bs})..."
             )
 
-            # ─ Backward CNN usando proxy loss ─
-            # La técnica de proxy loss permite backprop a través de la CNN
-            # sin recargar todas las imágenes en modo gradiente nuevamente
-            X_batch_torch = torch.from_numpy(X_batch).to(self._cnn.device)
-            X_batch_torch.requires_grad_(False)  # No queremos ∇ respecto a inputs
+            # Acumuladores para gradientes, loss, accuracy
+            # Se promediarán al final de todos los mini-batches
+            accumulated_mlp_grads: List[Dict[str, np.ndarray]] = []
+            accumulated_cnn_grads: Dict[str, np.ndarray] = {}
+            accumulated_losses: List[float] = []
+            accumulated_accs: List[float] = []
 
-            features_torch = self._cnn._model(X_batch_torch)
+            # ── LOOP DE MINI-BATCHES ──────────────────────────────────────
+            for batch_idx in range(n_batches):
+                start_idx = batch_idx * mini_bs
+                end_idx = min(start_idx + mini_bs, n_total)
+                mini_indices = indices[start_idx:end_idx]
 
-            # Escalar proxy basado en ∇L/∂features recibido del MLP
-            loss_proxy = (
-                features_torch
-                * torch.from_numpy(dX_features.T / len(Y_batch)).to(self._cnn.device)
-            ).sum()
+                X_mini = self._X_raw[mini_indices]
+                Y_mini = self._Y_raw[mini_indices]
 
-            loss_proxy.backward()
-
-            # Extraer gradientes CNN
-            # [R2.1] CNN se actualiza: sus gradientes se envían al PS
-            cnn_gradients = {}
-            for name, param in self._cnn._model.named_parameters():
-                if param.grad is not None:
-                    cnn_gradients[name] = param.grad.detach().cpu().numpy() / len(
-                        Y_batch
+                if batch_idx % max(1, n_batches // 5) == 0:  # Log cada 20%
+                    self._log(
+                        f"  [END-TO-END] Batch {batch_idx + 1}/{n_batches}  "
+                        f"size={len(mini_indices)}"
                     )
 
-            gradients = mlp_grads
+                # ─ Forward CNN (PyTorch) en modo gradiente ─
+                X_mini_torch = torch.from_numpy(X_mini).to(self._cnn.device)
+                with torch.enable_grad():
+                    features_torch = self._cnn._model(X_mini_torch)
+                    features = features_torch.detach().cpu().numpy()
+
+                # ─ Backward MLP para obtener ∇L/∂features ─
+                dX_mini, mlp_grads_mini, loss_mini, acc_mini = mlp_backward_to_input(
+                    mlp_params, features, Y_mini
+                )
+
+                accumulated_mlp_grads.append(mlp_grads_mini)
+                accumulated_losses.append(loss_mini)
+                accumulated_accs.append(acc_mini)
+
+                # ─ Backward CNN usando proxy loss ─
+                # Recalcular forward en modo gradiente para backward
+                # (forward anterior fue .detach(), no propagaba gradientes)
+                self._cnn._model.zero_grad()  # Limpiar gradientes previos
+                
+                X_mini_torch = torch.from_numpy(X_mini).to(self._cnn.device)
+
+                # ✓ CRÍTICO: torch.enable_grad() para construir el computation graph
+                # Sin esto, PyTorch no rastreará operaciones y .backward() fallará
+                with torch.enable_grad():
+                    features_torch = self._cnn._model(X_mini_torch)
+
+                    # ━━━ PROXY LOSS ━━━
+                    # dX_mini es ∂L/∂features, shape (N, D)
+                    # features_torch es features, shape (N, D)
+                    # Proxy loss = Σ(features_torch * dX_mini) / N
+                    # ⚠️ NO transponer dX_mini — ya está en forma correcta
+                    loss_proxy = (
+                        features_torch
+                        * torch.from_numpy(dX_mini / len(Y_mini)).to(self._cnn.device)
+                    ).sum()
+
+                    loss_proxy.backward()
+
+                # ━━━ VALIDACIONES DE SHAPES ━━━
+                # [DEBUG] Detectar mismatches temprano
+                assert features_torch.shape[0] == len(Y_mini), \
+                    f"[E2E] features batch size {features_torch.shape[0]} != Y size {len(Y_mini)}"
+                assert dX_mini.shape == (len(Y_mini), 512), \
+                    f"[E2E] dX_mini shape {dX_mini.shape} != expected ({len(Y_mini)}, 512)"
+                assert features_torch.shape == dX_mini.shape, \
+                    f"[E2E] features_torch {features_torch.shape} != dX_mini {dX_mini.shape}"
+
+                # Extraer y acumular gradientes CNN (SIN normalizar aquí)
+                # [R2.1] CNN se actualiza acumulando gradientes de mini-batches
+                # Se normalizarán al final por n_total
+                for name, param in self._cnn._model.named_parameters():
+                    if param.grad is not None:
+                        grad_np = param.grad.detach().cpu().numpy()
+                        if name not in accumulated_cnn_grads:
+                            accumulated_cnn_grads[name] = grad_np.copy()
+                        else:
+                            accumulated_cnn_grads[name] += grad_np
+
+            # ── PROMEDIADO FINAL ──────────────────────────────────────────
+            # Promediar gradientes MLP
+            gradients = {}
+            for key in accumulated_mlp_grads[0].keys():
+                gradients[key] = np.mean(
+                    [g[key] for g in accumulated_mlp_grads], axis=0
+                )
+
+            # Normalizar gradientes CNN por número TOTAL de ejemplos (no por n_batches)
+            # Esto es matemáticamente correcto: suma(gradientes) / n_total
+            cnn_gradients = {
+                name: grad / n_total 
+                for name, grad in accumulated_cnn_grads.items()
+            }
+
+            # Promediar loss y accuracy
+            loss = float(np.mean(accumulated_losses))
+            accuracy = float(np.mean(accumulated_accs))
+
+            # ✓ RESTAURAR CNN a su estado inicial (eval mode, requires_grad=False)
+            # Esto garantiza que:
+            # 1. En la próxima época precomputed, we no entrenamos la CNN (invariante [R1.3])
+            # 2. Las operaciones forward futuras son eficientes (eval mode)
+            # 3. El estado es reproducible entre worker/PS
+            self._cnn._model.eval()
+            for param in self._cnn._model.parameters():
+                param.requires_grad_(False)
 
         elapsed = time.perf_counter() - t_start
         self._log(f"  loss={loss:.4f}  acc={accuracy:.2f}%  ({elapsed:.3f}s)")

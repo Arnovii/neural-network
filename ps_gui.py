@@ -788,7 +788,7 @@ class DistributedPSApp:
             self._frame_e2e_epochs,
             "Épocas E2E (50 – 1000):",
             self._v_e2e_epochs,
-            50,
+            10,
             1000,
             return_widgets=True,
         )
