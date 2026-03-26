@@ -57,6 +57,9 @@ import numpy as np
 from Distributed.protocol import MsgType, receive_message, send_message
 from Model.cnn_extractor import CNNExtractor
 from Model.mlp import forward_and_gradients
+from Utils.logging_util import get_logger
+
+_logger = get_logger(use_colors=True)
 
 
 class WorkerNode:
@@ -228,6 +231,15 @@ class WorkerNode:
             elif msg["type"] == MsgType.TRAIN_START:
                 p = msg["payload"]
 
+                # [INSTRUMENTACIÓN] Log del estado ANTES de sincronización
+                training_mode_before = self.training_mode
+                _logger.worker(
+                    "[INSTRUM] RECIBIENDO TRAIN_START",
+                    progress=f"training_mode_ANTES={training_mode_before} | "
+                    f"payload_keys={list(p.keys())} | "
+                    f"training_mode_EN_PAYLOAD={'PRESENTE' if 'training_mode' in p else 'AUSENTE'}",
+                )
+
                 # [SINCRONIZACIÓN] Actualizar training_mode desde PS
                 if "training_mode" in p:
                     training_mode = p["training_mode"]
@@ -246,6 +258,14 @@ class WorkerNode:
                     self._log(
                         "[ADVERTENCIA] TRAIN_START sin training_mode. Usando predeterminado."
                     )
+
+                # [INSTRUMENTACIÓN] Log del estado DESPUÉS de sincronización
+                _logger.worker(
+                    "[INSTRUM] TRAIN_START PROCESADO",
+                    progress=f"training_mode_DESPUÉS={self.training_mode} | "
+                    f"epochs={p['epochs']} | n_train={p['n_train']} | "
+                    f"worker_rank={p['worker_rank']}/{p['n_workers']}",
+                )
 
                 self._log(
                     f"TRAIN_START — {p['epochs']} épocas  "
@@ -397,6 +417,15 @@ class WorkerNode:
 
         :param payload: Dict con ``arch`` y ``weights_bytes``
         """
+        # [INSTRUMENTACIÓN] Log del estado ANTES de procesar CNN_WEIGHTS
+        _logger.worker(
+            "[INSTRUM] RECIBIENDO CNN_WEIGHTS",
+            progress=f"training_mode={self.training_mode} | "
+            f"payload_keys={list(payload.keys())} | "
+            f"arch={payload.get('arch', 'N/A')} | "
+            f"weights_size={len(payload.get('weights_bytes', b''))} bytes",
+        )
+
         arch = payload["arch"]
         weights_bytes = payload["weights_bytes"]
 
@@ -417,10 +446,23 @@ class WorkerNode:
         self._cnn.load_weights_from_bytes(weights_bytes)
         wh = self._cnn._weights_hash()
 
+        # [INSTRUMENTACIÓN] Log ANTES de branch selection
+        _logger.worker(
+            "[INSTRUM] CNN_WEIGHTS CARGADO",
+            progress=f"arch={arch} | weights_hash={wh} | "
+            f"training_mode_AHORA={self.training_mode} | "
+            f"BRANCH_SERÁ={'PRECOMPUTED' if self.training_mode == 'precomputed' else 'END-TO-END'}",
+        )
+
         # ════════════════════════════════════════════════════════════════
         # RAMA 1: PRECOMPUTED — CNN CONGELADA, FEATURES CACHEADOS
         # ════════════════════════════════════════════════════════════════
         if self.training_mode == "precomputed":
+            _logger.worker(
+                "[INSTRUM] EJECUTANDO RAMA PRECOMPUTED",
+                progress="action=freeze_cnn | action=extract_features",
+            )
+
             self._log(
                 f"[PRECOMPUTED] Congelando CNN y extrayendo features (hash={wh})..."
             )
@@ -463,6 +505,11 @@ class WorkerNode:
         # RAMA 2: END-TO-END — CNN ENTRENABLE, SIN CACHEAR FEATURES
         # ════════════════════════════════════════════════════════════════
         else:  # end_to_end
+            _logger.worker(
+                "[INSTRUM] EJECUTANDO RAMA END-TO-END",
+                progress="action=enable_cnn | action=skip_feature_extraction",
+            )
+
             self._log(f"[END-TO-END] Habilitando CNN para entrenamiento (hash={wh})...")
 
             # [R2.1/R2.6] Habilitar CNN: entrenable con gradientes
@@ -487,6 +534,15 @@ class WorkerNode:
         # ═══════════════════════════════════════════════════════════════
         # CONFIRMACIÓN (mismo mensaje para ambas ramas, pero con diferentes estados)
         # ═══════════════════════════════════════════════════════════════
+        # [INSTRUMENTACIÓN] Log ANTES de enviar CNN_READY
+        cnn_has_grad = any(p.requires_grad for p in self._cnn._model.parameters())
+        _logger.worker(
+            "[INSTRUM] ENVIANDO CNN_READY",
+            progress=f"training_mode_FINAL={self.training_mode} | "
+            f"cnn_requires_grad={cnn_has_grad} | "
+            f"features_shape={self._X_features.shape}",
+        )
+
         assert self._sock is not None
         try:
             send_message(self._sock, MsgType.CNN_READY, {"worker_id": self.worker_id})
@@ -579,6 +635,15 @@ class WorkerNode:
         seed = payload["seed"]
         cnn_params = payload.get("cnn_params")  # None en precomputed
 
+        # [INSTRUMENTACIÓN] Log del estado ANTES de branch selection
+        _logger.worker(
+            f"[INSTRUM] RECIBIENDO PARAMS | Época {epoch}",
+            progress=f"training_mode={self.training_mode} | "
+            f"cnn_params={'PRESENTE' if cnn_params is not None else 'AUSENTE'} | "
+            f"payload_keys={list(payload.keys())} | "
+            f"BRANCH_SERÁ={'PRECOMPUTED' if self.training_mode == 'precomputed' else 'END-TO-END'}",
+        )
+
         indices = self._reconstruct_indices(seed, n_train, n_workers, worker_rank)
         self._log(f"Época {epoch} — {len(indices)} ejemplos")
 
@@ -588,6 +653,15 @@ class WorkerNode:
         # RAMA 1: PRECOMPUTED — MLP DISTRIBUIDO, CNN FIJA
         # ════════════════════════════════════════════════════════════════
         if self.training_mode == "precomputed":
+            # [INSTRUMENTACIÓN] Log cuando entra a rama PRECOMPUTED
+            cnn_has_grad = any(p.requires_grad for p in self._cnn._model.parameters())
+            _logger.worker(
+                f"[INSTRUM] EJECUTANDO RAMA PRECOMPUTED | Época {epoch}",
+                progress=f"cnn_params_recibido={'SÍ (ERROR!)' if cnn_params is not None else 'NO (correcto)'} | "
+                f"cnn_requires_grad={cnn_has_grad} | "
+                f"features_shape={self._X_features.shape}",
+            )
+
             # Validación [R1.3]: NO debe haber cnn_params en precomputed
             if cnn_params is not None:
                 raise RuntimeError(
@@ -613,6 +687,15 @@ class WorkerNode:
         # RAMA 2: END-TO-END — CNN + MLP CONJUNTAMENTE CON MINI-BATCHING
         # ════════════════════════════════════════════════════════════════
         else:  # end_to_end
+            # [INSTRUMENTACIÓN] Log cuando entra a rama END-TO-END
+            cnn_has_grad = any(p.requires_grad for p in self._cnn._model.parameters())
+            _logger.worker(
+                f"[INSTRUM] EJECUTANDO RAMA END-TO-END | Época {epoch}",
+                progress=f"cnn_params_recibido={'SÍ (correcto)' if cnn_params is not None else 'NO (ERROR!)'} | "
+                f"cnn_requires_grad_ANTES={cnn_has_grad} | "
+                f"features_shape={self._X_features.shape}",
+            )
+
             # Validación [R2.4]: DEBE haber cnn_params en E2E
             if cnn_params is None:
                 raise RuntimeError(

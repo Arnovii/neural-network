@@ -1734,6 +1734,7 @@ class DistributedPSApp:
                     X_test=None,  # features vienen del Worker via TEST_FEATURES
                     Y_test=Y_test,
                     momentum=momentum,
+                    training_mode=training_mode,  # ← CRÍTICO: Pasar el modo actual explícitamente
                 )
                 q.put(("training_done", history))
             except Exception as exc:

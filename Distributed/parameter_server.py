@@ -248,6 +248,61 @@ class ParameterServer:
                 self._cnn_ready_event.set()
 
     # ================================================================
+    # RESET DE ESTADO DE ENTRENAMIENTO
+    # ================================================================
+
+    def _reset_training_state(self, new_training_mode: str) -> None:
+        """
+        Limpia completamente el estado entre sesiones de entrenamiento.
+
+        CRÍTICO: Llamar SIEMPRE antes de iniciar una nueva sesión para
+        evitar que state anterior contamine el nuevo entrenamiento.
+
+        :param new_training_mode: "precomputed" o "end_to_end"
+        """
+        print(
+            "\n[PS][RESET] ════════════════════════════════════════════════════════════"
+        )
+        print("[PS][RESET] Limpiando estado anterior")
+        print(f"[PS][RESET] training_mode: {self.training_mode} → {new_training_mode}")
+
+        # ━━━ Actualizar training_mode EXPLÍCITAMENTE ━━━
+        if new_training_mode not in ("precomputed", "end_to_end"):
+            raise ValueError(
+                f"training_mode desconocido: {new_training_mode}. "
+                f"Debe ser 'precomputed' o 'end_to_end'."
+            )
+
+        self.training_mode = new_training_mode
+        print(f"[PS][RESET] ✓ training_mode actualizado a: {self.training_mode}")
+
+        # ━━━ CNN se reutiliza (fue configurada en set_cnn) ━━━
+        # pero sus pesos pueden cambiar según el modo
+        if self._cnn is not None:
+            # En precomputed: CNN es inmutable (congelada)
+            # En E2E: CNN se entrena, pesos se actualizarán
+            print(f"[PS][RESET] CNN presente (arch={self._cnn.arch})")
+            print(
+                "[PS][RESET]   - Modo PRECOMPUTED → CNN CONGELADA (sin cambios)"
+                if self.training_mode == "precomputed"
+                else "[PS][RESET]   - Modo END-TO-END → CNN ENTRENABLE (pesos se actualizarán)"
+            )
+
+        # ━━━ Limpiar estado de sesión anterior ━━━
+        self._active_training_workers = None
+        self._cnn_ready_event.clear()
+        self._cnn_ready_count = 0
+        self._X_test_features = None
+        self._Y_test_from_worker = None
+        self._epoch_gradients.clear()
+        self._epoch_metrics.clear()
+
+        print("[PS][RESET] ✓ Estado de sesión limpiado")
+        print(
+            "[PS][RESET] ════════════════════════════════════════════════════════════\n"
+        )
+
+    # ================================================================
     # CICLO DE VIDA DEL SERVIDOR
     # ================================================================
 
@@ -447,6 +502,7 @@ class ParameterServer:
         Y_test: Optional[np.ndarray] = None,
         momentum: float = 0.0,
         seed: Optional[int] = None,
+        training_mode: Optional[str] = None,
     ) -> Dict[str, List[float]]:
         """
         Ejecuta una sesión de entrenamiento distribuida con los Workers conectados.
@@ -489,6 +545,11 @@ class ParameterServer:
                          velocidades internamente entre épocas.
         :type momentum: float
 
+        :param training_mode: CRÍTICO para sesiones múltiples. "precomputed" o "end_to_end".
+                              Si se omite, usa self.training_mode (valor al inicializar PS).
+                              Para cambiar modo entre sesiones, DEBE pasar aquí explícitamente.
+        :type training_mode: str | None
+
         :return: Historial con ``"accuracies"``, ``"losses"``,
                  ``"test_accuracies"`` y ``"test_losses"`` por época.
                  Las listas de test están vacías si no se pasaron datos de prueba.
@@ -497,6 +558,33 @@ class ParameterServer:
         :raises RuntimeError: Si no hay Workers conectados.
         :raises ValueError: Si training_mode es desconocido.
         """
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        # VALIDACIÓN Y RESET DE ESTADO
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+        # Si se proporciona training_mode, actualizarlo EXPLÍCITAMENTE
+        if training_mode is None:
+            training_mode = self.training_mode
+
+        # Validar training_mode
+        if training_mode not in ("precomputed", "end_to_end"):
+            raise ValueError(
+                f"training_mode desconocido: {training_mode}. "
+                f"Debe ser 'precomputed' o 'end_to_end'."
+            )
+
+        # CRÍTICO: Limpiar estado y actualizar training_mode
+        self._reset_training_state(training_mode)
+
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        # VALIDACIÓN CRÍTICA ANTES DE ENTRENAR
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        assert self.training_mode in ["precomputed", "end_to_end"], (
+            f"[SANITY CHECK] training_mode inválido: {self.training_mode}"
+        )
+
+        print(f"[PS][DEBUG] CONFIG FINAL: mode={self.training_mode}")
+
         worker_ids = self.connected_workers
         if not worker_ids:
             raise RuntimeError(
@@ -542,7 +630,7 @@ class ParameterServer:
         else:
             raise ValueError(
                 f"training_mode desconocido: {self.training_mode}. "
-                f"Debe ser 'precomputed' o 'end_to_end'."
+                f"Debe ser 'precomputed' o 'end_to_east'."
             )
 
     # ================================================================
@@ -576,6 +664,7 @@ class ParameterServer:
         4. Actualizar MLP
         5. Evaluar modelo
         """
+
         _logger.ps("[PRECOMPUTED] Iniciando flujo de entrenamiento")
 
         # ── INICIALIZACIÓN COMÚN ──────────────────────────────────────
@@ -610,14 +699,18 @@ class ParameterServer:
                 if sock is None:
                     return
                 try:
-                    send_message(
-                        sock,
-                        MsgType.CNN_WEIGHTS,
-                        {
-                            "arch": arch,
-                            "weights_bytes": weights_bytes,
-                        },
+                    # [INSTRUMENTACIÓN] Log del envío de CNN_WEIGHTS en PRECOMPUTED
+                    weights_hash = hash(weights_bytes) & ((1 << 31) - 1)  # Positivo
+                    payload_cnn = {
+                        "arch": arch,
+                        "weights_bytes": weights_bytes,
+                    }
+                    _logger.ps(
+                        f"[INSTRUM] Enviando CNN_WEIGHTS a Worker {wid}",
+                        progress=f"flujo=PRECOMPUTED | arch={arch} | weights_size={len(weights_bytes)} bytes | "
+                        f"weights_hash={weights_hash} | payload_keys={list(payload_cnn.keys())}",
                     )
+                    send_message(sock, MsgType.CNN_WEIGHTS, payload_cnn)
                 except Exception as exc:
                     print(f"[PS] Error enviando CNN a Worker {wid}: {exc}")
                     self._remove_worker(wid)
@@ -727,32 +820,94 @@ class ParameterServer:
 
         _logger.section("ENTRENAMIENTO PRECOMPUTED (MLP DISTRIBUIDO)")
 
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        # [DEBUG FASE 1] ENVÍO DE TRAIN_START
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        print("[PS][DEBUG] ========== INICIANDO ENVÍO TRAIN_START =========")
+        print(f"[PS][DEBUG] Modo entrenamiento: {self.training_mode}")
+        print(f"[PS][DEBUG] Workers activos: {worker_ids}")
+        print(f"[PS][DEBUG] Total épocas a entrenar: {epochs}")
+
         # Notificar TRAIN_START
         n_workers = len(worker_ids)
         for rank, wid in enumerate(worker_ids):
             with self._lock:
                 sock = self._worker_sockets.get(wid)
             if sock is None:
+                print(f"[PS][DEBUG] ERROR: Socket para Worker {wid} es None")
                 continue
             try:
-                send_message(
-                    sock,
-                    MsgType.TRAIN_START,
-                    {
-                        "epochs": epochs,
-                        "n_train": n_train,
-                        "n_workers": n_workers,
-                        "worker_rank": rank,
-                    },
+                # [DEBUG] ANTES de crear payload
+                print(
+                    f"[PS][DEBUG] Preparando TRAIN_START para Worker {wid} (rank {rank}/{n_workers})"
                 )
+
+                # Crear payload
+                payload_train_start = {
+                    "epochs": epochs,
+                    "n_train": n_train,
+                    "n_workers": n_workers,
+                    "worker_rank": rank,
+                    "training_mode": "precomputed",  # ← CRÍTICO: DEBE estar aquí
+                }
+
+                print(f"[PS][DEBUG] Payload keys: {list(payload_train_start.keys())}")
+                print(
+                    f"[PS][DEBUG] training_mode en payload: {payload_train_start.get('training_mode', 'AUSENTE')}"
+                )
+
+                # Log con instrumentación
+                _logger.ps(
+                    f"[INSTRUM] Enviando TRAIN_START a Worker {wid}",
+                    progress=f"flujo=PRECOMPUTED | training_mode={'PRESENTE' if 'training_mode' in payload_train_start else 'AUSENTE'} | "
+                    f"training_mode={payload_train_start.get('training_mode', 'N/A')} | "
+                    f"payload_keys={list(payload_train_start.keys())}",
+                )
+
+                # [DEBUG] ANTES de enviar
+                print(
+                    f"[PS][DEBUG] (ANTES send) Socket para W{wid}: {'Open' if sock else 'Closed'}"
+                )
+
+                # Enviar
+                send_message(sock, MsgType.TRAIN_START, payload_train_start)
+
+                # [DEBUG] DESPUÉS de enviar
+                print(f"[PS][DEBUG] TRAIN_START enviado exitosamente a Worker {wid}")
+
             except Exception as exc:
+                print(
+                    f"[PS][ERROR] Excepción enviando TRAIN_START a Worker {wid}: {exc}"
+                )
+                print(f"[PS][ERROR] Tipo: {type(exc).__name__}")
                 _logger.error(f"Error enviando TRAIN_START a Worker {wid}: {exc}")
                 self._remove_worker(wid)
 
+        print("[PS][DEBUG] ========== TRAIN_START ENVIADO A TODOS ==========")
+        print("[PS][DEBUG] Esperando que Workers lean TRAIN_START...\n")
+
         t_start = time.perf_counter()
+
+        # ═════════════════════════════════════════════════════════════════
+        # [CRÍTICO] VERIFICACIÓN ANTES DE ENTRAR AL LOOP
+        # ═════════════════════════════════════════════════════════════════
+        print(
+            "\n[PS][DEBUG] ¡¡¡ PUNTO CRÍTICO: A punto de entrar al loop de épocas !!!"
+        )
+        print(f"[PS][DEBUG] worker_ids: {worker_ids}")
+        print(
+            f"[PS][DEBUG] self._worker_sockets.keys(): {list(self._worker_sockets.keys())}"
+        )
+        print(f"[PS][DEBUG] epochs: {epochs}")
+        print(f"[PS][DEBUG] range(1, {epochs + 1})\n")
 
         # ── LOOP DE ÉPOCAS ────────────────────────────────────────────
         for epoch in range(1, epochs + 1):
+            print(f"\n[PS][DEBUG] ✓✓✓ ENTRANDO A ITERACIÓN epoch={epoch}/{epochs}")
+            print(
+                f"[PS][DEBUG]   self._worker_sockets.keys() AHORA: {list(self._worker_sockets.keys())}"
+            )
+
             self._epoch_gradients.clear()
             self._epoch_metrics.clear()
 
@@ -803,12 +958,25 @@ class ParameterServer:
 
             def _send_params_to_worker(wid: int) -> None:
                 try:
+                    # [INSTRUMENTACIÓN] Log del envío de PARAMS en PRECOMPUTED
                     send_dict = {
                         "epoch": epoch,
                         "params": params,
                         "seed": epoch_seed,
                         # NO enviar cnn_params en PRECOMPUTED
                     }
+                    # Calcular hash de los pesos MLP (W1, b1, W2, b2, W3, b3)
+                    mlp_weights_concat = b"".join(
+                        params[key].tobytes()
+                        for key in ["W1", "b1", "W2", "b2", "W3", "b3"]
+                        if key in params
+                    )
+                    mlp_params_hash = hash(mlp_weights_concat) & ((1 << 31) - 1)
+                    _logger.ps(
+                        f"[INSTRUM] Enviando PARAMS a Worker {wid} | Época {epoch}",
+                        progress=f"flujo=PRECOMPUTED | cnn_params={'ausente'} | "
+                        f"mlp_params_hash={mlp_params_hash} | payload_keys={list(send_dict.keys())}",
+                    )
                     send_message(
                         self._worker_sockets[wid],
                         MsgType.PARAMS,
@@ -818,6 +986,19 @@ class ParameterServer:
                     _logger.error(f"Error enviando PARAMS a Worker {wid}: {exc}")
                     self._remove_worker(wid)
 
+            # ═════════════════════════════════════════════════════════════════
+            # [DEBUG] ENVÍO DE PARAMS
+            # ═════════════════════════════════════════════════════════════════
+            print(f"[PS][DEBUG] ┌─ ENVIANDO PARAMS para época {epoch}")
+
+            # MOSTRAR EXACTAMENTE QUÉ WORKERS VAN A RECIBIR PARAMS
+            workers_for_params = [w for w in worker_ids if w in self._worker_sockets]
+            print(f"[PS][DEBUG] │ worker_ids original: {worker_ids}")
+            print(
+                f"[PS][DEBUG] │ _worker_sockets.keys() ahora: {list(self._worker_sockets.keys())}"
+            )
+            print(f"[PS][DEBUG] │ Workers que RECIBIRÁN PARAMS: {workers_for_params}")
+
             param_threads = [
                 threading.Thread(
                     target=_send_params_to_worker, args=(wid,), daemon=True
@@ -825,10 +1006,41 @@ class ParameterServer:
                 for wid in worker_ids
                 if wid in self._worker_sockets
             ]
+
+            # [CRÍTICO] Verificación de threads de PARAMS
+            print(
+                f"[PS][DEBUG] Construcción de param_threads ({len(param_threads)} threads creados)"
+            )
+            if not param_threads:
+                print("\n[PS][CRITICAL BUG] ¡¡¡ NO HAY THREADS PARA ENVIAR PARAMS !!!")
+                print(
+                    f"[PS][CRITICAL BUG] worker_ids recibido en función: {worker_ids}"
+                )
+                print(
+                    f"[PS][CRITICAL BUG] self._worker_sockets.keys() AHORA: {list(self._worker_sockets.keys())}"
+                )
+                print(
+                    "[PS][CRITICAL BUG] Esto significa: Workers recibieron TRAIN_START pero NO ESTÁN en _worker_sockets"
+                )
+                print("[PS][CRITICAL BUG] ¡¡¡ NO HACER BREAK, algo está muy mal !!!")
+
+                # En lugar de break, loguear y continuar (o fallar más claramente)
+                error_msg = (
+                    f"FATAL: param_threads vacío en época {epoch}. "
+                    f"worker_ids={worker_ids}, _worker_sockets={list(self._worker_sockets.keys())}. "
+                    f"Los Workers fueron desconectados o removidos entre TRAIN_START y el loop."
+                )
+                _logger.error(error_msg)
+                raise RuntimeError(error_msg)
+
+            print(f"[PS][DEBUG] │ Creados {len(param_threads)} threads de envío")
+            print("[PS][DEBUG] │ Iniciando threads...")
             for t in param_threads:
                 t.start()
+            print("[PS][DEBUG] │ Esperando a que terminen threads...")
             for t in param_threads:
                 t.join()
+            print(f"[PS][DEBUG] └─ PARAMS ENVIADOS para época {epoch}")
 
             threads = [
                 threading.Thread(
@@ -891,8 +1103,18 @@ class ParameterServer:
                     epoch, epochs, epoch_acc, epoch_loss, test_acc, test_loss
                 )
 
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        # [DEBUG FASE 3] FIN DEL LOOP
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        print("\n[PS][DEBUG] ========== SALIENDO DEL LOOP DE ÉPOCAS =========")
+        print(f"[PS][DEBUG] Épocas completadas: {epochs}")
+        print(f"[PS][DEBUG] Historial de pérdidas: {history['losses']}")
+        print(f"[PS][DEBUG] Historial de precisiones: {history['accuracies']}")
+
         _logger.ps("Entrenamiento PRECOMPUTED completado")
         self._active_training_workers = None
+
+        print("[PS][DEBUG] ========== ENTRENAMIENTO TERMINADO ==========")
         return history
 
     # ================================================================
@@ -961,14 +1183,18 @@ class ParameterServer:
                 if sock is None:
                     return
                 try:
-                    send_message(
-                        sock,
-                        MsgType.CNN_WEIGHTS,
-                        {
-                            "arch": arch,
-                            "weights_bytes": weights_bytes,
-                        },
+                    # [INSTRUMENTACIÓN] Log del envío de CNN_WEIGHTS en END-TO-END
+                    weights_hash = hash(weights_bytes) & ((1 << 31) - 1)  # Positivo
+                    payload_cnn = {
+                        "arch": arch,
+                        "weights_bytes": weights_bytes,
+                    }
+                    _logger.ps(
+                        f"[INSTRUM] Enviando CNN_WEIGHTS a Worker {wid}",
+                        progress=f"flujo=END_TO_END | arch={arch} | weights_size={len(weights_bytes)} bytes | "
+                        f"weights_hash={weights_hash} | payload_keys={list(payload_cnn.keys())}",
                     )
+                    send_message(sock, MsgType.CNN_WEIGHTS, payload_cnn)
                 except Exception as exc:
                     print(f"[PS] Error enviando CNN a Worker {wid}: {exc}")
                     self._remove_worker(wid)
@@ -1086,17 +1312,21 @@ class ParameterServer:
             if sock is None:
                 continue
             try:
-                send_message(
-                    sock,
-                    MsgType.TRAIN_START,
-                    {
-                        "epochs": epochs,
-                        "n_train": n_train,
-                        "n_workers": n_workers,
-                        "worker_rank": rank,
-                        "training_mode": "end_to_end",  # [SINCRONIZACIÓN] Worker recibe modo
-                    },
+                # [INSTRUMENTACIÓN] Log del envío de TRAIN_START en END-TO-END
+                payload_train_start = {
+                    "epochs": epochs,
+                    "n_train": n_train,
+                    "n_workers": n_workers,
+                    "worker_rank": rank,
+                    "training_mode": "end_to_end",
+                }
+                _logger.ps(
+                    f"[INSTRUM] Enviando TRAIN_START a Worker {wid}",
+                    progress=f"flujo=END_TO_END | training_mode={'PRESENTE' if 'training_mode' in payload_train_start else 'AUSENTE'} | "
+                    f"training_mode={payload_train_start.get('training_mode', 'N/A')} | "
+                    f"payload_keys={list(payload_train_start.keys())}",
                 )
+                send_message(sock, MsgType.TRAIN_START, payload_train_start)
             except Exception as exc:
                 _logger.error(f"Error enviando TRAIN_START a Worker {wid}: {exc}")
                 self._remove_worker(wid)
@@ -1169,6 +1399,21 @@ class ParameterServer:
                         "seed": epoch_seed,
                         "cnn_params": cnn_state,  # Obligatorio en E2E
                     }
+                    # [INSTRUMENTACIÓN] Log del envío de PARAMS en END-TO-END
+                    # Calcular hash de los pesos MLP (W1, b1, W2, b2, W3, b3)
+                    mlp_weights_concat = b"".join(
+                        params[key].tobytes()
+                        for key in ["W1", "b1", "W2", "b2", "W3", "b3"]
+                        if key in params
+                    )
+                    mlp_params_hash = hash(mlp_weights_concat) & ((1 << 31) - 1)
+                    cnn_keys_count = len(cnn_state) if cnn_state else 0
+                    _logger.ps(
+                        f"[INSTRUM] Enviando PARAMS a Worker {wid} | Época {epoch}",
+                        progress=f"flujo=END_TO_END | cnn_params={'PRESENTE' if cnn_state else 'AUSENTE'} | "
+                        f"cnn_keys_count={cnn_keys_count} | mlp_params_hash={mlp_params_hash} | "
+                        f"payload_keys={list(send_dict.keys())}",
+                    )
                     send_message(
                         self._worker_sockets[wid],
                         MsgType.PARAMS,
