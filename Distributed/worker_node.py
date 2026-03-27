@@ -400,7 +400,12 @@ class WorkerNode:
         self._log("Muestra de train enviada al PS.")
 
     def _load_features_with_cache(
-        self, X_raw: np.ndarray, Y_raw: np.ndarray, arch: str, batch_size: int, split: str = "train"
+        self,
+        X_raw: np.ndarray,
+        Y_raw: np.ndarray,
+        arch: str,
+        batch_size: int,
+        split: str = "train",
     ) -> tuple[np.ndarray, np.ndarray]:
         """
         Carga features con caché inteligente basado en hash de CNN.
@@ -440,7 +445,7 @@ class WorkerNode:
         # Definir rutas de caché (mismo formato que cnn_extractor)
         cache_dir = os.path.join("Data", "feature_cache")
         os.makedirs(cache_dir, exist_ok=True)
-        
+
         # Cache key incluye el split
         cache_key = f"{arch}_{weights_hash}_{split}"
         cache_X_path = os.path.join(cache_dir, f"{cache_key}_X.npy")
@@ -495,9 +500,9 @@ class WorkerNode:
         elapsed = time.perf_counter() - t0
 
         # Validar shape después de extraer
-        assert (
-            X_feat.shape == (n_samples, expected_feature_dim)
-        ), f"Shape inválido tras extracción: {X_feat.shape} vs esperado ({n_samples}, {expected_feature_dim})"
+        assert X_feat.shape == (n_samples, expected_feature_dim), (
+            f"Shape inválido tras extracción: {X_feat.shape} vs esperado ({n_samples}, {expected_feature_dim})"
+        )
 
         # Guardar en caché
         try:
@@ -510,7 +515,9 @@ class WorkerNode:
                 f"({X_feat.nbytes // 1024 // 1024} MB, {elapsed:.1f}s)"
             )
         except Exception as e:
-            self._log(f"[CACHE SAVE ERROR][{split_upper}] No se guardó caché: {e}. Continuando...")
+            self._log(
+                f"[CACHE SAVE ERROR][{split_upper}] No se guardó caché: {e}. Continuando..."
+            )
 
         return X_feat, Y_raw
 
