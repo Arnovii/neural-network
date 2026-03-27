@@ -1,6 +1,6 @@
 # 2. ARQUITECTURA DEL SISTEMA
 
-## 📐 Componentes principales
+## Componentes principales
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -19,16 +19,16 @@
 │         ┌────────────────────┼────────────────────┐                         │
 │         │                    │                    │                         │
 │         ▼                    ▼                    ▼                         │
-│    ┌─────────┐          ┌─────────┐         ┌─────────┐                   │
-│    │WORKER 0 │          │WORKER 1 │         │WORKER N │                   │
-│    ├─────────┤          ├─────────┤         ├─────────┤                   │
-│    │ Datos   │          │ Datos   │         │ Datos   │                   │
-│    │(50K)    │          │(50K)    │         │(50K)    │                   │
-│    │         │          │         │         │         │                   │
-│    │ CNN ──► Features    │ CNN ──► Features  │ CNN ──► Features            │
-│    │ MLP ──► ∇L          │ MLP ──► ∇L        │ MLP ──► ∇L                  │
-│    └─────────┘          └─────────┘         └─────────┘                   │
-│         TCP                  TCP                 TCP                       │
+│    ┌─────────┐          ┌─────────┐         ┌─────────┐                     │
+│    │WORKER 0 │          │WORKER 1 │         │WORKER N │                     │
+│    ├─────────┤          ├─────────┤         ├─────────┤                     │
+│    │ Datos   │          │ Datos   │         │ Datos   │                     │
+│    │(50K)    │          │(50K)    │         │(50K)    │                     │
+│    │         │          │         │         │         │                     │
+│    │ CNN ──► Features    │ CNN ──► Features  │ CNN ──► Features             │
+│    │ MLP ──► ∇L          │ MLP ──► ∇L        │ MLP ──► ∇L                   │
+│    └─────────┘          └─────────┘         └─────────┘                     │
+│         TCP                  TCP                 TCP                        │
 │                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -307,7 +307,7 @@ READY ──────►  ◄──── WORKER_ID
 
 ---
 
-## 🎯 Invariantes arquitectónicos
+## Invariantes arquitectónicos
 
 **I1**: Todos los Workers tienen **exactamente los mismos pesos CNN y MLP** en el inicio de cada época.
 
@@ -323,7 +323,7 @@ READY ──────►  ◄──── WORKER_ID
 
 ---
 
-## 📊 Componentes secundarios
+## Componentes secundarios
 
 ### **Data Loader (cifar_loader.py)**
 - Interfaz única para cargar CIFAR-10

@@ -68,10 +68,10 @@ This architecture:
 │  Parameter Server (PS)                                          │
 │  ├─ Global MLP weights (θ)                                      │
 │  ├─ Epoch loop control & synchronization                        │
-│  ├─ Gradient averaging: ∇θ = (1/N) × Σ ∇θᵢ                     │
+│  ├─ Gradient averaging: ∇θ = (1/N) × Σ ∇θᵢ                      │
 │  └─ SGD updates: θ ← θ − lr × ∇θ                                │
 │                                                                 │
-│  Workers (1..N) [can be on same or different machines]         │
+│  Workers (1..N) [can be on same or different machines]          │
 │  ├─ Load CIFAR-10 locally                                       │
 │  ├─ Initialize CNN (identical weights, deterministically seeded)│
 │  ├─ Extract features: features = CNN(images)  [512-dimensional] │
@@ -225,7 +225,7 @@ Features:
 
 ---
 
-## 🔄 How It Works: The Training Loop
+## How It Works: The Training Loop
 
 ### Per-Epoch Execution
 
@@ -396,7 +396,7 @@ def cache_key(weights_dict, split='train'):
 
 **Why MD5?**
 - Fast (microseconds for typical CNN weights)
-- 🔍 Detects any change (collision probability negligible for this use)
+- Detects any change (collision probability negligible for this use)
 - Simple (no weight-by-weight comparison)
 
 ---
@@ -426,7 +426,7 @@ worker_indices = stratified_round_robin(epoch_seed, rank, N_workers)
 
 ---
 
-## 📁 Project Structure
+## Project Structure
 
 ```
 neural-network/
@@ -625,7 +625,7 @@ weights_after  = {...}  # Some changed
 
 ---
 
-## 📊 Performance
+## Performance
 
 ### Benchmark Results
 

@@ -1,51 +1,51 @@
 # 5. WORKER NODE — ARQUITECTURA Y CICLO DE VIDA
 
-## 🔄 Ciclo de vida del Worker
+## Ciclo de vida del Worker
 
 ```
 ┌────────────────────────────────────────────────────────────────┐
-│               WORKER NODE LIFECYCLE                             │
+│               WORKER NODE LIFECYCLE                            │
 ├────────────────────────────────────────────────────────────────┤
 │                                                                │
 │ 1. CONSTRUCCIÓN                                                │
-│    Worker(server_host, port, X_train, Y_train, ...)           │
-│    └─ Cargar 50K imágenes en RAM                              │
-│    └─ Inicializar CNN placeholder                             │
-│    └─ Pre-calcular índices por clase                          │
+│    Worker(server_host, port, X_train, Y_train, ...)            │
+│    └─ Cargar 50K imágenes en RAM                               │
+│    └─ Inicializar CNN placeholder                              │
+│    └─ Pre-calcular índices por clase                           │
 │                                                                │
 │ 2. CONEXIÓN                                                    │
 │    worker.run()                                                │
-│    └─ Conectar TCP al PS                                      │
-│    └─ Enviar READY, recibir WORKER_ID                         │
+│    └─ Conectar TCP al PS                                       │
+│    └─ Enviar READY, recibir WORKER_ID                          │
 │                                                                │
 │ 3. CARGA DE CNN                                                │
-│    ◄─ CNN_WEIGHTS de PS                                       │
-│    └─ Cargar pesos                                            │
-│    └─ Congelar (precomputed) O habilitar (E2E)                │
-│    └─ Extraer features (precomputed) O nada (E2E)             │
-│    └─ Enviar CNN_READY                                        │
+│    ◄─ CNN_WEIGHTS de PS                                        │
+│    └─ Cargar pesos                                             │
+│    └─ Congelar (precomputed) O habilitar (E2E)                 │
+│    └─ Extraer features (precomputed) O nada (E2E)              │
+│    └─ Enviar CNN_READY                                         │
 │                                                                │
 │ 4. SINCRONIZACIÓN                                              │
-│    └─ Esperar TRAIN_START                                     │
+│    └─ Esperar TRAIN_START                                      │
 │                                                                │
 │ 5. LOOP DE ENTRENAMIENTO                                       │
-│    ├─ Recibir PARAMS + seed                                   │
-│    ├─ Reconstruir índices                                     │
-│    ├─ Calcular gradientes (forward + backward)                │
-│    ├─ Enviar GRADIENTS                                        │
-│    └─ Repetir (N épocas)                                      │
+│    ├─ Recibir PARAMS + seed                                    │
+│    ├─ Reconstruir índices                                      │
+│    ├─ Calcular gradientes (forward + backward)                 │
+│    ├─ Enviar GRADIENTS                                         │
+│    └─ Repetir (N épocas)                                       │
 │                                                                │
 │ 6. FIN DE SESIÓN                                               │
-│    ├─ Volver a paso 4 (esperar siguiente TRAIN_START)         │
+│    ├─ Volver a paso 4 (esperar siguiente TRAIN_START)          │
 │    O                                                           │
-│    └─ Recibir STOP → desconectar                              │
+│    └─ Recibir STOP → desconectar                               │
 │                                                                │
 └────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 💾 Estructura de datos del Worker
+## Estructura de datos del Worker
 
 ```python
 class WorkerNode:
@@ -84,7 +84,7 @@ class WorkerNode:
 
 ---
 
-## 📊 Reconstrucción de índices (stratified round-robin)
+## Reconstrucción de índices (stratified round-robin)
 
 ### **Propósito**
 
@@ -164,7 +164,7 @@ Cobertura: ambos workers ven todas las clases
 
 ---
 
-## 🧠 Méthodos principales
+## Méthodos principales
 
 ### **run()**
 ```python
@@ -330,7 +330,7 @@ def _handle_params(self, payload, n_train, n_workers, worker_rank) -> None:
 
 ---
 
-## 🎯 Optimizaciones principales
+## Optimizaciones principales
 
 ### **1. Batch size adaptativo**
 
@@ -414,7 +414,7 @@ STOP           ──►  (desconexión)     Cierra conexión
 
 ---
 
-## 📝 Puntos clave del Worker
+## Puntos clave del Worker
 
 1. **Persistente**: No se desconecta entre épocas/sesiones
 2. **Autónomo**: Reconstruye índices localmente — no confía en lista del PS

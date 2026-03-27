@@ -811,7 +811,7 @@ class DistributedPSApp:
 
         self._btn_listen = ttk.Button(
             frame,
-            text="⚡ Encender servidor",
+            text="Encender servidor",
             command=self._cmd_listen,
         )
         self._btn_listen.pack(fill=tk.X, pady=4)

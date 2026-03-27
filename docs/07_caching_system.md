@@ -1,6 +1,6 @@
 # 7. SISTEMA DE CACHÉ DE FEATURES
 
-## 🎯 Propósito
+## Propósito
 
 Evitar recalcular las features CNN si los pesos no han cambiado. En PRECOMPUTED, esto puede ahorrar **30-60 segundos** por sesión (1 setup).
 
@@ -8,7 +8,7 @@ Evitar recalcular las features CNN si los pesos no han cambiado. En PRECOMPUTED,
 
 ---
 
-## 🔑 Estrategia de cache key
+## Estrategia de cache key
 
 ### **Definición**
 
@@ -68,7 +68,7 @@ Data/feature_cache/
 
 ---
 
-## 🔄 Flujo de carga con caché
+## Flujo de carga con caché
 
 ```python
 def _load_features_with_cache(X, Y, arch, batch_size, split="train"):
@@ -123,7 +123,7 @@ def _load_features_with_cache(X, Y, arch, batch_size, split="train"):
 
 ---
 
-## 📊 Formato de archivos .npy
+## Formato de archivos .npy
 
 **Archivo**: `simple_abc123de_train_X.npy`
 ```
@@ -150,7 +150,7 @@ def _load_features_with_cache(X, Y, arch, batch_size, split="train"):
 
 ---
 
-## 🎯 Cache hit / Miss patterns
+## Cache hit / Miss patterns
 
 ### **Setup 1: Primera ejecución**
 
@@ -205,7 +205,7 @@ Worker recibe CNN_WEIGHTS
 
 ---
 
-## ⚡ Impacto de rendimiento
+## Impacto de rendimiento
 
 ### **Sin caché**
 
@@ -233,7 +233,7 @@ Mejora: 180s → 61s = 3x más rápido
 
 ---
 
-## 🔍 Validación de caché
+## Validación de caché
 
 ### **Checks implementados**
 
@@ -266,7 +266,7 @@ if X_feat.shape != (expected_n, expected_dim):
 
 ---
 
-## 📝 Logging del caché
+## Logging del caché
 
 ### **Mensajes tipificados**
 
@@ -286,7 +286,7 @@ if X_feat.shape != (expected_n, expected_dim):
 
 ---
 
-## 🎯 Invalidación de caché
+## Invalidación de caché
 
 ### **Cuándo se invalida**
 
@@ -317,7 +317,7 @@ split cambió (train ↔ test)         Clave diferente → separate files
 
 ---
 
-## 🚀 Optimizaciones futuras
+## Optimizaciones futuras
 
 ### **1. Incremental caching**
 
@@ -366,7 +366,7 @@ Desventaja: latencia red, colisiones de I/O
 
 ---
 
-## 📣 Cuándo deshabilitar caché
+## Cuándo deshabilitar caché
 
 ```python
 # En modo E2E, quizá NOT guarde caché después de cada época

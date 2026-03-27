@@ -1,6 +1,6 @@
 # 4. MODOS DE ENTRENAMIENTO: PRECOMPUTED vs END-TO-END
 
-## 📊 Comparación rápida
+## Comparación rápida
 
 | Aspecto | PRECOMPUTED | END-TO-END |
 |--------|-------------|-----------|
@@ -15,7 +15,7 @@
 
 ---
 
-## 🔍 Flujo PRECOMPUTED en detalle
+## Flujo PRECOMPUTED en detalle
 
 ### **Idea clave**
 
@@ -146,7 +146,7 @@ Total: ~80 segundos para 10 épocas
 
 ---
 
-## 🚀 Flujo END-TO-END en detalle
+## Flujo END-TO-END en detalle
 
 ### **Idea clave**
 
@@ -290,7 +290,7 @@ Total: ~310 segundos para 10 épocas
 
 ---
 
-## ⚡ Por qué END-TO-END es 10x más lentO
+## Por qué END-TO-END es 10x más lentO
 
 | Operación | PRECOMPUTED | E2E | Razón |
 |-----------|-------------|-----|-------|
@@ -304,7 +304,7 @@ Total: ~310 segundos para 10 épocas
 
 ---
 
-## 🎯 Cuándo usar cada modo
+## Cuándo usar cada modo
 
 ### **PRECOMPUTED**
 - ✅ Tienes una CNN buena preentrenada (ResNet + ImageNet)
@@ -324,7 +324,7 @@ Total: ~310 segundos para 10 épocas
 
 ---
 
-## 🚨 Bug conocido: E2E test_acc collapse (SOLUCIONADO)
+## Bug conocido: E2E test_acc collapse (SOLUCIONADO)
 
 ### **Problema (antes del fix)**
 
@@ -361,7 +361,7 @@ Después del fix, test_acc converge normalmente (~97-98%).
 
 ---
 
-## 📝 Puntos críticos para explicar oralmente
+## Puntos críticos para explicar oralmente
 
 1. **"En PRECOMPUTED, la CNN es una constante."**
    > Una vez que la extenuamos, es como si dijéramos: "Cada imagen = vector de 512 números". El MLP solo aprende a clasificar esos 512 números.

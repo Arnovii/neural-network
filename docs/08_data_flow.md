@@ -1,19 +1,19 @@
 # 8. DATA FLOW COMPLETO
 
-## 📍 Diagrama general
+## Diagrama general
 
 ```
 ╔════════════════════════════════════════════════════════════════════╗
-║                    DATOS CIFAR-10 (50,000 imágenes)              ║
-║                   √ uint8, shape (32×32×3)                        ║
+║                    DATOS CIFAR-10 (50,000 imágenes)                ║
+║                   √ uint8, shape (32×32×3)                         ║
 ╚════════════════════════════════════════════════════════════════════╝
                               │
                               ▼
            ┌──────────────────────────────────────┐
-           │      NORMALIZACIÓN (cifar_loader)     │
+           │      NORMALIZACIÓN (cifar_loader)    │
            ├──────────────────────────────────────┤
-           │ • float32 / 255                       │
-           │ • (X - mean) / std per channel        │
+           │ • float32 / 255                      │
+           │ • (X - mean) / std per channel       │
            │ • Transpose NHWC → NCHW              │
            │ Shape: (50000, 3, 32, 32)            │
            │ Size: 6.4 GB → 200 MB (float32)      │
@@ -41,24 +41,24 @@
 
 ---
 
-## 🔵 FLUJO PRECOMPUTED
+## FLUJO PRECOMPUTED
 
 ### **Fase 1: Extracción de features (ONCE)""
 
 ```
 WORKER NODE:
-┌──────────────────────────────────────────────────────┐
-│                                                      │
+┌─────────────────────────────────────────────────────┐
+│                                                     │
 │  _X_raw (50000, 3, 32, 32)  [200 MB en RAM]         │
 │          │                                          │
 │          ├─ CACHE CHECK?                            │
-│          │   ├─ Hash CNN weights → "abc123de"      │
+│          │   ├─ Hash CNN weights → "abc123de"       │
 │          │   ├─ Look for:                           │
 │          │   │   Data/feature_cache/                │
 │          │   │   simple_abc123de_train_X.npy        │
 │          │   │                                      │
-│          │   ├─ [CACHE HIT] → _X_features          │
-│          │   │  (~0.5s via np.load)                │
+│          │   ├─ [CACHE HIT] → _X_features           │
+│          │   │  (~0.5s via np.load)                 │
 │          │   │                                      │
 │          │   └─ [CACHE MISS]                        │
 │          │      │                                   │
@@ -76,19 +76,19 @@ WORKER NODE:
 │       │                                 │           │
 │       │ Total time: ~30-60s             │           │
 │       └─────────────────────────────────┘           │
-│             │                                      │
-│             ▼                                      │
-│       _X_features (50000, 512)  [200 MB in RAM]   │
-│             │                                      │
-│             ├─ Save to cache:                     │
-│             │   Data/feature_cache/                │
-│             │   simple_abc123de_train_X.npy        │
-│             │   (~200 MB, ~1-2s write)             │
-│             └─ _class_indices pre-computed        │
-│
-│  ✓ CNN_READY sent to PS
-│
-└──────────────────────────────────────────────────────┘
+│             │                                       │
+│             ▼                                       │
+│       _X_features (50000, 512)  [200 MB in RAM]     │
+│             │                                       │
+│             ├─ Save to cache:                       │
+│             │   Data/feature_cache/                 │
+│             │   simple_abc123de_train_X.npy         │
+│             │   (~200 MB, ~1-2s write)              │
+│             └─ _class_indices pre-computed          │
+│                                                     │
+│  ✓ CNN_READY sent to PS                             │
+│                                                     │
+└─────────────────────────────────────────────────────┘
 
 SETUP TIME: ~0.5-60s (depend cache hit/miss)
 ```
@@ -102,15 +102,15 @@ SETUP TIME: ~0.5-60s (depend cache hit/miss)
 │                                                         │
 │  [epoch = 0]                                            │
 │                                                         │
-│  seed_0 = 42  (random)                                 │
+│  seed_0 = 42  (random)                                  │
 │       │                                                 │
-│       ├─ Generate PARAMS:                              │
-│       │  ├─ epoch: 0                                   │
-│       │  ├─ params: {W1, b1, W2, b2, W3, b3}          │
-│       │  ├─ seed: 42                                   │
-│       │  └─ cnn_params: None  ← CRITICAL              │
+│       ├─ Generate PARAMS:                               │
+│       │  ├─ epoch: 0                                    │
+│       │  ├─ params: {W1, b1, W2, b2, W3, b3}            │
+│       │  ├─ seed: 42                                    │
+│       │  └─ cnn_params: None  ← CRITICAL                │
 │       │                                                 │
-│       └─► [BROADCAST to all Workers]                  │
+│       └─► [BROADCAST to all Workers]                    │
 │                                                         │
 └─────────────────────────────────────────────────────────┘
                       │
@@ -177,20 +177,20 @@ SETUP TIME: ~0.5-60s (depend cache hit/miss)
 │ PARAMETER SERVER (COLLECTING GRADIENTS)                 │
 ├─────────────────────────────────────────────────────────┤
 │                                                         │
-│  Received from Worker 0: ∇L_0                          │
-│  Received from Worker 1: ∇L_1                          │
+│  Received from Worker 0: ∇L_0                           │
+│  Received from Worker 1: ∇L_1                           │
 │                                                         │
-│  ∇̄ = (∇L_0 + ∇L_1) / 2  [average]                    │
+│  ∇̄ = (∇L_0 + ∇L_1) / 2  [average]                       │
 │                                                         │
-│  W ← W - lr * ∇̄         [SGD update]                  │
+│  W ← W - lr * ∇̄         [SGD update]                    │
 │                                                         │
 │  Evaluate test:                                         │
-│  ├─ X_test_raw (10K, 3, 32, 32)                       │
-│  ├─ X_test_feat = CNN(X_test_raw)  [PS CPU]           │
-│  ├─ Logits = MLP(X_test_feat)                         │
-│  ├─ Accuracy, Loss → history                          │
-│  │                                                    │
-│  └─ Callback: on_epoch_end(0, 10, 96.5%, 0.12, …)   │
+│  ├─ X_test_raw (10K, 3, 32, 32)                         │
+│  ├─ X_test_feat = CNN(X_test_raw)  [PS CPU]             │
+│  ├─ Logits = MLP(X_test_feat)                           │
+│  ├─ Accuracy, Loss → history                            │
+│  │                                                      │
+│  └─ Callback: on_epoch_end(0, 10, 96.5%, 0.12, …)       │
 │                                                         │
 └─────────────────────────────────────────────────────────┘
 
@@ -214,7 +214,7 @@ TOTAL: ~12s / epoch = ~120s for 10 epochs
 
 ---
 
-## 🟠 FLUJO END-TO-END
+## FLUJO END-TO-END
 
 ### **Fase 1: SETUP (menor)**
 
@@ -224,10 +224,10 @@ WORKER NODE:
 │ Recibe CNN_WEIGHTS                   │
 │                                      │
 │ NO EXTRAE FEATURES:                  │
-│ _X_features = np.empty((0,))        │
+│ _X_features = np.empty((0,))         │
 │                                      │
 │ set_trainable(True)                  │
-│ → Pesos CNN requieren gradientes    │
+│ → Pesos CNN requieren gradientes     │
 │                                      │
 │ Guarda _X_raw en RAM (200 MB)        │
 │                                      │
@@ -246,17 +246,17 @@ WORKER NODE:
 │                                                         │
 │  [epoch = 0]                                            │
 │                                                         │
-│  seed_0 = 42  (random)                                 │
+│  seed_0 = 42  (random)                                  │
 │       │                                                 │
-│       ├─ Generate PARAMS:                              │
-│       │  ├─ epoch: 0                                   │
-│       │  ├─ params: {W1, b1, W2, b2, W3, b3}  [MLP]   │
-│       │  ├─ seed: 42                                   │
-│       │  └─ cnn_params: <weights_bytes>  ← CRITICAL   │
-│       │     Size: 50 MB (torch.save CNN state)        │
+│       ├─ Generate PARAMS:                               │
+│       │  ├─ epoch: 0                                    │
+│       │  ├─ params: {W1, b1, W2, b2, W3, b3}  [MLP]     │
+│       │  ├─ seed: 42                                    │
+│       │  └─ cnn_params: <weights_bytes>  ← CRITICAL     │
+│       │     Size: 50 MB (torch.save CNN state)          │
 │       │                                                 │
-│       └─► [BROADCAST to all Workers] (50 MB/worker)   │
-│              Total network: 50 MB × K workers         │
+│       └─► [BROADCAST to all Workers] (50 MB/worker)     │
+│              Total network: 50 MB × K workers           │
 │                                                         │
 └─────────────────────────────────────────────────────────┘
                       │
@@ -322,30 +322,30 @@ WORKER NODE:
 ├─────────────────────────────────────────────────────────┤
 │                                                         │
 │  Received from Worker 0:                                │
-│  ├─ MLP gradients: 60 KB                               │
-│  ├─ CNN gradients: 50 MB  ← BIG!                       │
+│  ├─ MLP gradients: 60 KB                                │
+│  ├─ CNN gradients: 50 MB  ← BIG!                        │
 │                                                         │
 │  Received from Worker 1:                                │
-│  ├─ MLP gradients: 60 KB                               │
-│  ├─ CNN gradients: 50 MB                               │
+│  ├─ MLP gradients: 60 KB                                │
+│  ├─ CNN gradients: 50 MB                                │
 │                                                         │
-│  [NETWORK TRAFFIC] 50 MB/worker × 2 = 100 MB received  │
+│  [NETWORK TRAFFIC] 50 MB/worker × 2 = 100 MB received   │
 │                                                         │
 │  Average gradients:                                     │
-│  ├─ ∇̄_MLP = (∇MLP[0] + ∇MLP[1]) / 2                  │
-│  ├─ ∇̄_CNN = (∇CNN[0] + ∇CNN[1]) / 2                  │
+│  ├─ ∇̄_MLP = (∇MLP[0] + ∇MLP[1]) / 2                     │
+│  ├─ ∇̄_CNN = (∇CNN[0] + ∇CNN[1]) / 2                     │
 │                                                         │
 │  Update parameters:                                     │
-│  ├─ MLP: W ← W - lr * ∇̄_MLP                           │
-│  ├─ CNN: W ← W - lr * ∇̄_CNN  ← CNN CAMBIA            │
+│  ├─ MLP: W ← W - lr * ∇̄_MLP                             │
+│  ├─ CNN: W ← W - lr * ∇̄_CNN  ← CNN CAMBIA               │
 │                                                         │
-│  Request TEST_FEATURES from Worker 0:                  │
-│  ├─ Worker 0 extracts X_test_feat (5-10s GPU)        │
-│  ├─ Sent to PS: 40 MB                                  │
+│  Request TEST_FEATURES from Worker 0:                   │
+│  ├─ Worker 0 extracts X_test_feat (5-10s GPU)           │
+│  ├─ Sent to PS: 40 MB                                   │
 │                                                         │
 │  Evaluate test:                                         │
-│  ├─ X_test_feat (received from worker) → MLP          │
-│  ├─ Logits, Accuracy, Loss → history                  │
+│  ├─ X_test_feat (received from worker) → MLP            │
+│  ├─ Logits, Accuracy, Loss → history                    │
 │                                                         │
 └─────────────────────────────────────────────────────────┘
 
@@ -373,7 +373,7 @@ TOTAL FOR SESSION:
 
 ---
 
-## 📊 Tamaños de datos
+## Tamaños de datos
 
 | Concepto | Formato | Tamaño | Notas |
 |----------|---------|--------|-------|
@@ -391,7 +391,7 @@ TOTAL FOR SESSION:
 
 ---
 
-## 🚨 Network traffic analysis
+## Network traffic analysis
 
 ### **PRECOMPUTED (2 workers, 10 epochs)**
 
@@ -439,21 +439,21 @@ TOTAL: ~1.1 GB down + ~1.1 GB up = 2.2 GB
 
 ---
 
-## 🎯 Flujo TEST data
+## Flujo TEST data
 
 ### **PRECOMPUTED**
 
 ```
-┌─────────────────────────────────┐
+┌──────────────────────────────────┐
 │ PS Constructor                   │
-├─────────────────────────────────┤
-│ X_test, Y_test = load_cifar10.. │ (provided at init)
+├──────────────────────────────────┤
+│ X_test, Y_test = load_cifar10..  │ (provided at init)
 │        │                         │
 │        ▼                         │
 │ Stored for evaluation            │
 │ (PS CPU only, never to workers)  │
-│                                 │
-└─────────────────────────────────┘
+│                                  │
+└──────────────────────────────────┘
                 │
     ┌───────────┴──────────────────┐
     │                              │
@@ -468,24 +468,24 @@ TOTAL: ~1.1 GB down + ~1.1 GB up = 2.2 GB
 
 ```
 ┌─────────────────────────────────┐
-│ PS Constructor                   │
+│ PS Constructor                  │
 ├─────────────────────────────────┤
-│ X_test, Y_test (provided)         │ (optional in E2E)
-│        │                         │
-│ Cannot use directly              │
-│ reason: CNN on Worker GPU,        │
-│        PS CPU                     │
+│ X_test, Y_test (provided)       │ (optional in E2E)
+│        │                        │
+│ Cannot use directly             │
+│ reason: CNN on Worker GPU,      │
+│        PS CPU                   │
 │                                 │
 └─────────────────────────────────┘
                 │
-    ┌───────────┴──────────────────┐
-    │       After CNN_READY        │
-    ▼                              │
-    ├─ REQUEST_TEST_FEATURES       │
-    │  to Worker 0                 │
-    │                              │
-    └─► Worker 0:                  │
-        ├─ X_test_feat =           │
+    ┌───────────┴───────────────────┐
+    │       After CNN_READY         │
+    ▼                               │
+    ├─ REQUEST_TEST_FEATURES        │
+    │  to Worker 0                  │
+    │                               │
+    └─► Worker 0:                   │
+        ├─ X_test_feat =            │
         │  CNN.forward(X_test)      │
         │  (uses worker GPU)        │
         │                           │
@@ -495,16 +495,16 @@ TOTAL: ~1.1 GB down + ~1.1 GB up = 2.2 GB
     ┌──────┴────────────────────────┐
     │                               │
     ▼  (each epoch)                 │
-    ├─ X_feat = _X_test_features   │
+    ├─ X_feat = _X_test_features    │
     │  (cached from worker)         │
-    ├─ logits = MLP(X_feat)        │
+    ├─ logits = MLP(X_feat)         │
     └─ Accuracy, Loss computed      │
        (no further network traffic) │
 ```
 
 ---
 
-## 📝 Resumen: PRECOMPUTED vs END-TO-END
+## Resumen: PRECOMPUTED vs END-TO-END
 
 | Aspecto | PRECOMPUTED | END-TO-END |
 |---------|-------------|-----------|

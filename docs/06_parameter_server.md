@@ -1,6 +1,6 @@
 # 6. PARAMETER SERVER — ARQUITECTURA Y SINCRONIZACIÓN
 
-## 🎯 Rol central
+## Rol central
 
 El Parameter Server es el orquestador centralizado. **Nunca ve datos de entrenamiento locales**, pero coordina:
 - Sincronización entre Workers
@@ -10,61 +10,61 @@ El Parameter Server es el orquestador centralizado. **Nunca ve datos de entrenam
 
 ---
 
-## 🔄 Ciclo de vida del PS
+## Ciclo de vida del PS
 
 ```
 ┌────────────────────────────────────────────────────────────────┐
-│                PS LIFECYCLE                                     │
+│                PS LIFECYCLE                                    │
 ├────────────────────────────────────────────────────────────────┤
 │                                                                │
 │ 1. CONSTRUCCIÓN                                                │
-│    PS(host="0.0.0.0", port=9999)                              │
-│    └─ Inicializar estructuras (dicts de workers)              │
-│    └─ Preparar sockets TCP                                    │
+│    PS(host="0.0.0.0", port=9999)                               │
+│    └─ Inicializar estructuras (dicts de workers)               │
+│    └─ Preparar sockets TCP                                     │
 │                                                                │
-│ 2. ESCUCHA (LISTENING STATE)                                  │
+│ 2. ESCUCHA (LISTENING STATE)                                   │
 │    ps.listen()                                                 │
-│    └─ Abre servidor TCP                                       │
-│    └─ Hilo de fondo acepta Workers indefinidamente           │
-│    └─ Workers se conectan con READY                          │
-│    └─ PS asigna IDs (0, 1, 2, …)                            │
-│    └─ Estado: LISTENING (espera ordenes)                      │
+│    └─ Abre servidor TCP                                        │
+│    └─ Hilo de fondo acepta Workers indefinidamente             │
+│    └─ Workers se conectan con READY                            │
+│    └─ PS asigna IDs (0, 1, 2, …)                               │
+│    └─ Estado: LISTENING (espera ordenes)                       │
 │                                                                │
 │ 3. CONFIGURACIÓN DE CNN                                        │
 │    ps.set_cnn(cnn)                                             │
-│    └─ Cargar/crear CNN preentrenada                           │
-│    └─ Será distribuida a Workers en siguiente sesión        │
+│    └─ Cargar/crear CNN preentrenada                            │
+│    └─ Será distribuida a Workers en siguiente sesión           │
 │                                                                │
-│ 4. SESIÓN DE ENTRENAMIENTO (TRAINING STATE)                   │
-│    ps.train(epochs=10, training_mode="precomputed", …)        │
-│    ├─ [SINCRONIZACIÓN CNN]                                    │
-│    │  ├─ Enviar CNN_WEIGHTS a todos los Workers             │
-│    │  └─ Esperar barrera CNN_READY                           │
-│    │                                                          │
-│    ├─ LOOP DE ÉPOCAS (N épocas)                              │
-│    │  ├─ Generar seed aleatorio                              │
-│    │  ├─ Enviar PARAMS (con seed) a cada Worker             │
-│    │  ├─ Esperar GRADIENTS de TODOS los Workers            │
-│    │  ├─ Promediar: ∇̄ = (1/N) * Σ ∇                        │
-│    │  ├─ Actualizar: W ← W − lr * ∇̄                        │
-│    │  ├─ Evaluar en test (si hay datos)                     │
-│    │  └─ Callback: on_epoch_end()                            │
-│    │                                                          │
-│    └─ [FIN DE SESIÓN]                                        │
-│       └─ Retorna a LISTENING (listo para siguiente sesión)   │
+│ 4. SESIÓN DE ENTRENAMIENTO (TRAINING STATE)                    │
+│    ps.train(epochs=10, training_mode="precomputed", …)         │
+│    ├─ [SINCRONIZACIÓN CNN]                                     │
+│    │  ├─ Enviar CNN_WEIGHTS a todos los Workers                │
+│    │  └─ Esperar barrera CNN_READY                             │
+│    │                                                           │
+│    ├─ LOOP DE ÉPOCAS (N épocas)                                │
+│    │  ├─ Generar seed aleatorio                                │
+│    │  ├─ Enviar PARAMS (con seed) a cada Worker                │
+│    │  ├─ Esperar GRADIENTS de TODOS los Workers                │
+│    │  ├─ Promediar: ∇̄ = (1/N) * Σ ∇                            │
+│    │  ├─ Actualizar: W ← W − lr * ∇̄                            │
+│    │  ├─ Evaluar en test (si hay datos)                        │
+│    │  └─ Callback: on_epoch_end()                              │
+│    │                                                           │
+│    └─ [FIN DE SESIÓN]                                          │
+│       └─ Retorna a LISTENING (listo para siguiente sesión)     │
 │                                                                │
 │ 5. APAGADO (SHUTDOWN)                                          │
 │    ps.shutdown()                                               │
-│    └─ Envía STOP a todos los Workers                         │
-│    └─ Cierra conexiones TCP                                  │
-│    └─ Detiene hilo de aceptación                             │
+│    └─ Envía STOP a todos los Workers                           │
+│    └─ Cierra conexiones TCP                                    │
+│    └─ Detiene hilo de aceptación                               │
 │                                                                │
 └────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 💾 Estructuras de datos del PS
+## Estructuras de datos del PS
 
 ```python
 class ParameterServer:
@@ -106,7 +106,7 @@ class ParameterServer:
 
 ---
 
-## 🎯 Métodos principales
+## Métodos principales
 
 ### **listen()**
 ```python
@@ -263,7 +263,7 @@ def train(self, epochs, training_mode, test_data=None, learning_rate=0.01) -> Di
 
 ---
 
-## 🔄 Distribución de CNN
+## Distribución de CNN
 
 ### **_broadcast_cnn_weights()**
 
@@ -299,7 +299,7 @@ def _broadcast_cnn_weights(self, worker_ids) -> None:
 
 ---
 
-## 📊 Sincronización de parámetros
+## Sincronización de parámetros
 
 ### **_broadcast_params()**
 
@@ -345,7 +345,7 @@ def _broadcast_params(self, worker_ids, epoch, seed, learning_rate) -> None:
 
 ---
 
-## 📥 Recolección y promediación de gradientes
+## Recolección y promediación de gradientes
 
 ### **_collect_gradients()**
 
@@ -438,7 +438,7 @@ def _update_parameters(self, avg_gradients, learning_rate) -> None:
 
 ---
 
-## 📈 Evaluación
+## Evaluación
 
 ### **_evaluate_test()**
 
@@ -486,7 +486,7 @@ def _evaluate_test(self, test_data) -> Tuple[float, float]:
 
 ---
 
-## 🧵 Manejo de conexiones en múltiples hilos
+## Manejo de conexiones en múltiples hilos
 
 ### **Por qué threading**
 
@@ -511,7 +511,7 @@ self._lock = threading.Lock()
 
 ---
 
-## 🚨 Manejo de fallos
+## Manejo de fallos
 
 | Escenario | Efecto | Solución |
 |-----------|--------|----------|
@@ -522,7 +522,7 @@ self._lock = threading.Lock()
 
 ---
 
-## 📝 Callbacks del PS
+## Callbacks del PS
 
 ```python
 ps = ParameterServer(

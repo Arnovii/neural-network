@@ -1,13 +1,13 @@
 # 1. VISIÓN GENERAL DEL SISTEMA
 
-## 🎯 En 2 minutos
+## En 2 minutos
 
 Este es un **sistema de aprendizaje distribuido** que entrena un clasificador CNN+MLP en CIFAR-10 usando **Algoritmo de Diego**.
 
 **Idea clave**: El Parameter Server centralizado coordina múltiples Workers que computan gradientes en paralelo sobre sus chunks de datos.
 
 ```
-    ┌─────────────────────────────────────────────────────────────┐
+    ┌──────────────────────────────────────────────────────────────┐
     │                   PARAMETER SERVER (PS)                      │
     │  • Modelos CNN + MLP (centralizado)                          │
     │  • Sincroniza Workers cada época                             │
@@ -29,7 +29,7 @@ Este es un **sistema de aprendizaje distribuido** que entrena un clasificador CN
 
 ---
 
-## 🏗️ Qué problema resuelve
+## Qué problema resuelve
 
 **Problema**: Entrenar un modelo moderno es costoso en CPU/GPU y datos.
 
@@ -44,7 +44,7 @@ Este es un **sistema de aprendizaje distribuido** que entrena un clasificador CN
 
 ---
 
-## 🧠 Pipeline CNN + MLP
+## Pipeline CNN + MLP
 
 ```
     CIFAR-10 imagen (32×32×3)
@@ -73,7 +73,7 @@ Este es un **sistema de aprendizaje distribuido** que entrena un clasificador CN
 
 ---
 
-## 📊 Dos modos de entrenamiento
+## Dos modos de entrenamiento
 
 ### **PRECOMPUTED** (modo por defecto)
 - CNN congelada — sus pesos nunca cambian
@@ -89,7 +89,7 @@ Este es un **sistema de aprendizaje distribuido** que entrena un clasificador CN
 
 ---
 
-## 🔄 Algoritmo de Diego — El corazón
+## Algoritmo de Diego — El corazón
 
 1. **Inicio de época**: PS envía parámetros MLP a todos los Workers
 2. **Cálculo localmente**: 
@@ -105,7 +105,7 @@ Este es un **sistema de aprendizaje distribuido** que entrena un clasificador CN
 
 ---
 
-## 📁 Estructura de directorios
+## Estructura de directorios
 
 ```
 .
@@ -130,7 +130,7 @@ Este es un **sistema de aprendizaje distribuido** que entrena un clasificador CN
 
 ---
 
-## 🔑 Conceptos clave a recordar
+## Conceptos clave a recordar
 
 | Concepto | Qué es | Dónde |
 |----------|--------|-------|
@@ -143,7 +143,7 @@ Este es un **sistema de aprendizaje distribuido** que entrena un clasificador CN
 
 ---
 
-## 🎤 Explicación oral recomendada
+## Explicación oral recomendada
 
 **Para auditorio técnico:**
 > "Implementamos Algoritmo de Diego — Parameter Server distribuido. Cada Worker tiene 50K imágenes CIFAR-10 locales. En cada época, el PS envía un seed aleatorio; cada Worker reconstruye su chunk localmente de forma idéntica. Luego calculan gradientes sobre su chunk en paralelo. El PS promedia Σ∇ / K y actualiza. Features de CNN se cachean con hash de pesos para evitar recalcular."
@@ -153,7 +153,7 @@ Este es un **sistema de aprendizaje distribuido** que entrena un clasificador CN
 
 ---
 
-## ⚡ Características principales
+## Características principales
 
 - **Escalable**: Soporta Workers dinámicos (se conectan/desconectan)
 - **Agnóstico a datos**: Workers carn datos, PS no ve archivos locales
@@ -165,20 +165,7 @@ Este es un **sistema de aprendizaje distribuido** que entrena un clasificador CN
 
 ---
 
-## 📈 Resultados esperados
-
-Con 2-3 Workers en precomputed:
-- **Convergencia**: ~97% test accuracy en 10 épocas
-- **Tiempo**: ~3-5 min para 50K imágenes CIFAR-10
-- **Escalabilidad**: +1 Worker ≈ -1s/epoch (paralelismo perfecto)
-
-Con modo End-to-End en GPU:
-- **Convergencia**: ~98.5% tras ajustar CNN (más épocas)
-- **Tiempo**: ~30s/epoch (CNN forward/backward es costoso)
-
----
-
-## 🔗 Próximos pasos
+## Próximos pasos
 
 Para entender el sistema en profundidad, lee en este orden:
 

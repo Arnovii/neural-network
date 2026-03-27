@@ -1,6 +1,6 @@
 # 3. FLUJO DE ENTRENAMIENTO
 
-## 🔄 Visión general por época
+## Visión general por época
 
 ```
 INICIO DE ÉPOCA E
@@ -29,7 +29,7 @@ INICIO DE ÉPOCA E
 
 ---
 
-## 📋 Flujo detallado de sesión completa
+## Flujo detallado de sesión completa
 
 ### **Fase 0: Conexión de Workers**
 
@@ -42,15 +42,15 @@ INICIO DE ÉPOCA E
 
 ```
 Worker 0         Worker 1         Worker N         PS
-  │                 │                 │              │
+  │                 │                 │            │
   ├─ READY ────────────────────────────────────┐   │
-  │                 │                 │         └──►│
-  │                 ├─ READY ────────────────────┐  │
+  │                 │                 │        └──►│
+  │                 ├─ READY ───────────────────┐  │
   │                 │                 │         └─►│
   │                 │                 │ READY ───┐ │
   │                 │                 │          └►│
   │                 │                 │            │
-  │◄─────────────── WORKER_ID (0) ────────────────┤
+  │◄─────────────── WORKER_ID (0) ─────────────────┤
   │                 │                 │            │
   │                 │◄────── WORKER_ID (1) ────────┤
   │                 │                 │            │
@@ -76,7 +76,7 @@ Worker 0         Worker 1         Worker N         PS
 ```
 PS                                     Workers 0, 1, 2, ...
 │                                            │
-├─ CNN_WEIGHTS ────────────────────────────►│
+├─ CNN_WEIGHTS ─────────────────────────────►│
 │   (arch="simple" o "resnet18")             │
 │   (weights_bytes)                          │
 │                                            ├─ Cargar CNN
@@ -139,7 +139,7 @@ PS                     Worker 0                Worker 1                ...
 │                           │                      │
 ├─ seed_0 = 42              │                      │
 │                           │                      │
-├─ PARAMS ──────────────────►│                      │
+├─ PARAMS ─────────────────►│                      │
 │   epoch=0                 │                      │
 │   params={W1, b1, ...}    │                      │
 │   seed=42                 │                      │
@@ -179,7 +179,7 @@ PS                     Worker 0                Worker 1                ...
 
 ---
 
-## 📊 Detalles de cada hito
+## Detalles de cada hito
 
 ### **Reconstrucción de índices (stratified round-robin)**
 
@@ -305,7 +305,7 @@ PS (después de recibir GRADIENTS de todos):
 
 ---
 
-## ⏱️ Timings típicos (2 workers, CPU)
+## Timings típicos (2 workers, CPU)
 
 | Fase | Precomputed | End-to-End |
 |------|-------------|-----------|
@@ -320,7 +320,7 @@ PS (después de recibir GRADIENTS de todos):
 
 ---
 
-## 🔍 Qué ocurre si algo falla
+## Qué ocurre si algo falla
 
 | Escenario | Efecto |
 |-----------|--------|
@@ -333,7 +333,7 @@ PS (después de recibir GRADIENTS de todos):
 
 ---
 
-## 🎯 Flujo simplificado (pseudo-código)
+## Flujo simplificado (pseudo-código)
 
 ```python
 # PS
