@@ -224,14 +224,12 @@ class ParameterServer:
             stacked = np.array([g.get(key, np.zeros(1)) for g in cnn_gradients_list])
             averaged_cnn_grads[key] = np.mean(stacked, axis=0)
 
-        # Aplicar actualización SGD a los pesos CNN
-        state_dict = self._cnn._model.state_dict()
+        # Aplicar actualización SGD a los pesos CNN (in-place)
+        # IMPORTANTE: NO llamar load_state_dict después — eso revertiría la actualización
         for name, param in self._cnn._model.named_parameters():
             if name in averaged_cnn_grads:
                 grad = averaged_cnn_grads[name]
                 param.data -= learning_rate * torch.from_numpy(grad).to(param.device)
-
-        self._cnn._model.load_state_dict(state_dict)
 
     # ================================================================
     # CONFIGURACIÓN DE LA CNN

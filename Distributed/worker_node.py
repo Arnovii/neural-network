@@ -400,12 +400,7 @@ class WorkerNode:
         self._log("Muestra de train enviada al PS.")
 
     def _load_features_with_cache(
-        self,
-        X_raw: np.ndarray,
-        Y_raw: np.ndarray,
-        arch: str,
-        batch_size: int,
-        split: str = "train",
+        self, X_raw: np.ndarray, Y_raw: np.ndarray, arch: str, batch_size: int, split: str = "train"
     ) -> tuple[np.ndarray, np.ndarray]:
         """
         Carga features con caché inteligente basado en hash de CNN.
@@ -445,7 +440,7 @@ class WorkerNode:
         # Definir rutas de caché (mismo formato que cnn_extractor)
         cache_dir = os.path.join("Data", "feature_cache")
         os.makedirs(cache_dir, exist_ok=True)
-
+        
         # Cache key incluye el split
         cache_key = f"{arch}_{weights_hash}_{split}"
         cache_X_path = os.path.join(cache_dir, f"{cache_key}_X.npy")
@@ -500,9 +495,9 @@ class WorkerNode:
         elapsed = time.perf_counter() - t0
 
         # Validar shape después de extraer
-        assert X_feat.shape == (n_samples, expected_feature_dim), (
-            f"Shape inválido tras extracción: {X_feat.shape} vs esperado ({n_samples}, {expected_feature_dim})"
-        )
+        assert (
+            X_feat.shape == (n_samples, expected_feature_dim)
+        ), f"Shape inválido tras extracción: {X_feat.shape} vs esperado ({n_samples}, {expected_feature_dim})"
 
         # Guardar en caché
         try:
@@ -515,9 +510,7 @@ class WorkerNode:
                 f"({X_feat.nbytes // 1024 // 1024} MB, {elapsed:.1f}s)"
             )
         except Exception as e:
-            self._log(
-                f"[CACHE SAVE ERROR][{split_upper}] No se guardó caché: {e}. Continuando..."
-            )
+            self._log(f"[CACHE SAVE ERROR][{split_upper}] No se guardó caché: {e}. Continuando...")
 
         return X_feat, Y_raw
 
@@ -833,6 +826,20 @@ class WorkerNode:
                     "[VALIDACIÓN E2E] NO recibí cnn_params pero SON "
                     "obligatorios en end_to_end (invariante [R2.4])"
                 )
+
+            # ✓ CRÍTICO: Sincronizar pesos CNN con el PS antes del forward
+            # El PS aplica gradientes promediados de TODOS los Workers y
+            # devuelve los pesos globales actualizados en cada época.
+            # Sin esto, cada Worker usa sus propios pesos locales y la
+            # CNN nunca converge porque cada Worker diverge por separado.
+            import torch as _torch
+            base_model = getattr(self._cnn._model, "model", self._cnn._model)
+            with _torch.no_grad():
+                for name, param in base_model.named_parameters():
+                    if name in cnn_params:
+                        param.data.copy_(
+                            _torch.from_numpy(cnn_params[name]).to(param.device)
+                        )
 
             # ✓ CRÍTICO: Habilitar gradientes en la CNN para mode entrenamiento
             # [R2.1] La CNN fue inicializada con requires_grad=False (modo precomputed).
