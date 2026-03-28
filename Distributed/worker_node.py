@@ -870,6 +870,10 @@ class WorkerNode:
             accumulated_cnn_grads: Dict[str, np.ndarray] = {}
             accumulated_losses: List[float] = []
             accumulated_accs: List[float] = []
+            
+            # Guardar variables del último batch para validaciones finales
+            dX_mini_final = None
+            features_final = None
 
             # ── LOOP DE MINI-BATCHES ──────────────────────────────────────
             for batch_idx in range(n_batches):
@@ -886,10 +890,13 @@ class WorkerNode:
                         f"size={len(mini_indices)}"
                     )
 
-                # ─ Forward CNN (PyTorch) en modo gradiente ─
+                # ─ FORWARD ÚNICO CNN en modo gradiente ─
+                # [FIX] Un solo forward para evitar desacople BatchNorm/Dropout
                 X_mini_torch = torch.from_numpy(X_mini).to(self._cnn.device)
+                self._cnn._model.zero_grad()  # Limpiar gradientes previos
+                
                 with torch.enable_grad():
-                    features_torch = self._cnn._model(X_mini_torch)
+                    features_torch = self._cnn._model(X_mini_torch)  # ← Un solo forward
                     features = features_torch.detach().cpu().numpy()
 
                 # ─ Backward MLP para obtener ∇L/∂features ─
@@ -901,29 +908,22 @@ class WorkerNode:
                 accumulated_losses.append(loss_mini)
                 accumulated_accs.append(acc_mini)
 
-                # ─ Backward CNN usando proxy loss ─
-                # Recalcular forward en modo gradiente para backward
-                # (forward anterior fue .detach(), no propagaba gradientes)
-                self._cnn._model.zero_grad()  # Limpiar gradientes previos
+                # ─ Backward CNN usando proxy loss (SOBRE EL MISMO GRAFO) ─
+                # [FIX] Usar directamente features_torch del forward anterior
+                # No recalcular — mismo grafo, BatchNorm consistente
 
-                X_mini_torch = torch.from_numpy(X_mini).to(self._cnn.device)
+                # ━━━ PROXY LOSS NORMALIZADO ━━━
+                # dX_mini es ∂L/∂features, shape (N, D)
+                # features_torch es features, shape (N, D)
+                # Proxy loss = Σ(features_torch * dX_mini) / N
+                # [FIX] Usar .sum() / batch_size para normalizar correctamente
+                # NO usar .mean() — eso divide por N*D (demasiado pequeño)
+                loss_proxy = (
+                    features_torch
+                    * torch.from_numpy(dX_mini).to(self._cnn.device)
+                ).sum() / len(Y_mini)  # ← Divide por batch size, no por N*D
 
-                # ✓ CRÍTICO: torch.enable_grad() para construir el computation graph
-                # Sin esto, PyTorch no rastreará operaciones y .backward() fallará
-                with torch.enable_grad():
-                    features_torch = self._cnn._model(X_mini_torch)
-
-                    # ━━━ PROXY LOSS ━━━
-                    # dX_mini es ∂L/∂features, shape (N, D)
-                    # features_torch es features, shape (N, D)
-                    # Proxy loss = Σ(features_torch * dX_mini) / N
-                    # ⚠️ NO transponer dX_mini — ya está en forma correcta
-                    loss_proxy = (
-                        features_torch
-                        * torch.from_numpy(dX_mini / len(Y_mini)).to(self._cnn.device)
-                    ).sum()
-
-                    loss_proxy.backward()
+                loss_proxy.backward()
 
                 # ━━━ VALIDACIONES DE SHAPES ━━━
                 # [DEBUG] Detectar mismatches temprano
@@ -947,6 +947,10 @@ class WorkerNode:
                             accumulated_cnn_grads[name] = grad_np.copy()
                         else:
                             accumulated_cnn_grads[name] += grad_np
+                
+                # Guardar para validaciones finales (último batch)
+                dX_mini_final = dX_mini
+                features_final = features
 
             # ── PROMEDIADO FINAL ──────────────────────────────────────────
             # Promediar gradientes MLP
@@ -956,11 +960,32 @@ class WorkerNode:
                     [g[key] for g in accumulated_mlp_grads], axis=0
                 )
 
-            # Normalizar gradientes CNN por número TOTAL de ejemplos (no por n_batches)
-            # Esto es matemáticamente correcto: suma(gradientes) / n_total
+            # [FIX] Normalizar gradientes CNN por número de BATCHES (no por n_total)
+            # Porque cada loss_proxy = .sum() / batch_size ya está normalizada
+            # Fórmula correcta: sum(los_proxy_gradients) / n_batches = average gradient
+            # (NO dividir por n_total — eso duplicaría la normalización)
             cnn_gradients = {
-                name: grad / n_total for name, grad in accumulated_cnn_grads.items()
+                name: grad / n_batches for name, grad in accumulated_cnn_grads.items()
             }
+            
+            # ━━━ VALIDACIONES DE MAGNITUD (debug) ━━━
+            if cnn_gradients and dX_mini_final is not None and features_final is not None:
+                avg_grad_mag = np.mean([np.abs(g).mean() for g in cnn_gradients.values()])
+                dX_mean, dX_std = dX_mini_final.mean(), dX_mini_final.std()
+                features_mean, features_std = features_final.mean(), features_final.std()
+                
+                self._log(
+                    f"  [E2E] CNN gradients: mag={avg_grad_mag:.2e} | "
+                    f"dX=[μ={dX_mean:.4f} σ={dX_std:.4f}] | "
+                    f"feat=[μ={features_mean:.4f} σ={features_std:.4f}]"
+                )
+                
+                # Chequeo: son cero o NaN?
+                for name, grad in cnn_gradients.items():
+                    if np.any(np.isnan(grad)):
+                        self._log(f"  ⚠️  NaN en gradientes de {name}")
+                    if np.all(np.abs(grad) < 1e-10):
+                        self._log(f"  ⚠️  Gradientes ≈ cero en {name}")
 
             # Promediar loss y accuracy
             loss = float(np.mean(accumulated_losses))
