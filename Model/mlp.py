@@ -284,8 +284,7 @@ def forward_and_gradients(
     correct = int(np.sum(preds == Y))
 
     # Cross-entropy: −Σ log(p_correcta) / N
-    # Clipping ANTES de log para estabilidad numérica (previene log(0))
-    log_p = np.log(np.clip(A3, 1e-7, 1.0 - 1e-7))
+    log_p = np.log(np.clip(A3, 1e-15, 1.0))
     total_loss = -float(np.sum(log_p[Y, np.arange(N)]))
 
     # ── Backward ─────────────────────────────────────────────────
@@ -365,8 +364,7 @@ def mlp_backward_to_input(
     preds = np.argmax(A3, axis=0)
     correct = int(np.sum(preds == Y))
 
-    # Clipping ANTES de log para estabilidad numérica
-    log_p = np.log(np.clip(A3, 1e-7, 1.0 - 1e-7))
+    log_p = np.log(np.clip(A3, 1e-15, 1.0))
     total_loss = -float(np.sum(log_p[Y, np.arange(N)]))
 
     # Backward — igual que en forward_and_gradients
@@ -385,7 +383,7 @@ def mlp_backward_to_input(
 
     # MLP gradients respecto a su entrada X
     # Necesario para backpropagar a la CNN en modo E2E
-    dX = (1.0 / N) * (W1.T @ delta1)  # Normalizar por N (CRÍTICO para E2E)
+    dX = W1.T @ delta1  # (feature_dim, hidden1) @ (hidden1, N) = (feature_dim, N)
     dX = dX.T  # Transponer a (N, feature_dim)
 
     gradients = {
@@ -437,8 +435,7 @@ def evaluate(
     preds = np.argmax(A3, axis=0)
     accuracy = 100.0 * float(np.sum(preds == Y)) / N
 
-    # Clipping ANTES de log para estabilidad numérica
-    log_p = np.log(np.clip(A3, 1e-7, 1.0 - 1e-7))
+    log_p = np.log(np.clip(A3, 1e-15, 1.0))
     loss = -float(np.sum(log_p[Y, np.arange(N)])) / N
 
     return accuracy, loss

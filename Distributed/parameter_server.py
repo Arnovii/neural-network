@@ -224,33 +224,12 @@ class ParameterServer:
             stacked = np.array([g.get(key, np.zeros(1)) for g in cnn_gradients_list])
             averaged_cnn_grads[key] = np.mean(stacked, axis=0)
 
-        # [VALIDACIÓN] Magnitud de gradientes antes de aplicar
-        avg_grad_mag = np.mean([np.abs(g).mean() for g in averaged_cnn_grads.values()])
-        _logger.info(f"[PS] CNN gradients magnitude (averaged): {avg_grad_mag:.2e}")
-
-        # Capturar pesos ANTES para validar cambio
-        weights_before = {
-            name: param.data.clone()
-            for name, param in self._cnn._model.named_parameters()
-        }
-
         # Aplicar actualización SGD a los pesos CNN (in-place)
         # IMPORTANTE: NO llamar load_state_dict después — eso revertiría la actualización
         for name, param in self._cnn._model.named_parameters():
             if name in averaged_cnn_grads:
                 grad = averaged_cnn_grads[name]
                 param.data -= learning_rate * torch.from_numpy(grad).to(param.device)
-
-        # [VALIDACIÓN] Verificar que los pesos realmente cambiaron
-        for name, param in self._cnn._model.named_parameters():
-            if name in weights_before:
-                delta = (param.data - weights_before[name]).abs().mean().item()
-                if delta < 1e-9:
-                    _logger.warn(f"[PS] ⚠️  {name}: Weight delta muy pequeño ({delta:.2e})")
-                elif np.isnan(delta):
-                    _logger.error(f"[PS] 🔴 {name}: Weight delta es NaN")
-                else:
-                    _logger.info(f"[PS] ✓ {name}: Updated (delta={delta:.2e})")
 
     # ================================================================
     # CONFIGURACIÓN DE LA CNN
