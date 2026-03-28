@@ -203,14 +203,7 @@ class ParameterServer:
         cnn_gradients_list: List[Dict[str, np.ndarray]],
         learning_rate: float,
     ) -> None:
-        """
-        Promedia y aplica gradientes CNN recibidos de los Workers.
-
-        Usado únicamente en modo E2E. En precomputado, la CNN no se entrena.
-
-        :param cnn_gradients_list: Lista de dicts con gradientes CNN de cada Worker.
-        :param learning_rate: Tasa de aprendizaje para SGD.
-        """
+        """Solo se usa en la versión antigua del E2E (proxy gradients). No aplica en FedAvg."""
         if self._cnn is None or not cnn_gradients_list:
             return
 
@@ -716,18 +709,11 @@ class ParameterServer:
                 if sock is None:
                     return
                 try:
-                    # [INSTRUMENTACIÓN] Log del envío de CNN_WEIGHTS en PRECOMPUTED
-                    weights_hash = hash(weights_bytes) & ((1 << 31) - 1)  # Positivo
-                    payload_cnn = {
-                        "arch": arch,
-                        "weights_bytes": weights_bytes,
-                    }
-                    _logger.ps(
-                        f"[INSTRUM] Enviando CNN_WEIGHTS a Worker {wid}",
-                        progress=f"flujo=PRECOMPUTED | arch={arch} | weights_size={len(weights_bytes)} bytes | "
-                        f"weights_hash={weights_hash} | payload_keys={list(payload_cnn.keys())}",
+                    send_message(
+                        sock,
+                        MsgType.CNN_WEIGHTS,
+                        {"arch": arch, "weights_bytes": weights_bytes},
                     )
-                    send_message(sock, MsgType.CNN_WEIGHTS, payload_cnn)
                 except Exception as exc:
                     print(f"[PS] Error enviando CNN a Worker {wid}: {exc}")
                     self._remove_worker(wid)
@@ -746,11 +732,6 @@ class ParameterServer:
                     msg = receive_message(self._worker_sockets[wid])
                     if msg["type"] == MsgType.CNN_READY:
                         print(f"[PS] Worker {wid}: CNN_READY ✓")
-                    else:
-                        print(
-                            f"[PS] Worker {wid}: mensaje inesperado "
-                            f"{msg['type']} (esperaba CNN_READY)."
-                        )
                     self._handle_cnn_ready(wid, len(worker_ids))
                 except Exception as exc:
                     print(f"[PS] Worker {wid}: error esperando CNN_READY: {exc}")
@@ -992,43 +973,11 @@ class ParameterServer:
                         "epoch": epoch,
                         "params": params,
                         "seed": epoch_seed,
-                        # NO enviar cnn_params en PRECOMPUTED
                     }
-                    # Calcular hash de los pesos MLP (W1, b1, W2, b2, W3, b3)
-                    mlp_weights_concat = b"".join(
-                        params[key].tobytes()
-                        for key in ["W1", "b1", "W2", "b2", "W3", "b3"]
-                        if key in params
-                    )
-                    mlp_params_hash = hash(mlp_weights_concat) & ((1 << 31) - 1)
-                    _logger.ps(
-                        f"[INSTRUM] Enviando PARAMS a Worker {wid} | Época {epoch}",
-                        progress=f"flujo=PRECOMPUTED | cnn_params={'ausente'} | "
-                        f"mlp_params_hash={mlp_params_hash} | payload_keys={list(send_dict.keys())}",
-                    )
-                    send_message(
-                        self._worker_sockets[wid],
-                        MsgType.PARAMS,
-                        send_dict,
-                    )
+                    send_message(self._worker_sockets[wid], MsgType.PARAMS, send_dict)
                 except Exception as exc:
                     _logger.error(f"Error enviando PARAMS a Worker {wid}: {exc}")
                     self._remove_worker(wid)
-
-            # ═════════════════════════════════════════════════════════════════
-            # [DEBUG] ENVÍO DE PARAMS
-            # ═════════════════════════════════════════════════════════════════
-            self._debug_print(f"[PS][DEBUG] ┌─ ENVIANDO PARAMS para época {epoch}")
-
-            # MOSTRAR EXACTAMENTE QUÉ WORKERS VAN A RECIBIR PARAMS
-            workers_for_params = [w for w in worker_ids if w in self._worker_sockets]
-            self._debug_print(f"[PS][DEBUG] │ worker_ids original: {worker_ids}")
-            self._debug_print(
-                f"[PS][DEBUG] │ _worker_sockets.keys() ahora: {list(self._worker_sockets.keys())}"
-            )
-            self._debug_print(
-                f"[PS][DEBUG] │ Workers que RECIBIRÁN PARAMS: {workers_for_params}"
-            )
 
             param_threads = [
                 threading.Thread(
@@ -1123,7 +1072,6 @@ class ParameterServer:
                 history["test_accuracies"].append(test_acc)
                 history["test_losses"].append(test_loss)
 
-            elapsed = time.perf_counter() - t_start
             progress = f"{epoch}/{epochs}"
             if test_acc is not None:
                 metric = f"train_acc={epoch_acc:.2f}% | test_acc={test_acc:.2f}% | pérdida={epoch_loss:.4f}"
@@ -1136,26 +1084,12 @@ class ParameterServer:
                     epoch, epochs, epoch_acc, epoch_loss, test_acc, test_loss
                 )
 
-        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        # [DEBUG FASE 3] FIN DEL LOOP
-        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        self._debug_print(
-            "\n[PS][DEBUG] ========== SALIENDO DEL LOOP DE ÉPOCAS ========="
-        )
-        self._debug_print(f"[PS][DEBUG] Épocas completadas: {epochs}")
-        self._debug_print(f"[PS][DEBUG] Historial de pérdidas: {history['losses']}")
-        self._debug_print(
-            f"[PS][DEBUG] Historial de precisiones: {history['accuracies']}"
-        )
-
         _logger.ps("Entrenamiento PRECOMPUTED completado")
         self._active_training_workers = None
-
-        self._debug_print("[PS][DEBUG] ========== ENTRENAMIENTO TERMINADO ==========")
         return history
 
     # ================================================================
-    # FLUJO 2: END-TO-END (CNN + MLP)
+    # FLUJO 2: END-TO-END (CNN + MLP) — CON FIXES
     # ================================================================
 
     def _train_end_to_end(
@@ -1170,27 +1104,10 @@ class ParameterServer:
         seed: Optional[int],
         worker_ids: List[int],
     ) -> Dict[str, List[float]]:
-        """
-        Entrenamiento END-TO-END: CNN + MLP entrenan juntos distribuido.
-
-        Fase de inicialización:
-        1. Distribuir CNN entrenable a todos los Workers
-        2. esperar a que Workers habiliten entrenamiento
-        3. Solicitar features de prueba (si existen)
-
-        Fase de entrenamiento (por época):
-        1. Enviar PARAMS con MLP + CNN
-        2. Recibir GRADIENTS con MLP + CNN
-        3. Validar que cnn_gradients NO sea None (invariante)
-        4. Actualizar MLP y CNN
-        5. Evaluar modelo
-        """
         _logger.ps("[END-TO-END] Iniciando flujo de entrenamiento")
-
-        # ── INICIALIZACIÓN COMÚN ──────────────────────────────────────
         self._active_training_workers = worker_ids
 
-        # Distribuir CNN entrenable
+        # Distribuir CNN entrenable a Workers
         if self._cnn is not None:
             weights_bytes = self._cnn._get_weights_bytes()
             arch = self._cnn.arch
@@ -1203,35 +1120,21 @@ class ParameterServer:
             self._X_test_features = None
             self._Y_test_from_worker = None
 
-            # NO buscar caché de features en E2E (features dinámicos)
-            # pero sí buscar features de prueba para evaluación rápida
+            # En E2E NO buscamos caché de features (son dinámicos)
+            # pero sí guardamos Y_test para la evaluación
             need_test_cached = False
-            if X_test is not None and Y_test is not None and X_test.ndim == 4:
-                cached = self._cnn._load_features_if_cached("test")
-                if cached is not None:
-                    X_test, Y_test = cached
-                    need_test_cached = True
-                    print(f"[PS] Features de prueba en caché: {X_test.shape}\n")
 
-            # Broadcast CNN_WEIGHTS
             def _send_cnn_to_worker(wid: int) -> None:
                 with self._lock:
                     sock = self._worker_sockets.get(wid)
                 if sock is None:
                     return
                 try:
-                    # [INSTRUMENTACIÓN] Log del envío de CNN_WEIGHTS en END-TO-END
-                    weights_hash = hash(weights_bytes) & ((1 << 31) - 1)  # Positivo
-                    payload_cnn = {
-                        "arch": arch,
-                        "weights_bytes": weights_bytes,
-                    }
-                    _logger.ps(
-                        f"[INSTRUM] Enviando CNN_WEIGHTS a Worker {wid}",
-                        progress=f"flujo=END_TO_END | arch={arch} | weights_size={len(weights_bytes)} bytes | "
-                        f"weights_hash={weights_hash} | payload_keys={list(payload_cnn.keys())}",
+                    send_message(
+                        sock,
+                        MsgType.CNN_WEIGHTS,
+                        {"arch": arch, "weights_bytes": weights_bytes},
                     )
-                    send_message(sock, MsgType.CNN_WEIGHTS, payload_cnn)
                 except Exception as exc:
                     print(f"[PS] Error enviando CNN a Worker {wid}: {exc}")
                     self._remove_worker(wid)
@@ -1250,11 +1153,6 @@ class ParameterServer:
                     msg = receive_message(self._worker_sockets[wid])
                     if msg["type"] == MsgType.CNN_READY:
                         print(f"[PS] Worker {wid}: CNN_READY ✓")
-                    else:
-                        print(
-                            f"[PS] Worker {wid}: mensaje inesperado "
-                            f"{msg['type']} (esperaba CNN_READY)."
-                        )
                     self._handle_cnn_ready(wid, len(worker_ids))
                 except Exception as exc:
                     print(f"[PS] Worker {wid}: error esperando CNN_READY: {exc}")
@@ -1272,54 +1170,23 @@ class ParameterServer:
                 t.join()
             print("[PS] Todos los Workers listos con la CNN entrenable.")
 
-            # Pedir TEST_FEATURES
-            if not need_test_cached:
-                with self._lock:
-                    candidate_ids = sorted(self._worker_sockets.keys())
-                for wid in candidate_ids:
-                    with self._lock:
-                        sock = self._worker_sockets.get(wid)
-                    if sock is None:
-                        continue
-                    print(f"[PS] Solicitando features de prueba al Worker {wid}...")
-                    try:
-                        send_message(sock, MsgType.REQUEST_TEST_FEATURES, {})
-                        msg_t = receive_message(sock)
-                        if msg_t["type"] == MsgType.TEST_FEATURES:
-                            p = msg_t["payload"]
-                            X_test = p["X_test_features"]
-                            Y_test = p["Y_test"]
-                            assert X_test is not None and Y_test is not None
-                            self._cnn._save_features("test", X_test, Y_test)
-                            print(
-                                f"[PS] Features de prueba recibidos del "
-                                f"Worker {wid}: {X_test.shape}\n"
-                            )
-                            break
-                    except Exception as exc:
-                        print(
-                            f"[PS] Worker {wid} falló ({exc}). "
-                            "Intentando con el siguiente..."
-                        )
-                        self._remove_worker(wid)
-                else:
-                    if X_test is not None and Y_test is not None:
-                        print(
-                            "[PS] Todos los Workers fallaron. "
-                            "Extrayendo features localmente..."
-                        )
-                        X_test, Y_test = self._cnn.prepare(
-                            X_test,
-                            Y_test,
-                            split="test",
-                            pretrain_epochs=0,
-                            verbose=True,
-                        )
-                        print(f"[PS] Features de prueba listos: {X_test.shape}\n")
+            # En E2E pedimos TEST_FEATURES solo para obtener las imágenes raw de test
+            # que usaremos para re-extraer features con la CNN actualizada cada época
+            # (FIX 5: evaluación con features actualizados)
+            if X_test is not None and Y_test is not None and X_test.ndim == 4:
+                # X_test ya son imágenes raw (4D) → las usamos directamente
+                # La re-extracción ocurre dentro del loop de épocas
+                pass
+            elif X_test is not None and Y_test is not None and X_test.ndim == 2:
+                # Llegamos con features pre-extraídos — en E2E esto es un problema
+                # porque la CNN cambia. Advertir pero continuar.
+                _logger.warn(
+                    "[E2E] X_test son features pre-extraídos (2D). "
+                    "Para evaluación correcta se necesitan imágenes raw (4D). "
+                    "La curva de prueba puede no reflejar la CNN actualizada."
+                )
 
-        # ── INICIALIZACIÓN DE PARÁMETROS ──────────────────────────────
         params = {tipo: datos.copy() for tipo, datos in initial_params.items()}
-        velocities: Dict[str, np.ndarray] = {}
         _epoch_rng = np.random.RandomState(seed)
 
         history: Dict[str, List[float]] = {
@@ -1330,12 +1197,11 @@ class ParameterServer:
         }
 
         print("=" * 70)
-        print("END-TO-END — ENTRENAMIENTO CNN + MLP DISTRIBUIDO")
+        print("END-TO-END — ENTRENAMIENTO CNN + MLP DISTRIBUIDO (FedAvg)")
         print("=" * 70)
         print(f"  Workers activos : {worker_ids}")
         print(f"  Épocas          : {epochs}")
         print(f"  Learning rate   : {learning_rate}")
-        print(f"  Momentum        : {momentum if momentum > 0 else 'desactivado'}")
         print(f"  Ejemplos train  : {n_train}")
         print("=" * 70)
 
@@ -1357,12 +1223,6 @@ class ParameterServer:
                     "worker_rank": rank,
                     "training_mode": "end_to_end",
                 }
-                _logger.ps(
-                    f"[INSTRUM] Enviando TRAIN_START a Worker {wid}",
-                    progress=f"flujo=END_TO_END | training_mode={'PRESENTE' if 'training_mode' in payload_train_start else 'AUSENTE'} | "
-                    f"training_mode={payload_train_start.get('training_mode', 'N/A')} | "
-                    f"payload_keys={list(payload_train_start.keys())}",
-                )
                 send_message(sock, MsgType.TRAIN_START, payload_train_start)
             except Exception as exc:
                 _logger.error(f"Error enviando TRAIN_START a Worker {wid}: {exc}")
@@ -1387,9 +1247,8 @@ class ParameterServer:
                         payload = msg["payload"]
                         loss = payload["loss"]
                         accuracy = payload["accuracy"]
-                        training_mode = payload.get("training_mode", "precomputed")
 
-                        # ━━━ [E2E-V2] Recibir pesos actualizados (NO gradientes) ━━━
+                        # FedAvg: recibimos pesos actualizados (no gradientes)
                         cnn_weights = payload.get("cnn_weights")
                         mlp_weights = payload.get("mlp_weights")
 
@@ -1428,39 +1287,26 @@ class ParameterServer:
 
             def _send_params_to_worker(wid: int) -> None:
                 try:
-                    # ━━━ Extraer cnn_params de estado actual ━━━
+                    # FIX 4: Enviar state_dict completo de la CNN (incluye BN buffers)
                     cnn_state = {}
                     if self._cnn is not None:
-                        for name, param in self._cnn._model.named_parameters():
-                            cnn_state[name] = param.detach().cpu().numpy()
+                        base_model = getattr(
+                            self._cnn._model, "model", self._cnn._model
+                        )
+                        for name, tensor in base_model.state_dict().items():
+                            cnn_state[name] = tensor.cpu().numpy()
 
                     send_dict = {
                         "epoch": epoch,
                         "params": params,
                         "seed": epoch_seed,
-                        "cnn_params": cnn_state,  # Obligatorio en E2E
-                        "training_mode": "end_to_end",  # [E2E-V2] Para sincronización
+                        "cnn_params": cnn_state,
+                        # FIX 3: Enviar learning_rate al Worker
+                        # (antes estaba hardcodeado en 1e-4 en el Worker)
+                        "learning_rate": learning_rate,
+                        "training_mode": "end_to_end",
                     }
-                    # [INSTRUMENTACIÓN] Log del envío de PARAMS en END-TO-END
-                    # Calcular hash de los pesos MLP (W1, b1, W2, b2, W3, b3)
-                    mlp_weights_concat = b"".join(
-                        params[key].tobytes()
-                        for key in ["W1", "b1", "W2", "b2", "W3", "b3"]
-                        if key in params
-                    )
-                    mlp_params_hash = hash(mlp_weights_concat) & ((1 << 31) - 1)
-                    cnn_keys_count = len(cnn_state) if cnn_state else 0
-                    _logger.ps(
-                        f"[INSTRUM] Enviando PARAMS a Worker {wid} | Época {epoch}",
-                        progress=f"flujo=END_TO_END | cnn_params={'PRESENTE' if cnn_state else 'AUSENTE'} | "
-                        f"cnn_keys_count={cnn_keys_count} | mlp_params_hash={mlp_params_hash} | "
-                        f"payload_keys={list(send_dict.keys())}",
-                    )
-                    send_message(
-                        self._worker_sockets[wid],
-                        MsgType.PARAMS,
-                        send_dict,
-                    )
+                    send_message(self._worker_sockets[wid], MsgType.PARAMS, send_dict)
                 except Exception as exc:
                     _logger.error(f"Error enviando PARAMS a Worker {wid}: {exc}")
                     self._remove_worker(wid)
@@ -1497,7 +1343,7 @@ class ParameterServer:
                 _logger.error("Sin pesos actualizados — todos los Workers fallaron")
                 break
 
-            # ━━━ [E2E-V2] Promediar pesos recibidos de Workers ━━━
+            # FedAvg: promediar pesos de todos los Workers
             cnn_weights_list: List[Dict[str, np.ndarray]] = [
                 g["cnn_weights"] for g in self._epoch_gradients.values()
             ]
@@ -1505,7 +1351,7 @@ class ParameterServer:
                 g["mlp_weights"] for g in self._epoch_gradients.values()
             ]
 
-            # Promediar pesos CNN
+            # FIX 4: _average_weights ahora incluye BN buffers (state_dict completo)
             averaged_cnn_weights = self._average_weights(cnn_weights_list)
             self._load_cnn_weights(averaged_cnn_weights)
 
@@ -1513,7 +1359,7 @@ class ParameterServer:
             averaged_mlp_weights = self._average_mlp_weights(mlp_weights_list)
             params.update(averaged_mlp_weights)
 
-            # Métricas
+            # Métricas de entrenamiento
             losses = [m[0] for m in self._epoch_metrics.values()]
             accuracies = [m[1] for m in self._epoch_metrics.values()]
             epoch_loss = float(np.mean(losses))
@@ -1522,15 +1368,39 @@ class ParameterServer:
             history["losses"].append(epoch_loss)
             history["accuracies"].append(epoch_acc)
 
-            # Evaluar
+            # FIX 5: Evaluación en el PS con features re-extraídos con CNN actualizada
             test_acc: Optional[float] = None
             test_loss: Optional[float] = None
             if X_test is not None and Y_test is not None:
-                test_acc, test_loss = self._evaluate(params, X_test, Y_test)
-                history["test_accuracies"].append(test_acc)
-                history["test_losses"].append(test_loss)
+                if X_test.ndim == 4:
+                    # Imágenes raw: re-extraer features con CNN actualizada
+                    # (correcto en E2E: la CNN cambia cada época)
+                    if self._cnn is not None:
+                        try:
+                            self._cnn._model.eval()
+                            X_test_feat = self._cnn.extract_batched(
+                                X_test, batch_size=512, verbose=False
+                            )
+                            test_acc, test_loss = self._evaluate(
+                                params, X_test_feat, Y_test
+                            )
+                        except Exception as exc:
+                            _logger.warn(
+                                f"Error extrayendo features test en época {epoch}: {exc}"
+                            )
+                    else:
+                        _logger.warn(
+                            "[E2E] CNN no configurada en PS; no se puede evaluar X_test 4D"
+                        )
+                else:
+                    # Features pre-extraídos (2D) — evaluar directamente
+                    # (menos preciso en E2E pero funcional)
+                    test_acc, test_loss = self._evaluate(params, X_test, Y_test)
 
-            elapsed = time.perf_counter() - t_start
+                if test_acc is not None and test_loss is not None:
+                    history["test_accuracies"].append(test_acc)
+                    history["test_losses"].append(test_loss)
+
             progress = f"{epoch}/{epochs}"
             if test_acc is not None:
                 metric = f"train_acc={epoch_acc:.2f}% | test_acc={test_acc:.2f}% | pérdida={epoch_loss:.4f}"
@@ -1548,16 +1418,19 @@ class ParameterServer:
         return history
 
     # ================================================================
-    # [E2E-V2] HELPERS PARA WEIGHT AVERAGING
+    # [E2E-V2] HELPERS PARA WEIGHT AVERAGING — CON FIXES
     # ================================================================
 
     def _average_weights(
         self, weights_list: List[Dict[str, np.ndarray]]
     ) -> Dict[str, np.ndarray]:
         """
-        Promedia pesos CNN recibidos de todos los Workers.
+        FIX 4: Promedia TODOS los tensores del state_dict (parámetros + buffers BN).
 
-        Implementa: W_global = (1/N) * Σ W_local
+        Antes solo se promediaban named_parameters(), que excluía running_mean,
+        running_var y num_batches_tracked de BatchNorm → BN desincronizado.
+
+        Ahora se promedia todo lo que venga en el dict, incluyendo buffers BN.
         """
         if not weights_list:
             return {}
@@ -1572,54 +1445,55 @@ class ParameterServer:
         self, weights_list: List[Dict[str, np.ndarray]]
     ) -> Dict[str, np.ndarray]:
         """
-        Promedia pesos MLP recibidos de Workers.
+        Promedia pesos MLP y convierte de formato PyTorch a NumPy MLP.
 
-        Los weights llegan como:
-        - fc1.weight, fc2.weight, etc. (transpuestos desde PyTorch)
-        - Necesitan convertirse a formato NumPy MLP
-        - fc1.weight (hidden1, feature_dim) → W1 (feature_dim, hidden1)
+        Los weights llegan con doble transpose (Worker .T + PS .T se cancelan):
+        - fc1.weight worker envía (512, 256) → PS recibe (512, 256) → .T → (256, 512) = W1 ✓
         """
         if not weights_list:
             return {}
 
-        # El formato MLP NumPy es: W1, b1, W2, b2, W3, b3
-        # Pero los PyTorch weights vienen como fc1.weight, fc1.bias, etc.
-        # Promediar primero en formato PyTorch, luego convertir
-
-        mlp_weights: Dict[str, np.ndarray] = {}
-
-        # Promediar fc1.weight, fc1.bias, etc.
         averaged_pytorch = {}
         for key in weights_list[0].keys():
             stacked = np.array([w.get(key, np.zeros(1)) for w in weights_list])
             averaged_pytorch[key] = np.mean(stacked, axis=0)
 
-        # Convertir PyTorch format → NumPy MLP format
-        # fc1.weight es (hidden1, feature_dim), W1 debe ser (feature_dim, hidden1)
-        mlp_weights["W1"] = averaged_pytorch["fc1.weight"].T
-        mlp_weights["b1"] = averaged_pytorch["fc1.bias"]
-        mlp_weights["W2"] = averaged_pytorch["fc2.weight"].T
-        mlp_weights["b2"] = averaged_pytorch["fc2.bias"]
-        mlp_weights["W3"] = averaged_pytorch["fc3.weight"].T
-        mlp_weights["b3"] = averaged_pytorch["fc3.bias"]
-
+        # Convertir de formato PyTorch (fc1.weight, etc.) a NumPy MLP (W1, b1, etc.)
+        # El Worker envía con .T, así que aquí el .T vuelve a la orientación original
+        mlp_weights = {
+            "W1": averaged_pytorch["fc1.weight"].T,  # (512,256).T = (256,512) ✓
+            "b1": averaged_pytorch["fc1.bias"],
+            "W2": averaged_pytorch["fc2.weight"].T,  # (256,128).T = (128,256) ✓
+            "b2": averaged_pytorch["fc2.bias"],
+            "W3": averaged_pytorch["fc3.weight"].T,  # (128,10).T  = (10,128)  ✓
+            "b3": averaged_pytorch["fc3.bias"],
+        }
         return mlp_weights
 
     def _load_cnn_weights(self, weights_dict: Dict[str, np.ndarray]) -> None:
         """
-        Carga pesos CNN promediados en el modelo torch del PS.
+        FIX 4: Carga TODOS los tensores del state_dict en el modelo CNN del PS.
 
-        :param weights_dict: Dict con pesos CNN (compatibles con CNN._model)
+        Antes usaba named_parameters() → excluía buffers BN.
+        Ahora usa load_state_dict() que carga todo correctamente.
         """
         if self._cnn is None or not weights_dict:
             return
 
         base_model = getattr(self._cnn._model, "model", self._cnn._model)
+        current_sd = base_model.state_dict()
+
         with torch.no_grad():
-            for name, param in base_model.named_parameters():
-                if name in weights_dict:
-                    tensor = torch.from_numpy(weights_dict[name]).to(param.device)
-                    param.data.copy_(tensor)
+            for name, arr in weights_dict.items():
+                if name in current_sd:
+                    current_sd[name] = (
+                        torch.from_numpy(arr)
+                        .to(current_sd[name].device)
+                        .to(current_sd[name].dtype)
+                    )
+
+        # load_state_dict carga params + buffers BN en un solo paso
+        base_model.load_state_dict(current_sd)
 
     # ================================================================
     # HELPERS INTERNOS
@@ -1682,7 +1556,7 @@ class ParameterServer:
     def _average_gradients(
         self, gradients_list: List[Dict[str, np.ndarray]]
     ) -> Dict[str, np.ndarray]:
-        """∇θ = (1/N) * Σᵢ ∇θ L(Bᵢ)"""
+        """∇θ = (1/N) * Σᵢ ∇θ L(Bᵢ) — solo usado en PRECOMPUTED"""
         averaged: Dict[str, np.ndarray] = {}
         for key in gradients_list[0]:
             stacked = np.array([g[key] for g in gradients_list])

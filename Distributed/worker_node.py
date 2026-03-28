@@ -460,9 +460,7 @@ class WorkerNode:
                 X_feat = np.load(cache_X_path, allow_pickle=False)
                 Y_cached = np.load(cache_Y_path, allow_pickle=False)
 
-                # Validar shape exacto según el split
-                expected_n_samples = n_samples  # Debe coincidir con lo que pasamos
-                if X_feat.shape == (expected_n_samples, expected_feature_dim):
+                if X_feat.shape == (n_samples, expected_feature_dim):
                     split_upper = split.upper()
                     self._log(
                         f"[CACHE HIT][{split_upper}] Features cargados desde caché "
@@ -474,7 +472,7 @@ class WorkerNode:
                     # Shape inválido → regenerar
                     self._log(
                         f"[SHAPE INVALID][{split.upper()}] Caché tiene shape {X_feat.shape}, "
-                        f"pero esperamos ({expected_n_samples}, {expected_feature_dim}). "
+                        f"pero esperamos ({n_samples}, {expected_feature_dim}). "
                         f"Regenerando features..."
                     )
 
@@ -837,6 +835,10 @@ class WorkerNode:
                     "[E2E] Recibí None para cnn_params pero son obligatorios en E2E"
                 )
 
+            # ─ LEER LR DEL PAYLOAD (FIX 2: antes era 1e-4 hardcodeado) ─
+            # El PS envía la LR configurada por el usuario en la GUI
+            learning_rate = payload.get("learning_rate", 1e-3)
+
             # ─ INICIALIZAR MLP EN PYTORCH ─
             # Se recrea cada época con los pesos del PS (ensures sincronización)
             mlp = MLPPyTorch(
@@ -846,9 +848,9 @@ class WorkerNode:
                 n_classes=10,
             ).to(self._cnn.device)
 
-            # Cargar pesos MLP desde NumPy
+            # Cargar pesos MLP desde NumPy (formato mlp.py → PyTorch)
             mlp_state = {}
-            
+
             # W1: debe ser (hidden1=256, feature_dim=512) para fc1.weight en PyTorch
             W1_np = mlp_params["W1"]
             if W1_np.shape == (self.hidden1, self._cnn.feature_dim):
@@ -857,9 +859,9 @@ class WorkerNode:
                 mlp_state["fc1.weight"] = torch.from_numpy(W1_np.T)
             else:
                 raise ValueError(f"W1 shape {W1_np.shape} invalida")
-            
+
             mlp_state["fc1.bias"] = torch.from_numpy(mlp_params["b1"])
-            
+
             # W2: debe ser (hidden2=128, hidden1=256) para fc2.weight en PyTorch
             W2_np = mlp_params["W2"]
             if W2_np.shape == (self.hidden2, self.hidden1):
@@ -868,9 +870,9 @@ class WorkerNode:
                 mlp_state["fc2.weight"] = torch.from_numpy(W2_np.T)
             else:
                 raise ValueError(f"W2 shape {W2_np.shape} invalida")
-            
+
             mlp_state["fc2.bias"] = torch.from_numpy(mlp_params["b2"])
-            
+
             # W3: debe ser (n_classes=10, hidden2=128) para fc3.weight en PyTorch
             W3_np = mlp_params["W3"]
             if W3_np.shape == (10, self.hidden2):
@@ -879,7 +881,7 @@ class WorkerNode:
                 mlp_state["fc3.weight"] = torch.from_numpy(W3_np.T)
             else:
                 raise ValueError(f"W3 shape {W3_np.shape} invalida")
-            
+
             mlp_state["fc3.bias"] = torch.from_numpy(mlp_params["b3"])
 
             for name, param in mlp.named_parameters():
@@ -887,13 +889,19 @@ class WorkerNode:
                     param.data = mlp_state[name].to(param.device).to(torch.float32)
 
             # ─ SINCRONIZAR CNN CON PESOS GLOBALES ─
+            # cnn_params viene del PS como state_dict (incluye BN buffers)
             base_model = getattr(self._cnn._model, "model", self._cnn._model)
             with torch.no_grad():
-                for name, param in base_model.named_parameters():
-                    if name in cnn_params:
-                        numpy_weight = cnn_params[name]
-                        tensor_weight = torch.from_numpy(numpy_weight).to(param.device)
-                        param.data.copy_(tensor_weight)
+                # Cargar state_dict completo (parámetros + buffers BN)
+                current_sd = base_model.state_dict()
+                for name, arr in cnn_params.items():
+                    if name in current_sd:
+                        current_sd[name] = (
+                            torch.from_numpy(arr)
+                            .to(current_sd[name].device)
+                            .to(current_sd[name].dtype)
+                        )
+                base_model.load_state_dict(current_sd)
 
             # ─ PERMITIR GRADIENTES ─
             self._cnn._model.train()
@@ -909,12 +917,11 @@ class WorkerNode:
 
             self._log(
                 f"[E2E-V2] Entrenamiento local: {n_total} ejemplos en {n_batches} "
-                f"mini-batches (size={mini_bs})..."
+                f"mini-batches (size={mini_bs}, lr={learning_rate:.2e})..."
             )
 
             accumulated_losses = []
             accumulated_accs = []
-            learning_rate = 1e-4  # Fixed local learning rate
 
             # ── LOOP DE MINI-BATCHES CON SGD LOCAL ──
             for batch_idx in range(n_batches):
@@ -932,21 +939,19 @@ class WorkerNode:
                 X_mini_torch = torch.from_numpy(X_mini).to(self._cnn.device)
                 Y_mini_torch = torch.from_numpy(Y_mini).to(self._cnn.device)
 
-                # CNN forward
+                # Forward: CNN → features → MLP → logits
                 features = self._cnn._model(X_mini_torch)
-
-                # MLP forward (PyTorch)
                 logits = mlp(features)
 
-                # Cross-entropy loss
-                loss = torch.nn.functional.cross_entropy(logits, Y_mini_torch)
+                # Loss
+                loss_tensor = torch.nn.functional.cross_entropy(logits, Y_mini_torch)
 
-                # Backward: True gradients via autograd
+                # Backward
                 self._cnn._model.zero_grad()
                 mlp.zero_grad()
-                loss.backward()
+                loss_tensor.backward()
 
-                # Local SGD update (in-place)
+                # Local SGD update
                 with torch.no_grad():
                     for param in self._cnn._model.parameters():
                         if param.grad is not None:
@@ -956,22 +961,27 @@ class WorkerNode:
                         if param.grad is not None:
                             param.data -= learning_rate * param.grad
 
-                # Accumulate metrics
                 with torch.no_grad():
                     preds = torch.argmax(logits, dim=1)
                     correct = (preds == Y_mini_torch).float().mean()
-                    accumulated_losses.append(loss.item())
+                    accumulated_losses.append(loss_tensor.item())
                     accumulated_accs.append(100.0 * correct.item())
 
-            # ─ PESOS ACTUALIZADOS DESPUÉS DEL ENTRENAMIENTO LOCAL ─
+            # ─ FIX 1: PESOS CNN via state_dict (incluye BN running stats) ─
+            # ANTES era:
+            #   for name, param in base_model.named_parameters():
+            #       updated_cnn_weights[name] = param.data.cpu().numpy()
+            # named_parameters() excluye running_mean, running_var → BN desincronizado
+            #
+            # AHORA: state_dict() incluye TODO (params entrenables + buffers BN)
             updated_cnn_weights = {}
-            for name, param in base_model.named_parameters():
-                updated_cnn_weights[name] = param.data.cpu().numpy()
+            for name, tensor in base_model.state_dict().items():
+                updated_cnn_weights[name] = tensor.cpu().numpy()
 
+            # Pesos MLP actualizados (sin cambio — transpose es consistente)
             updated_mlp_weights = {}
             for name, param in mlp.named_parameters():
                 np_weight = param.data.cpu().numpy()
-                # Revertir transpose para compatibilidad NumPy (se hace en inverso)
                 if "weight" in name:
                     np_weight = np_weight.T
                 updated_mlp_weights[name] = np_weight
@@ -979,7 +989,7 @@ class WorkerNode:
             loss = float(np.mean(accumulated_losses))
             accuracy = float(np.mean(accumulated_accs))
 
-            # ─ RESTAURAR CNN A EVAL MODE (para consistencia con precomputed) ─
+            # Restaurar CNN a eval mode
             self._cnn._model.eval()
             for param in self._cnn._model.parameters():
                 param.requires_grad_(False)
@@ -1003,7 +1013,7 @@ class WorkerNode:
             payload_send["gradients"] = gradients
             payload_send["cnn_gradients"] = None
         else:
-            # E2E: enviar pesos actualizados (NO gradientes)
+            # E2E: enviar pesos actualizados (FedAvg)
             payload_send["cnn_weights"] = updated_cnn_weights
             payload_send["mlp_weights"] = updated_mlp_weights
 
