@@ -848,11 +848,38 @@ class WorkerNode:
 
             # Cargar pesos MLP desde NumPy
             mlp_state = {}
-            mlp_state["fc1.weight"] = torch.from_numpy(mlp_params["W1"].T)
+            
+            # W1: debe ser (hidden1=256, feature_dim=512) para fc1.weight en PyTorch
+            W1_np = mlp_params["W1"]
+            if W1_np.shape == (self.hidden1, self._cnn.feature_dim):
+                mlp_state["fc1.weight"] = torch.from_numpy(W1_np)
+            elif W1_np.shape == (self._cnn.feature_dim, self.hidden1):
+                mlp_state["fc1.weight"] = torch.from_numpy(W1_np.T)
+            else:
+                raise ValueError(f"W1 shape {W1_np.shape} invalida")
+            
             mlp_state["fc1.bias"] = torch.from_numpy(mlp_params["b1"])
-            mlp_state["fc2.weight"] = torch.from_numpy(mlp_params["W2"].T)
+            
+            # W2: debe ser (hidden2=128, hidden1=256) para fc2.weight en PyTorch
+            W2_np = mlp_params["W2"]
+            if W2_np.shape == (self.hidden2, self.hidden1):
+                mlp_state["fc2.weight"] = torch.from_numpy(W2_np)
+            elif W2_np.shape == (self.hidden1, self.hidden2):
+                mlp_state["fc2.weight"] = torch.from_numpy(W2_np.T)
+            else:
+                raise ValueError(f"W2 shape {W2_np.shape} invalida")
+            
             mlp_state["fc2.bias"] = torch.from_numpy(mlp_params["b2"])
-            mlp_state["fc3.weight"] = torch.from_numpy(mlp_params["W3"].T)
+            
+            # W3: debe ser (n_classes=10, hidden2=128) para fc3.weight en PyTorch
+            W3_np = mlp_params["W3"]
+            if W3_np.shape == (10, self.hidden2):
+                mlp_state["fc3.weight"] = torch.from_numpy(W3_np)
+            elif W3_np.shape == (self.hidden2, 10):
+                mlp_state["fc3.weight"] = torch.from_numpy(W3_np.T)
+            else:
+                raise ValueError(f"W3 shape {W3_np.shape} invalida")
+            
             mlp_state["fc3.bias"] = torch.from_numpy(mlp_params["b3"])
 
             for name, param in mlp.named_parameters():
