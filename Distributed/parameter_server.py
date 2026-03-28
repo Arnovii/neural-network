@@ -1387,22 +1387,26 @@ class ParameterServer:
                         payload = msg["payload"]
                         loss = payload["loss"]
                         accuracy = payload["accuracy"]
+                        training_mode = payload.get("training_mode", "precomputed")
 
-                        # ━━━ VALIDACIÓN: En E2E, SIEMPRE debe haber cnn_gradients ━━━
-                        cnn_grads = payload.get("cnn_gradients")
-                        if cnn_grads is None:
+                        # ━━━ [E2E-V2] Recibir pesos actualizados (NO gradientes) ━━━
+                        cnn_weights = payload.get("cnn_weights")
+                        mlp_weights = payload.get("mlp_weights")
+
+                        if cnn_weights is None or mlp_weights is None:
                             _logger.error(
-                                f"[VALIDACIÓN E2E] Worker {wid} NO envió "
-                                f"cnn_gradients pero son obligatorios en E2E"
+                                f"[E2E-V2] Worker {wid} NO envió pesos "
+                                f"(cnn_weights={cnn_weights is not None}, "
+                                f"mlp_weights={mlp_weights is not None})"
                             )
                             raise RuntimeError(
-                                f"Worker {wid}: cnn_gradients obligatorio en E2E"
+                                f"Worker {wid}: pesos CNN y MLP obligatorios en E2E-V2"
                             )
 
                         with self._lock:
                             self._epoch_gradients[wid] = {
-                                "mlp": payload["gradients"],
-                                "cnn": cnn_grads,
+                                "cnn_weights": cnn_weights,
+                                "mlp_weights": mlp_weights,
                             }
                             self._epoch_metrics[wid] = (loss, accuracy)
                             received_count[0] += 1
@@ -1435,6 +1439,7 @@ class ParameterServer:
                         "params": params,
                         "seed": epoch_seed,
                         "cnn_params": cnn_state,  # Obligatorio en E2E
+                        "training_mode": "end_to_end",  # [E2E-V2] Para sincronización
                     }
                     # [INSTRUMENTACIÓN] Log del envío de PARAMS en END-TO-END
                     # Calcular hash de los pesos MLP (W1, b1, W2, b2, W3, b3)
@@ -1489,34 +1494,24 @@ class ParameterServer:
                 t.join()
 
             if not self._epoch_gradients:
-                _logger.error("Sin gradientes — todos los Workers fallaron")
+                _logger.error("Sin pesos actualizados — todos los Workers fallaron")
                 break
 
-            # ━━━ Procesar gradientes MLP + CNN (ambos obligatorios) ━━━
-            mlp_grads_list: List[Dict[str, np.ndarray]] = [
-                g["mlp"] for g in self._epoch_gradients.values()
+            # ━━━ [E2E-V2] Promediar pesos recibidos de Workers ━━━
+            cnn_weights_list: List[Dict[str, np.ndarray]] = [
+                g["cnn_weights"] for g in self._epoch_gradients.values()
             ]
-            cnn_grads_list: List[Dict[str, np.ndarray]] = [
-                g["cnn"]
-                for g in self._epoch_gradients.values()
-                if g.get("cnn") is not None
+            mlp_weights_list: List[Dict[str, np.ndarray]] = [
+                g["mlp_weights"] for g in self._epoch_gradients.values()
             ]
 
-            # Validación: en E2E, SIEMPRE debe haber cnn_grads
-            if not cnn_grads_list:
-                _logger.error(
-                    "[VALIDACIÓN E2E] No se recibieron gradientes CNN de ningún Worker"
-                )
-                raise RuntimeError("E2E requiere cnn_gradients de todos los Workers")
+            # Promediar pesos CNN
+            averaged_cnn_weights = self._average_weights(cnn_weights_list)
+            self._load_cnn_weights(averaged_cnn_weights)
 
-            # Actualizar MLP
-            avg_mlp_grads = self._average_gradients(mlp_grads_list)
-            self._apply_gradients(
-                params, avg_mlp_grads, learning_rate, momentum, velocities
-            )
-
-            # Actualizar CNN (invariante [R2.1])
-            self._apply_cnn_gradients(cnn_grads_list, learning_rate)
+            # Promediar y cargar pesos MLP
+            averaged_mlp_weights = self._average_mlp_weights(mlp_weights_list)
+            params.update(averaged_mlp_weights)
 
             # Métricas
             losses = [m[0] for m in self._epoch_metrics.values()]
@@ -1551,6 +1546,80 @@ class ParameterServer:
         _logger.ps("Entrenamiento END-TO-END completado")
         self._active_training_workers = None
         return history
+
+    # ================================================================
+    # [E2E-V2] HELPERS PARA WEIGHT AVERAGING
+    # ================================================================
+
+    def _average_weights(
+        self, weights_list: List[Dict[str, np.ndarray]]
+    ) -> Dict[str, np.ndarray]:
+        """
+        Promedia pesos CNN recibidos de todos los Workers.
+
+        Implementa: W_global = (1/N) * Σ W_local
+        """
+        if not weights_list:
+            return {}
+
+        averaged: Dict[str, np.ndarray] = {}
+        for key in weights_list[0].keys():
+            stacked = np.array([w.get(key, np.zeros(1)) for w in weights_list])
+            averaged[key] = np.mean(stacked, axis=0)
+        return averaged
+
+    def _average_mlp_weights(
+        self, weights_list: List[Dict[str, np.ndarray]]
+    ) -> Dict[str, np.ndarray]:
+        """
+        Promedia pesos MLP recibidos de Workers.
+
+        Los weights llegan como:
+        - fc1.weight, fc2.weight, etc. (transpuestos desde PyTorch)
+        - Necesitan convertirse a formato NumPy MLP
+        - fc1.weight (hidden1, feature_dim) → W1 (feature_dim, hidden1)
+        """
+        if not weights_list:
+            return {}
+
+        # El formato MLP NumPy es: W1, b1, W2, b2, W3, b3
+        # Pero los PyTorch weights vienen como fc1.weight, fc1.bias, etc.
+        # Promediar primero en formato PyTorch, luego convertir
+
+        mlp_weights: Dict[str, np.ndarray] = {}
+
+        # Promediar fc1.weight, fc1.bias, etc.
+        averaged_pytorch = {}
+        for key in weights_list[0].keys():
+            stacked = np.array([w.get(key, np.zeros(1)) for w in weights_list])
+            averaged_pytorch[key] = np.mean(stacked, axis=0)
+
+        # Convertir PyTorch format → NumPy MLP format
+        # fc1.weight es (hidden1, feature_dim), W1 debe ser (feature_dim, hidden1)
+        mlp_weights["W1"] = averaged_pytorch["fc1.weight"].T
+        mlp_weights["b1"] = averaged_pytorch["fc1.bias"]
+        mlp_weights["W2"] = averaged_pytorch["fc2.weight"].T
+        mlp_weights["b2"] = averaged_pytorch["fc2.bias"]
+        mlp_weights["W3"] = averaged_pytorch["fc3.weight"].T
+        mlp_weights["b3"] = averaged_pytorch["fc3.bias"]
+
+        return mlp_weights
+
+    def _load_cnn_weights(self, weights_dict: Dict[str, np.ndarray]) -> None:
+        """
+        Carga pesos CNN promediados en el modelo torch del PS.
+
+        :param weights_dict: Dict con pesos CNN (compatibles con CNN._model)
+        """
+        if self._cnn is None or not weights_dict:
+            return
+
+        base_model = getattr(self._cnn._model, "model", self._cnn._model)
+        with torch.no_grad():
+            for name, param in base_model.named_parameters():
+                if name in weights_dict:
+                    tensor = torch.from_numpy(weights_dict[name]).to(param.device)
+                    param.data.copy_(tensor)
 
     # ================================================================
     # HELPERS INTERNOS

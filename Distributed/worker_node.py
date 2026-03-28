@@ -53,6 +53,7 @@ import time
 from typing import Any, Dict, List, Optional
 
 import numpy as np
+import torch
 
 from Distributed.protocol import MsgType, receive_message, send_message
 from Model.cnn_extractor import CNNExtractor
@@ -758,9 +759,6 @@ class WorkerNode:
         :param n_workers:   Número de Workers en sesión
         :param worker_rank: Índice de este Worker (0-based)
         """
-        import torch
-        from Model.mlp import mlp_backward_to_input
-
         epoch = payload["epoch"]
         mlp_params = payload["params"]
         seed = payload["seed"]
@@ -779,6 +777,12 @@ class WorkerNode:
         self._log(f"Época {epoch} — {len(indices)} ejemplos")
 
         t_start = time.perf_counter()
+
+        # Initialize variables for each training mode (ensures Pylance knows they're defined)
+        gradients: dict | None = None
+        cnn_gradients: dict | None = None
+        updated_cnn_weights: dict = {}
+        updated_mlp_weights: dict = {}
 
         # ════════════════════════════════════════════════════════════════
         # RAMA 1: PRECOMPUTED — MLP DISTRIBUIDO, CNN FIJA
@@ -815,170 +819,140 @@ class WorkerNode:
             cnn_gradients = None
 
         # ════════════════════════════════════════════════════════════════
-        # RAMA 2: END-TO-END — CNN + MLP CONJUNTAMENTE CON MINI-BATCHING
+        # RAMA 2: END-TO-END (V2) — ENTRENAMIENTO LOCAL CON PYTORCH
         # ════════════════════════════════════════════════════════════════
         else:  # end_to_end
-            # [INSTRUMENTACIÓN] Log cuando entra a rama END-TO-END
-            cnn_has_grad = any(p.requires_grad for p in self._cnn._model.parameters())
+            from Model.mlp_pytorch import MLPPyTorch
+
+            # [INSTRUMENTACIÓN]
             _logger.worker(
-                f"[INSTRUM] EJECUTANDO RAMA END-TO-END | Época {epoch}",
-                progress=f"cnn_params_recibido={'SÍ (correcto)' if cnn_params is not None else 'NO (ERROR!)'} | "
-                f"cnn_requires_grad_ANTES={cnn_has_grad} | "
-                f"features_shape={self._X_features.shape}",
+                f"[INSTRUM] EJECUTANDO RAMA END-TO-END (V2) | Época {epoch}",
+                progress=f"cnn_params_recibido={'SÍ' if cnn_params is not None else 'NO'} | "
+                f"training_mode={self.training_mode}",
             )
 
-            # Validación [R2.4]: DEBE haber cnn_params en E2E
+            # Validación: DEBE haber cnn_params en E2E
             if cnn_params is None:
                 raise RuntimeError(
-                    "[VALIDACIÓN E2E] NO recibí cnn_params pero SON "
-                    "obligatorios en end_to_end (invariante [R2.4])"
+                    "[E2E] Recibí None para cnn_params pero son obligatorios en E2E"
                 )
 
-            # ✓ CRÍTICO: Sincronizar pesos CNN con el PS antes del forward
-            # El PS aplica gradientes promediados de TODOS los Workers y
-            # devuelve los pesos globales actualizados en cada época.
-            # Sin esto, cada Worker usa sus propios pesos locales y la
-            # CNN nunca converge porque cada Worker diverge por separado.
-            import torch as _torch
+            # ─ INICIALIZAR MLP EN PYTORCH ─
+            # Se recrea cada época con los pesos del PS (ensures sincronización)
+            mlp = MLPPyTorch(
+                feature_dim=self._cnn.feature_dim,
+                hidden1=self.hidden1,
+                hidden2=self.hidden2,
+                n_classes=10,
+            ).to(self._cnn.device)
 
+            # Cargar pesos MLP desde NumPy
+            mlp_state = {}
+            mlp_state["fc1.weight"] = torch.from_numpy(mlp_params["W1"].T)
+            mlp_state["fc1.bias"] = torch.from_numpy(mlp_params["b1"])
+            mlp_state["fc2.weight"] = torch.from_numpy(mlp_params["W2"].T)
+            mlp_state["fc2.bias"] = torch.from_numpy(mlp_params["b2"])
+            mlp_state["fc3.weight"] = torch.from_numpy(mlp_params["W3"].T)
+            mlp_state["fc3.bias"] = torch.from_numpy(mlp_params["b3"])
+
+            for name, param in mlp.named_parameters():
+                if name in mlp_state:
+                    param.data = mlp_state[name].to(param.device).to(torch.float32)
+
+            # ─ SINCRONIZAR CNN CON PESOS GLOBALES ─
             base_model = getattr(self._cnn._model, "model", self._cnn._model)
-            with _torch.no_grad():
+            with torch.no_grad():
                 for name, param in base_model.named_parameters():
                     if name in cnn_params:
-                        param.data.copy_(
-                            _torch.from_numpy(cnn_params[name]).to(param.device)
-                        )
+                        numpy_weight = cnn_params[name]
+                        tensor_weight = torch.from_numpy(numpy_weight).to(param.device)
+                        param.data.copy_(tensor_weight)
 
-            # ✓ CRÍTICO: Habilitar gradientes en la CNN para mode entrenamiento
-            # [R2.1] La CNN fue inicializada con requires_grad=False (modo precomputed).
-            # En end_to_end, necesitamos entrenar la CNN, así que:
-            # 1. Cambiar modelo a train() — BatchNorm diferenciable, Dropout activo
-            # 2. Habilitar requires_grad en todos los parámetros — computation graph activo
+            # ─ PERMITIR GRADIENTES ─
             self._cnn._model.train()
             for param in self._cnn._model.parameters():
                 param.requires_grad_(True)
+            mlp.train()
 
-            # ─ MINI-BATCHING ─
-            # Forward+backward de CNN es 2-3× más caro que solo forward.
-            # Usar _optimal_batch_size() calculado para forward, dividir entre 2.5
-            # para acomodar backward + acumulación sin congelamiento.
+            # ─ MINI-BATCHING ADAPTATIVO ─
             base_opt_bs = self._optimal_batch_size()
             mini_bs = max(16, int(base_opt_bs / 2.5))
             n_total = len(indices)
             n_batches = (n_total + mini_bs - 1) // mini_bs
 
             self._log(
-                f"[END-TO-END] Procesando {n_total} ejemplos en {n_batches} "
+                f"[E2E-V2] Entrenamiento local: {n_total} ejemplos en {n_batches} "
                 f"mini-batches (size={mini_bs})..."
             )
 
-            # Acumuladores para gradientes, loss, accuracy
-            # Se promediarán al final de todos los mini-batches
-            accumulated_mlp_grads: List[Dict[str, np.ndarray]] = []
-            accumulated_cnn_grads: Dict[str, np.ndarray] = {}
-            accumulated_losses: List[float] = []
-            accumulated_accs: List[float] = []
+            accumulated_losses = []
+            accumulated_accs = []
+            learning_rate = 1e-4  # Fixed local learning rate
 
-            # ── LOOP DE MINI-BATCHES ──────────────────────────────────────
+            # ── LOOP DE MINI-BATCHES CON SGD LOCAL ──
             for batch_idx in range(n_batches):
                 start_idx = batch_idx * mini_bs
                 end_idx = min(start_idx + mini_bs, n_total)
                 mini_indices = indices[start_idx:end_idx]
 
-                X_mini = self._X_raw[mini_indices]
-                Y_mini = self._Y_raw[mini_indices]
+                X_mini = self._X_raw[mini_indices].astype(np.float32)
+                Y_mini = self._Y_raw[mini_indices].astype(np.int64)
 
-                if batch_idx % max(1, n_batches // 5) == 0:  # Log cada 20%
-                    self._log(
-                        f"  [END-TO-END] Batch {batch_idx + 1}/{n_batches}  "
-                        f"size={len(mini_indices)}"
-                    )
+                if batch_idx % max(1, n_batches // 5) == 0:
+                    self._log(f"  Batch {batch_idx + 1}/{n_batches}")
 
-                # ─ Forward CNN (PyTorch) en modo gradiente ─
+                # Forward: X → CNN → Features → MLP → Logits → Loss
                 X_mini_torch = torch.from_numpy(X_mini).to(self._cnn.device)
-                with torch.enable_grad():
-                    features_torch = self._cnn._model(X_mini_torch)
-                    features = features_torch.detach().cpu().numpy()
+                Y_mini_torch = torch.from_numpy(Y_mini).to(self._cnn.device)
 
-                # ─ Backward MLP para obtener ∇L/∂features ─
-                dX_mini, mlp_grads_mini, loss_mini, acc_mini = mlp_backward_to_input(
-                    mlp_params, features, Y_mini
-                )
+                # CNN forward
+                features = self._cnn._model(X_mini_torch)
 
-                accumulated_mlp_grads.append(mlp_grads_mini)
-                accumulated_losses.append(loss_mini)
-                accumulated_accs.append(acc_mini)
+                # MLP forward (PyTorch)
+                logits = mlp(features)
 
-                # ─ Backward CNN usando proxy loss ─
-                # Recalcular forward en modo gradiente para backward
-                # (forward anterior fue .detach(), no propagaba gradientes)
-                self._cnn._model.zero_grad()  # Limpiar gradientes previos
+                # Cross-entropy loss
+                loss = torch.nn.functional.cross_entropy(logits, Y_mini_torch)
 
-                X_mini_torch = torch.from_numpy(X_mini).to(self._cnn.device)
+                # Backward: True gradients via autograd
+                self._cnn._model.zero_grad()
+                mlp.zero_grad()
+                loss.backward()
 
-                # ✓ CRÍTICO: torch.enable_grad() para construir el computation graph
-                # Sin esto, PyTorch no rastreará operaciones y .backward() fallará
-                with torch.enable_grad():
-                    features_torch = self._cnn._model(X_mini_torch)
+                # Local SGD update (in-place)
+                with torch.no_grad():
+                    for param in self._cnn._model.parameters():
+                        if param.grad is not None:
+                            param.data -= learning_rate * param.grad
 
-                    # ━━━ PROXY LOSS ━━━
-                    # dX_mini es ∂L/∂features, shape (N, D)
-                    # features_torch es features, shape (N, D)
-                    # Proxy loss = Σ(features_torch * dX_mini) / N
-                    # ⚠️ NO transponer dX_mini — ya está en forma correcta
-                    loss_proxy = (
-                        features_torch
-                        * torch.from_numpy(dX_mini / len(Y_mini)).to(self._cnn.device)
-                    ).sum()
+                    for param in mlp.parameters():
+                        if param.grad is not None:
+                            param.data -= learning_rate * param.grad
 
-                    loss_proxy.backward()
+                # Accumulate metrics
+                with torch.no_grad():
+                    preds = torch.argmax(logits, dim=1)
+                    correct = (preds == Y_mini_torch).float().mean()
+                    accumulated_losses.append(loss.item())
+                    accumulated_accs.append(100.0 * correct.item())
 
-                # ━━━ VALIDACIONES DE SHAPES ━━━
-                # [DEBUG] Detectar mismatches temprano
-                assert features_torch.shape[0] == len(Y_mini), (
-                    f"[E2E] features batch size {features_torch.shape[0]} != Y size {len(Y_mini)}"
-                )
-                assert dX_mini.shape == (len(Y_mini), 512), (
-                    f"[E2E] dX_mini shape {dX_mini.shape} != expected ({len(Y_mini)}, 512)"
-                )
-                assert features_torch.shape == dX_mini.shape, (
-                    f"[E2E] features_torch {features_torch.shape} != dX_mini {dX_mini.shape}"
-                )
+            # ─ PESOS ACTUALIZADOS DESPUÉS DEL ENTRENAMIENTO LOCAL ─
+            updated_cnn_weights = {}
+            for name, param in base_model.named_parameters():
+                updated_cnn_weights[name] = param.data.cpu().numpy()
 
-                # Extraer y acumular gradientes CNN (SIN normalizar aquí)
-                # [R2.1] CNN se actualiza acumulando gradientes de mini-batches
-                # Se normalizarán al final por n_total
-                for name, param in self._cnn._model.named_parameters():
-                    if param.grad is not None:
-                        grad_np = param.grad.detach().cpu().numpy()
-                        if name not in accumulated_cnn_grads:
-                            accumulated_cnn_grads[name] = grad_np.copy()
-                        else:
-                            accumulated_cnn_grads[name] += grad_np
+            updated_mlp_weights = {}
+            for name, param in mlp.named_parameters():
+                np_weight = param.data.cpu().numpy()
+                # Revertir transpose para compatibilidad NumPy (se hace en inverso)
+                if "weight" in name:
+                    np_weight = np_weight.T
+                updated_mlp_weights[name] = np_weight
 
-            # ── PROMEDIADO FINAL ──────────────────────────────────────────
-            # Promediar gradientes MLP
-            gradients = {}
-            for key in accumulated_mlp_grads[0].keys():
-                gradients[key] = np.mean(
-                    [g[key] for g in accumulated_mlp_grads], axis=0
-                )
-
-            # Normalizar gradientes CNN por número TOTAL de ejemplos (no por n_batches)
-            # Esto es matemáticamente correcto: suma(gradientes) / n_total
-            cnn_gradients = {
-                name: grad / n_total for name, grad in accumulated_cnn_grads.items()
-            }
-
-            # Promediar loss y accuracy
             loss = float(np.mean(accumulated_losses))
             accuracy = float(np.mean(accumulated_accs))
 
-            # ✓ RESTAURAR CNN a su estado inicial (eval mode, requires_grad=False)
-            # Esto garantiza que:
-            # 1. En la próxima época precomputed, we no entrenamos la CNN (invariante [R1.3])
-            # 2. Las operaciones forward futuras son eficientes (eval mode)
-            # 3. El estado es reproducible entre worker/PS
+            # ─ RESTAURAR CNN A EVAL MODE (para consistencia con precomputed) ─
             self._cnn._model.eval()
             for param in self._cnn._model.parameters():
                 param.requires_grad_(False)
@@ -987,24 +961,24 @@ class WorkerNode:
         self._log(f"  loss={loss:.4f}  acc={accuracy:.2f}%  ({elapsed:.3f}s)")
 
         # ════════════════════════════════════════════════════════════════
-        # ENVIAR GRADIENTES (distinto según rama)
+        # ENVIAR RESULTADOS (diferente según rama)
         # ════════════════════════════════════════════════════════════════
         payload_send = {
             "worker_id": self.worker_id,
             "epoch": epoch,
-            "gradients": gradients,
             "loss": loss,
             "accuracy": accuracy,
+            "training_mode": self.training_mode,
         }
 
-        # Incluir cnn_gradients solo si no es None (E2E)
-        if cnn_gradients is not None:
-            # [R2.4] En E2E, SIEMPRE incluir cnn_gradients
-            payload_send["cnn_gradients"] = cnn_gradients
+        if self.training_mode == "precomputed":
+            # Precomputed: enviar gradientes MLP solamente
+            payload_send["gradients"] = gradients
+            payload_send["cnn_gradients"] = None
         else:
-            # [R1.3] En precomputed, nunca incluir cnn_gradients (None es la marca)
-            # El PS espera que NO exista la clave o sea None
-            pass
+            # E2E: enviar pesos actualizados (NO gradientes)
+            payload_send["cnn_weights"] = updated_cnn_weights
+            payload_send["mlp_weights"] = updated_mlp_weights
 
         assert self._sock is not None
         send_message(
