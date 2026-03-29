@@ -225,7 +225,7 @@ class ParameterServer:
                 param.data -= learning_rate * torch.from_numpy(grad).to(param.device)
 
     # ================================================================
-    # CONFIGURACIÓN DE LA CNN
+    # CONFIGURACIÓN DE LA CNN — BARRERA CNN_READY
     # ================================================================
 
     def _handle_cnn_ready(self, worker_id: int, n_expected: int) -> None:
@@ -644,7 +644,7 @@ class ParameterServer:
             )
 
     # ================================================================
-    # FLUJO 1: PRECOMPUTED (CNN FIJA)
+    # FLUJO 1: PRECOMPUTED (CNN FIJA) — sin cambios
     # ================================================================
 
     def _train_precomputed(
@@ -850,7 +850,7 @@ class ParameterServer:
                     "n_train": n_train,
                     "n_workers": n_workers,
                     "worker_rank": rank,
-                    "training_mode": "precomputed",  # ← CRÍTICO: DEBE estar aquí
+                    "training_mode": "precomputed",
                 }
 
                 self._debug_print(
@@ -941,7 +941,6 @@ class ParameterServer:
                                 f"[VALIDACIÓN PRECOMPUTED] Worker {wid} envió "
                                 f"cnn_gradients pero deberían ser None en precomputed"
                             )
-                            # Fallar, no ignorer
                             raise RuntimeError(
                                 f"Worker {wid}: cnn_gradients debe ser None en precomputed"
                             )
@@ -1089,7 +1088,7 @@ class ParameterServer:
         return history
 
     # ================================================================
-    # FLUJO 2: END-TO-END (CNN + MLP) — CON FIXES
+    # FLUJO 2: END-TO-END (CNN + MLP) — FIXES APLICADOS
     # ================================================================
 
     def _train_end_to_end(
@@ -1119,10 +1118,6 @@ class ParameterServer:
             self._cnn_ready_count = 0
             self._X_test_features = None
             self._Y_test_from_worker = None
-
-            # En E2E NO buscamos caché de features (son dinámicos)
-            # pero sí guardamos Y_test para la evaluación
-            need_test_cached = False
 
             def _send_cnn_to_worker(wid: int) -> None:
                 with self._lock:
@@ -1170,20 +1165,10 @@ class ParameterServer:
                 t.join()
             print("[PS] Todos los Workers listos con la CNN entrenable.")
 
-            # En E2E pedimos TEST_FEATURES solo para obtener las imágenes raw de test
-            # que usaremos para re-extraer features con la CNN actualizada cada época
-            # (FIX 5: evaluación con features actualizados)
-            if X_test is not None and Y_test is not None and X_test.ndim == 4:
-                # X_test ya son imágenes raw (4D) → las usamos directamente
-                # La re-extracción ocurre dentro del loop de épocas
-                pass
-            elif X_test is not None and Y_test is not None and X_test.ndim == 2:
-                # Llegamos con features pre-extraídos — en E2E esto es un problema
-                # porque la CNN cambia. Advertir pero continuar.
+            if X_test is not None and Y_test is not None and X_test.ndim == 2:
                 _logger.warn(
                     "[E2E] X_test son features pre-extraídos (2D). "
-                    "Para evaluación correcta se necesitan imágenes raw (4D). "
-                    "La curva de prueba puede no reflejar la CNN actualizada."
+                    "Para evaluación correcta se necesitan imágenes raw (4D)."
                 )
 
         params = {tipo: datos.copy() for tipo, datos in initial_params.items()}
@@ -1248,18 +1233,17 @@ class ParameterServer:
                         loss = payload["loss"]
                         accuracy = payload["accuracy"]
 
-                        # FedAvg: recibimos pesos actualizados (no gradientes)
                         cnn_weights = payload.get("cnn_weights")
                         mlp_weights = payload.get("mlp_weights")
 
                         if cnn_weights is None or mlp_weights is None:
                             _logger.error(
-                                f"[E2E-V2] Worker {wid} NO envió pesos "
+                                f"[E2E] Worker {wid} NO envió pesos "
                                 f"(cnn_weights={cnn_weights is not None}, "
                                 f"mlp_weights={mlp_weights is not None})"
                             )
                             raise RuntimeError(
-                                f"Worker {wid}: pesos CNN y MLP obligatorios en E2E-V2"
+                                f"Worker {wid}: pesos CNN y MLP obligatorios en E2E"
                             )
 
                         with self._lock:
@@ -1287,12 +1271,13 @@ class ParameterServer:
 
             def _send_params_to_worker(wid: int) -> None:
                 try:
-                    # FIX 4: Enviar state_dict completo de la CNN (incluye BN buffers)
+                    # [P2] Serializar CNN state_dict COMPLETO (parámetros + BN buffers)
                     cnn_state = {}
                     if self._cnn is not None:
                         base_model = getattr(
                             self._cnn._model, "model", self._cnn._model
                         )
+                        # state_dict() incluye running_mean, running_var, num_batches_tracked
                         for name, tensor in base_model.state_dict().items():
                             cnn_state[name] = tensor.cpu().numpy()
 
@@ -1301,9 +1286,7 @@ class ParameterServer:
                         "params": params,
                         "seed": epoch_seed,
                         "cnn_params": cnn_state,
-                        # FIX 3: Enviar learning_rate al Worker
-                        # (antes estaba hardcodeado en 1e-4 en el Worker)
-                        "learning_rate": learning_rate,
+                        "learning_rate": learning_rate,  # [P3] El Worker calcula lr_efectivo
                         "training_mode": "end_to_end",
                     }
                     send_message(self._worker_sockets[wid], MsgType.PARAMS, send_dict)
@@ -1351,15 +1334,20 @@ class ParameterServer:
                 g["mlp_weights"] for g in self._epoch_gradients.values()
             ]
 
-            # FIX 4: _average_weights ahora incluye BN buffers (state_dict completo)
+            # [P2] _average_weights opera sobre state_dict COMPLETO (incluye BN buffers)
             averaged_cnn_weights = self._average_weights(cnn_weights_list)
-            self._load_cnn_weights(averaged_cnn_weights)
 
-            # Promediar y cargar pesos MLP
+            # [P1] Cargar pesos CNN promediados y poner en eval() inmediatamente
+            self._load_cnn_weights(averaged_cnn_weights)
+            # [P1] CRÍTICO: garantizar eval() después de cargar pesos
+            # Esto asegura que BatchNorm use running stats (no batch stats) en evaluación
+            if self._cnn is not None:
+                self._cnn._model.eval()
+
+            # [P5] _average_mlp_weights lee formato PyTorch nativo (sin .T)
             averaged_mlp_weights = self._average_mlp_weights(mlp_weights_list)
             params.update(averaged_mlp_weights)
 
-            # Métricas de entrenamiento
             losses = [m[0] for m in self._epoch_metrics.values()]
             accuracies = [m[1] for m in self._epoch_metrics.values()]
             epoch_loss = float(np.mean(losses))
@@ -1368,19 +1356,19 @@ class ParameterServer:
             history["losses"].append(epoch_loss)
             history["accuracies"].append(epoch_acc)
 
-            # FIX 5: Evaluación en el PS con features re-extraídos con CNN actualizada
+            # [P1] Evaluación con CNN en eval() garantizado
             test_acc: Optional[float] = None
             test_loss: Optional[float] = None
             if X_test is not None and Y_test is not None:
                 if X_test.ndim == 4:
-                    # Imágenes raw: re-extraer features con CNN actualizada
-                    # (correcto en E2E: la CNN cambia cada época)
                     if self._cnn is not None:
                         try:
-                            self._cnn._model.eval()
-                            X_test_feat = self._cnn.extract_batched(
-                                X_test, batch_size=512, verbose=False
-                            )
+                            # [P1] self._cnn._model ya está en eval() tras _load_cnn_weights
+                            # torch.no_grad() para eficiencia (no hay backward aquí)
+                            with torch.no_grad():
+                                X_test_feat = self._cnn.extract_batched(
+                                    X_test, batch_size=512, verbose=False
+                                )
                             test_acc, test_loss = self._evaluate(
                                 params, X_test_feat, Y_test
                             )
@@ -1393,8 +1381,7 @@ class ParameterServer:
                             "[E2E] CNN no configurada en PS; no se puede evaluar X_test 4D"
                         )
                 else:
-                    # Features pre-extraídos (2D) — evaluar directamente
-                    # (menos preciso en E2E pero funcional)
+                    # Features pre-extraídos (2D)
                     test_acc, test_loss = self._evaluate(params, X_test, Y_test)
 
                 if test_acc is not None and test_loss is not None:
@@ -1418,19 +1405,22 @@ class ParameterServer:
         return history
 
     # ================================================================
-    # [E2E-V2] HELPERS PARA WEIGHT AVERAGING — CON FIXES
+    # [E2E] HELPERS PARA WEIGHT AVERAGING — FIXES APLICADOS
     # ================================================================
 
     def _average_weights(
         self, weights_list: List[Dict[str, np.ndarray]]
     ) -> Dict[str, np.ndarray]:
         """
-        FIX 4: Promedia TODOS los tensores del state_dict (parámetros + buffers BN).
+        [P2] Promedia TODOS los tensores del state_dict (parámetros + BN buffers).
 
-        Antes solo se promediaban named_parameters(), que excluía running_mean,
-        running_var y num_batches_tracked de BatchNorm → BN desincronizado.
+        Antes excluía running_mean, running_var, num_batches_tracked de BatchNorm
+        → BN desincronizado entre PS y Workers → oscilaciones en curva de prueba.
 
-        Ahora se promedia todo lo que venga en el dict, incluyendo buffers BN.
+        Ahora promedia todo lo que venga en el dict, incluyendo buffers BN.
+        Esto es matemáticamente correcto: el promedio de running stats de N Workers
+        que vieron el mismo número de batches es una estimación válida de las
+        estadísticas globales del dataset.
         """
         if not weights_list:
             return {}
@@ -1438,8 +1428,6 @@ class ParameterServer:
         averaged: Dict[str, np.ndarray] = {}
         for key in weights_list[0].keys():
             stacked = np.array([w.get(key, np.zeros(1)) for w in weights_list])
-            # For scalar state entries (e.g. BN counters), np.mean can return
-            # a numpy scalar; normalize to ndarray for downstream from_numpy.
             averaged[key] = np.asarray(np.mean(stacked, axis=0))
         return averaged
 
@@ -1447,10 +1435,21 @@ class ParameterServer:
         self, weights_list: List[Dict[str, np.ndarray]]
     ) -> Dict[str, np.ndarray]:
         """
-        Promedia pesos MLP y convierte de formato PyTorch a NumPy MLP.
+        [P5] Promedia pesos MLP y convierte de formato PyTorch nativo a NumPy MLP.
 
-        Los weights llegan con doble transpose (Worker .T + PS .T se cancelan):
-        - fc1.weight worker envía (512, 256) → PS recibe (512, 256) → .T → (256, 512) = W1 ✓
+        ANTES (bug): el Worker enviaba con .T y el PS hacía otro .T al leer.
+        La "doble transposición se cancela" era una trampa: si cualquiera de los
+        dos lados cambiaba, los pesos quedaban incorrectamente orientados.
+
+        AHORA: el Worker envía en formato PyTorch NATIVO (sin .T):
+          - fc1.weight: (hidden1, feature_dim) en PyTorch
+          - W1 en NumPy MLP: también (hidden1, feature_dim) → son IGUALES
+          - No se necesita ninguna transposición
+
+        La conversión es directa:
+          W1 = fc1.weight  (hidden1 × feature_dim) ✓
+          W2 = fc2.weight  (hidden2 × hidden1)      ✓
+          W3 = fc3.weight  (n_classes × hidden2)    ✓
         """
         if not weights_list:
             return {}
@@ -1460,24 +1459,26 @@ class ParameterServer:
             stacked = np.array([w.get(key, np.zeros(1)) for w in weights_list])
             averaged_pytorch[key] = np.mean(stacked, axis=0)
 
-        # Convertir de formato PyTorch (fc1.weight, etc.) a NumPy MLP (W1, b1, etc.)
-        # El Worker envía con .T, así que aquí el .T vuelve a la orientación original
+        # [P5] Sin transposición: formato PyTorch = formato NumPy MLP para pesos
+        # El MLP NumPy usa W1 @ X.T (multiplicación por columnas), por lo que
+        # W1 debe ser (hidden1, feature_dim) — exactamente lo que PyTorch fc1.weight tiene.
         mlp_weights = {
-            "W1": averaged_pytorch["fc1.weight"].T,  # (512,256).T = (256,512) ✓
-            "b1": averaged_pytorch["fc1.bias"],
-            "W2": averaged_pytorch["fc2.weight"].T,  # (256,128).T = (128,256) ✓
-            "b2": averaged_pytorch["fc2.bias"],
-            "W3": averaged_pytorch["fc3.weight"].T,  # (128,10).T  = (10,128)  ✓
-            "b3": averaged_pytorch["fc3.bias"],
+            "W1": averaged_pytorch["fc1.weight"],  # (hidden1, feature_dim) ✓
+            "b1": averaged_pytorch["fc1.bias"],  # (hidden1,)              ✓
+            "W2": averaged_pytorch["fc2.weight"],  # (hidden2, hidden1)      ✓
+            "b2": averaged_pytorch["fc2.bias"],  # (hidden2,)              ✓
+            "W3": averaged_pytorch["fc3.weight"],  # (n_classes, hidden2)    ✓
+            "b3": averaged_pytorch["fc3.bias"],  # (n_classes,)            ✓
         }
         return mlp_weights
 
     def _load_cnn_weights(self, weights_dict: Dict[str, np.ndarray]) -> None:
         """
-        FIX 4: Carga TODOS los tensores del state_dict en el modelo CNN del PS.
+        [P1+P2] Carga TODOS los tensores del state_dict en el modelo CNN del PS.
 
-        Antes usaba named_parameters() → excluía buffers BN.
-        Ahora usa load_state_dict() que carga todo correctamente.
+        Después de cargar, el caller debe llamar self._cnn._model.eval()
+        para garantizar que BatchNorm use running stats (no batch stats).
+        Esto se hace explícitamente en _train_end_to_end tras esta llamada.
         """
         if self._cnn is None or not weights_dict:
             return
@@ -1497,6 +1498,7 @@ class ParameterServer:
 
         # load_state_dict carga params + buffers BN en un solo paso
         base_model.load_state_dict(current_sd)
+        # NOTA: el caller es responsable de llamar .eval() después de esta función.
 
     # ================================================================
     # HELPERS INTERNOS

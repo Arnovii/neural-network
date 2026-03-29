@@ -72,7 +72,7 @@ class WorkerNode:
     :param X_train: Imágenes (N, 3, 32, 32) float32 NCHW normalizadas.
     :param Y_train: Etiquetas (N,) int32.
     :param cnn_device: Dispositivo PyTorch: "cpu", "cuda", "mps".
-    :param cnn_seed: Semilla para inicialización CNN (no crítica — el PS sobreescribirá los pesos).
+    :param cnn_seed: Semilla para inicialización CNN.
     :param hidden1: Neuronas capa oculta 1 del MLP.
     :param hidden2: Neuronas capa oculta 2 del MLP.
     :param cnn_batch_size: Batch size para extracción inicial de features.
@@ -103,17 +103,13 @@ class WorkerNode:
         self.verbose = verbose
         self.worker_id: Optional[int] = None
         self._sock: Optional[socket.socket] = None
-        self.training_mode = training_mode  # "precomputed" o "end_to_end"
-        # ── Extractor CNN — placeholder hasta recibir CNN_WEIGHTS del PS ────
-        # El Worker arranca con una CNN mínima (simple) solo para tener
-        # la estructura en memoria. Al recibir CNN_WEIGHTS del PS,
-        # _handle_cnn_weights() la reconstruirá con la arquitectura
-        # y pesos correctos. El usuario no necesita especificar arch.
+        self.training_mode = training_mode
+
         self._log(
             "Inicializando extractor CNN (pesos temporales, el PS los sobreescribirá)..."
         )
         self._cnn = CNNExtractor(
-            arch="simple",  # placeholder — se reconstruye en _handle_cnn_weights
+            arch="simple",
             device=cnn_device,
             seed=cnn_seed,
         )
@@ -662,7 +658,7 @@ class WorkerNode:
             )
 
         # ═══════════════════════════════════════════════════════════════
-        # CONFIRMACIÓN (mismo mensaje para ambas ramas, pero con diferentes estados)
+        # CONFIRMACIÓN
         # ═══════════════════════════════════════════════════════════════
         # [INSTRUMENTACIÓN] Log ANTES de enviar CNN_READY
         cnn_has_grad = any(p.requires_grad for p in self._cnn._model.parameters())
@@ -730,37 +726,18 @@ class WorkerNode:
         worker_rank: int,
     ) -> None:
         """
-        Procesa PARAMS en una época: ejecuta forward/backward según training_mode.
+        Procesa PARAMS en una época.
 
-        ╔════════════════════════════════════════════════════════════════╗
-        ║ DOS FLUJOS MUTUAMENTE EXCLUYENTES SEGÚN training_mode         ║
-        ╚════════════════════════════════════════════════════════════════╝
-
-        PRECOMPUTED:
-        ───────────
-        - Recibe: PARAMS con {"epoch", "params" (MLP), "seed"}
-        - Lo que NO recibe: "cnn_params" (invariante [R1.3])
-        - Procesa: Features ya cacheados + MLP forward/backward
-        - Envía: GRADIENTS con gradientes MLP, cnn_gradients=None
-        - CNN nunca se actualiza (invariante [R1.1])
-
-        END-TO-END:
-        ───────────
-        - Recibe: PARAMS con {"epoch", "params" (MLP), "seed", "cnn_params" (CNN)}
-        - Si NO recibe "cnn_params": ERROR (invariante [R2.4])
-        - Procesa: Raw images + CNN forward/backward + MLP forward/backward
-        - Envía: GRADIENTS con gradientes MLP + CNN (ambos obligatorios)
-        - CNN se actualiza cada época (invariante [R2.1])
-
-        :param payload:     Dict con parámetros y configuración de época
-        :param n_train:     Total de ejemplos (para reconstruir índices)
-        :param n_workers:   Número de Workers en sesión
-        :param worker_rank: Índice de este Worker (0-based)
+        FIXES aplicados:
+          [P3] LR efectivo = learning_rate / n_batches para evitar divergencia FedAvg.
+          [P4] Métricas ponderadas por tamaño real de mini-batch.
+          [P5] Pesos MLP enviados en formato PyTorch nativo (sin .T).
+               El PS lee directamente en ese formato.
         """
         epoch = payload["epoch"]
         mlp_params = payload["params"]
         seed = payload["seed"]
-        cnn_params = payload.get("cnn_params")  # None en precomputed
+        cnn_params = payload.get("cnn_params")
 
         # [INSTRUMENTACIÓN] Log del estado ANTES de branch selection
         _logger.worker(
@@ -817,14 +794,14 @@ class WorkerNode:
             cnn_gradients = None
 
         # ════════════════════════════════════════════════════════════════
-        # RAMA 2: END-TO-END (V2) — ENTRENAMIENTO LOCAL CON PYTORCH
+        # RAMA 2: END-TO-END (FedAvg con LR efectivo ajustado)
         # ════════════════════════════════════════════════════════════════
         else:  # end_to_end
             from Model.mlp_pytorch import MLPPyTorch
 
             # [INSTRUMENTACIÓN]
             _logger.worker(
-                f"[INSTRUM] EJECUTANDO RAMA END-TO-END (V2) | Época {epoch}",
+                f"[INSTRUM] EJECUTANDO RAMA END-TO-END | Época {epoch}",
                 progress=f"cnn_params_recibido={'SÍ' if cnn_params is not None else 'NO'} | "
                 f"training_mode={self.training_mode}",
             )
@@ -835,12 +812,10 @@ class WorkerNode:
                     "[E2E] Recibí None para cnn_params pero son obligatorios en E2E"
                 )
 
-            # ─ LEER LR DEL PAYLOAD (FIX 2: antes era 1e-4 hardcodeado) ─
-            # El PS envía la LR configurada por el usuario en la GUI
+            # LR recibido del PS
             learning_rate = payload.get("learning_rate", 1e-3)
 
-            # ─ INICIALIZAR MLP EN PYTORCH ─
-            # Se recrea cada época con los pesos del PS (ensures sincronización)
+            # Inicializar MLP PyTorch con pesos del PS
             mlp = MLPPyTorch(
                 feature_dim=self._cnn.feature_dim,
                 hidden1=self.hidden1,
@@ -848,51 +823,53 @@ class WorkerNode:
                 n_classes=10,
             ).to(self._cnn.device)
 
-            # Cargar pesos MLP desde NumPy (formato mlp.py → PyTorch)
+            # ── [P5] Cargar pesos MLP en formato PyTorch NATIVO (sin .T) ──
+            # El PS ahora envía los pesos en formato PyTorch (fc1.weight shape:
+            # hidden1 × feature_dim). No se aplica ninguna transposición.
             mlp_state = {}
 
-            # W1: debe ser (hidden1=256, feature_dim=512) para fc1.weight en PyTorch
             W1_np = mlp_params["W1"]
+            # W1 en NumPy MLP es (hidden1, feature_dim) — mismo que fc1.weight PyTorch
             if W1_np.shape == (self.hidden1, self._cnn.feature_dim):
-                mlp_state["fc1.weight"] = torch.from_numpy(W1_np)
+                mlp_state["fc1.weight"] = torch.from_numpy(W1_np.copy())
             elif W1_np.shape == (self._cnn.feature_dim, self.hidden1):
-                mlp_state["fc1.weight"] = torch.from_numpy(W1_np.T)
+                # Formato transpuesto heredado: corregir
+                mlp_state["fc1.weight"] = torch.from_numpy(W1_np.T.copy())
             else:
                 raise ValueError(f"W1 shape {W1_np.shape} invalida")
 
-            mlp_state["fc1.bias"] = torch.from_numpy(mlp_params["b1"])
+            mlp_state["fc1.bias"] = torch.from_numpy(mlp_params["b1"].copy())
 
-            # W2: debe ser (hidden2=128, hidden1=256) para fc2.weight en PyTorch
             W2_np = mlp_params["W2"]
+            # W2 en NumPy MLP es (hidden2, hidden1) — mismo que fc2.weight PyTorch
             if W2_np.shape == (self.hidden2, self.hidden1):
-                mlp_state["fc2.weight"] = torch.from_numpy(W2_np)
+                mlp_state["fc2.weight"] = torch.from_numpy(W2_np.copy())
             elif W2_np.shape == (self.hidden1, self.hidden2):
-                mlp_state["fc2.weight"] = torch.from_numpy(W2_np.T)
+                mlp_state["fc2.weight"] = torch.from_numpy(W2_np.T.copy())
             else:
                 raise ValueError(f"W2 shape {W2_np.shape} invalida")
 
-            mlp_state["fc2.bias"] = torch.from_numpy(mlp_params["b2"])
+            mlp_state["fc2.bias"] = torch.from_numpy(mlp_params["b2"].copy())
 
-            # W3: debe ser (n_classes=10, hidden2=128) para fc3.weight en PyTorch
             W3_np = mlp_params["W3"]
+            # W3 en NumPy MLP es (n_classes, hidden2) — mismo que fc3.weight PyTorch
             if W3_np.shape == (10, self.hidden2):
-                mlp_state["fc3.weight"] = torch.from_numpy(W3_np)
+                mlp_state["fc3.weight"] = torch.from_numpy(W3_np.copy())
             elif W3_np.shape == (self.hidden2, 10):
-                mlp_state["fc3.weight"] = torch.from_numpy(W3_np.T)
+                mlp_state["fc3.weight"] = torch.from_numpy(W3_np.T.copy())
             else:
                 raise ValueError(f"W3 shape {W3_np.shape} invalida")
 
-            mlp_state["fc3.bias"] = torch.from_numpy(mlp_params["b3"])
+            mlp_state["fc3.bias"] = torch.from_numpy(mlp_params["b3"].copy())
 
             for name, param in mlp.named_parameters():
                 if name in mlp_state:
                     param.data = mlp_state[name].to(param.device).to(torch.float32)
 
-            # ─ SINCRONIZAR CNN CON PESOS GLOBALES ─
-            # cnn_params viene del PS como state_dict (incluye BN buffers)
+            # ── Sincronizar CNN con pesos globales del PS ──
+            # [P2] state_dict completo (parámetros + BN buffers)
             base_model = getattr(self._cnn._model, "model", self._cnn._model)
             with torch.no_grad():
-                # Cargar state_dict completo (parámetros + buffers BN)
                 current_sd = base_model.state_dict()
                 for name, arr in cnn_params.items():
                     if name in current_sd:
@@ -903,31 +880,43 @@ class WorkerNode:
                         )
                 base_model.load_state_dict(current_sd)
 
-            # ─ PERMITIR GRADIENTES ─
+            # Activar gradientes
             self._cnn._model.train()
             for param in self._cnn._model.parameters():
                 param.requires_grad_(True)
             mlp.train()
 
-            # ─ MINI-BATCHING ADAPTATIVO ─
+            # ── Mini-batching adaptativo ──
             base_opt_bs = self._optimal_batch_size()
             mini_bs = max(16, int(base_opt_bs / 2.5))
             n_total = len(indices)
             n_batches = (n_total + mini_bs - 1) // mini_bs
 
+            # ── [P3] LR efectivo ajustado por número de steps locales ──
+            # En FedAvg cada Worker hace n_batches steps SGD locales.
+            # El LR efectivo acumulado sería learning_rate * n_batches sin ajuste.
+            # Dividir por n_batches mantiene la magnitud de actualización equivalente
+            # a un solo step con todos los datos, evitando divergencia.
+            effective_lr = learning_rate / max(1, n_batches)
+
             self._log(
-                f"[E2E-V2] Entrenamiento local: {n_total} ejemplos en {n_batches} "
-                f"mini-batches (size={mini_bs}, lr={learning_rate:.2e})..."
+                f"[E2E] Entrenamiento local: {n_total} ejemplos en {n_batches} "
+                f"mini-batches (size={mini_bs}, lr={learning_rate:.2e}, "
+                f"lr_efectivo={effective_lr:.2e})"
             )
 
-            accumulated_losses = []
-            accumulated_accs = []
+            # ── [P4] Acumuladores ponderados por tamaño de batch ──
+            total_loss_weighted = 0.0
+            total_correct = 0
+            total_samples = 0
 
-            # ── LOOP DE MINI-BATCHES CON SGD LOCAL ──
             for batch_idx in range(n_batches):
                 start_idx = batch_idx * mini_bs
                 end_idx = min(start_idx + mini_bs, n_total)
                 mini_indices = indices[start_idx:end_idx]
+                batch_size_actual = len(
+                    mini_indices
+                )  # puede ser < mini_bs en el último
 
                 X_mini = self._X_raw[mini_indices].astype(np.float32)
                 Y_mini = self._Y_raw[mini_indices].astype(np.int64)
@@ -951,45 +940,45 @@ class WorkerNode:
                 mlp.zero_grad()
                 loss_tensor.backward()
 
-                # Local SGD update
+                # [P3] Usar effective_lr en lugar de learning_rate
                 with torch.no_grad():
                     for param in self._cnn._model.parameters():
                         if param.grad is not None:
-                            param.data -= learning_rate * param.grad
+                            param.data -= effective_lr * param.grad
 
                     for param in mlp.parameters():
                         if param.grad is not None:
-                            param.data -= learning_rate * param.grad
+                            param.data -= effective_lr * param.grad
 
+                # [P4] Acumular ponderado por tamaño de batch
                 with torch.no_grad():
                     preds = torch.argmax(logits, dim=1)
-                    correct = (preds == Y_mini_torch).float().mean()
-                    accumulated_losses.append(loss_tensor.item())
-                    accumulated_accs.append(100.0 * correct.item())
+                    correct_count = (preds == Y_mini_torch).sum().item()
 
-            # ─ FIX 1: PESOS CNN via state_dict (incluye BN running stats) ─
-            # ANTES era:
-            #   for name, param in base_model.named_parameters():
-            #       updated_cnn_weights[name] = param.data.cpu().numpy()
-            # named_parameters() excluye running_mean, running_var → BN desincronizado
-            #
-            # AHORA: state_dict() incluye TODO (params entrenables + buffers BN)
+                total_loss_weighted += loss_tensor.item() * batch_size_actual
+                total_correct += correct_count
+                total_samples += batch_size_actual
+
+            # [P4] Métricas correctamente ponderadas
+            loss = total_loss_weighted / max(1, total_samples)
+            accuracy = 100.0 * total_correct / max(1, total_samples)
+
+            # ── [P2] Serializar CNN state_dict COMPLETO (params + BN buffers) ──
+            # FIX P2: state_dict() incluye running_mean, running_var, num_batches_tracked
+            # Esto garantiza que el PS pueda reconstruir exactamente el mismo estado BN
+            # al promediar, eliminando la desincronización que causaba las oscilaciones.
             updated_cnn_weights = {}
             for name, tensor in base_model.state_dict().items():
-                updated_cnn_weights[name] = tensor.cpu().numpy()
+                updated_cnn_weights[name] = tensor.cpu().numpy().copy()
 
-            # Pesos MLP actualizados (sin cambio — transpose es consistente)
+            # ── [P5] Serializar pesos MLP en formato PyTorch NATIVO (sin .T) ──
+            # El PS leerá fc1.weight como (hidden1, feature_dim) directamente.
+            # Cero ambigüedad, cero riesgo de doble transposición.
             updated_mlp_weights = {}
             for name, param in mlp.named_parameters():
-                np_weight = param.data.cpu().numpy()
-                if "weight" in name:
-                    np_weight = np_weight.T
-                updated_mlp_weights[name] = np_weight
+                updated_mlp_weights[name] = param.data.cpu().numpy().copy()
 
-            loss = float(np.mean(accumulated_losses))
-            accuracy = float(np.mean(accumulated_accs))
-
-            # Restaurar CNN a eval mode
+            # [P1] Restaurar CNN a eval mode tras entrenamiento
             self._cnn._model.eval()
             for param in self._cnn._model.parameters():
                 param.requires_grad_(False)
