@@ -1438,7 +1438,9 @@ class ParameterServer:
         averaged: Dict[str, np.ndarray] = {}
         for key in weights_list[0].keys():
             stacked = np.array([w.get(key, np.zeros(1)) for w in weights_list])
-            averaged[key] = np.mean(stacked, axis=0)
+            # For scalar state entries (e.g. BN counters), np.mean can return
+            # a numpy scalar; normalize to ndarray for downstream from_numpy.
+            averaged[key] = np.asarray(np.mean(stacked, axis=0))
         return averaged
 
     def _average_mlp_weights(
@@ -1486,8 +1488,9 @@ class ParameterServer:
         with torch.no_grad():
             for name, arr in weights_dict.items():
                 if name in current_sd:
+                    arr_np = np.asarray(arr)
                     current_sd[name] = (
-                        torch.from_numpy(arr)
+                        torch.from_numpy(arr_np)
                         .to(current_sd[name].device)
                         .to(current_sd[name].dtype)
                     )

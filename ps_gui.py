@@ -1733,7 +1733,7 @@ class DistributedPSApp:
                     initial_params=initial_params,
                     learning_rate=lr,
                     n_train=n_train,
-                    X_test=None,  # features vienen del Worker via TEST_FEATURES
+                    X_test=X_test_raw,
                     Y_test=Y_test,
                     momentum=momentum,
                     training_mode=training_mode,  # ← CRÍTICO: Pasar el modo actual explícitamente
