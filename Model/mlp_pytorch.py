@@ -103,15 +103,29 @@ class MLPPyTorch(nn.Module):
         """
         Forward pass: features → MLP → logits (sin softmax, para cross_entropy).
 
-        :param x: Tensor de shape (N, feature_dim).
-        :return: Logits de shape (N, n_classes).
+        EXPLICACIÓN DEL FLUJO:
+        ─────────────────────
+        • No se aplica Softmax aquí porque PyTorch's cross_entropy combina
+          log_softmax y NLL en una operación (es más numéricamente estable).
+        • Salida: (N, n_classes) con valores raw (logits), típicamente negativos/positivos.
+        • Cada fila es el vector lógits para un ejemplo.
+
+        SHAPES A TRAVÉS DEL MLP:
+        (N, feature_dim) → fc1 → (N, hidden1) → ReLU → fc2
+                                 → (N, hidden2) → ReLU → fc3 → (N, n_classes)
+
+        :param x: Tensor de entrada con features extraídas de CNN.
+        :type x: torch.Tensor de shape (batch_size, feature_dim), dtype float32.
+
+        :return: Logits sin normalizar (sin softmax).
+        :rtype: torch.Tensor de shape (batch_size, n_classes) float32.
         """
-        x = self.fc1(x)
+        x = self.fc1(x)  # (N, feature_dim) → (N, hidden1)
+        x = self.relu(x)  # Máximo con 0 para sparsidad
+        x = self.fc2(x)  # (N, hidden1) → (N, hidden2)
         x = self.relu(x)
-        x = self.fc2(x)
-        x = self.relu(x)
-        x = self.fc3(x)
-        return x
+        x = self.fc3(x)  # (N, hidden2) → (N, n_classes)
+        return x  # Sin aplicar softmax — sea io para nn.CrossEntropyLoss
 
     def state_dict_numpy(self) -> dict:
         """

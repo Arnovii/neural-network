@@ -83,43 +83,44 @@ def _on_epoch_end(
     test_loss: float | None,
 ) -> None:
     """
-    Imprime en consola un resumen del estado del entrenamiento al finalizar una época.
+    Callback ejecutado al final de cada época — imprime resumen en consola.
 
-    Muestra una barra de progreso basada en la precisión de entrenamiento, junto con
-    las métricas principales de la época actual. Si se proporcionan métricas del
-    conjunto de prueba, también se incluyen en la salida.
+    :param epoch: Número de época actual (1-based, no 0-based).
+    :type epoch: int, ej. 1, 2, ..., 100.
 
-    :param epoch: Número de la época actual.
-    :type epoch: int
+    :param total: Total de épocas planificadas.
+    :type total: int.
 
-    :param total: Número total de épocas del entrenamiento.
-    :type total: int
+    :param train_acc: Precisión de entrenamiento en porcentaje 0-100.
+    :type train_acc: float, ej. 87.5.
 
-    :param train_acc: Precisión del modelo en el conjunto de entrenamiento (porcentaje).
-    :type train_acc: float
+    :param train_loss: Cross-entropy loss en entrenamiento.
+    :type train_loss: float, ej. 0.312.
 
-    :param train_loss: Valor de la función de pérdida en entrenamiento.
-    :type train_loss: float
+    :param test_acc: Precisión en conjunto de prueba. None si no hay evaluación.
+    :type test_acc: float | None, porcentaje 0-100 o None.
 
-    :param test_acc: Precisión en el conjunto de prueba en porcentaje. Si es ``None``,
-                     no se muestra en la salida.
-    :type test_acc: float | None
+    :param test_loss: Cross-entropy loss en prueba. Solo se usa si test_acc != None.
+    :type test_loss: float | None.
 
-    :param test_loss: Valor de la función de pérdida en el conjunto de prueba. Solo se
-                      utiliza cuando ``test_acc`` no es ``None``.
-    :type test_loss: float | None
-
-    :return: No retorna ningún valor; solo imprime información en consola.
-    :rtype: None
+    :return: None (solo imprime en consola).
+    :rtype: NoneType.
     """
+    # Barra de progreso: 20 caracteres, cada uno representa 5% (100/20)
+    # int(accuracy/5) convierte 0-100% a 0-20 caracteres llenos
     bar = "█" * int(train_acc / 5)
+    bar_padded = bar.ljust(20, "░")  # rellena con ░ hasta 20 caracteres
+
+    # Formato condicional: mostrar métricas de prueba solo si existen
     test_str = (
         f"  | precisión_prueba={test_acc:.2f}%  pérdida_prueba={test_loss:.4f}"
         if test_acc is not None
         else ""
     )
+
     print(
-        f"  [{bar:<20}] {train_acc:5.2f}%  pérdida={train_loss:.4f}{test_str}  ({epoch}/{total})"
+        f"  [{bar_padded}] {train_acc:5.2f}%  "
+        f"pérdida={train_loss:.4f}{test_str}  ({epoch}/{total})"
     )
 
 

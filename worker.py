@@ -115,6 +115,9 @@ def main() -> None:
     print("=" * 70)
 
     # Carga CIFAR-10 completo en formato NCHW (3, 32, 32) listo para la CNN
+    # El Worker carga los datos UNA SOLA VEZ al iniciar. En cada época,
+    # el PS envía una semilla que los Workers usan para reconstruir su chunk
+    # de datos de forma determinista (sin transmitir índices por red).
     print("\nCargando CIFAR-10 (50 000 imágenes)...")
     X_train, Y_train = load_cifar10_train(
         data_dir=args.data_dir,
@@ -153,6 +156,8 @@ def main() -> None:
         verbose=not args.quiet,
     )
 
+    # Inicia el bucle persistente del Worker — permanece activo
+    # hasta recibir STOP desde el PS o hasta que el proceso sea interrumpido.
     worker.run()
 
 

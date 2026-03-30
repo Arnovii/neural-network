@@ -84,26 +84,60 @@ def _cache_path(data_dir: str, name: str) -> str:
 
 def _to_nchw_normalized(dataset) -> Tuple[np.ndarray, np.ndarray]:
     """
-    Convierte un torchvision CIFAR10 dataset a NumPy NCHW normalizado.
+    Convierte un dataset CIFAR-10 de torchvision a NumPy NCHW normalizado.
 
-    Pasos:
-        1. dataset.data es uint8 (N, 32, 32, 3) — NHWC.
-        2. float32 / 255 → [0, 1].
-        3. (x − μ) / σ  por canal (broadcast sobre axis=3).
-        4. Transpone NHWC → NCHW y hace copia C-contigua para torch.
+    TRANSFORMACIONES:
+    ──────────────────
+    1. Conversión de tipo: uint8 [0..255] → float32 [0..1]
+       Divide por 255 para normalizar al rango [0, 1].
 
-    Todo vectorizado sin bucles por imagen.
+    2. Normalización per-canal: (x - mean) / std
+       Usa media y desv. estándar calculadas sobre CIFAR-10 entrenamiento.
+       Cada canal (R, G, B) se normaliza independientemente empleando
+       broadcast de NumPy para aplicar operaciones sobre dimensiones selectas.
+       Parámetro axis=(0, 1, 2) indica que la operación se aplica por canal.
+
+    3. Transposición de formato: NHWC → NCHW
+       dataset.data es (N, 32, 32, 3) — formato torchvision (NHWC).
+       PyTorch espera (N, 3, 32, 32) — formato NCHW (canales primero).
+       Transposición: .transpose(0, 3, 1, 2) reorganiza ejes:
+       (0,1,2,3) → (0,3,1,2)
+       (N,H,W,C) → (N,C,H,W)
+
+    4. C-contiguo: .copy() asegura que el array está en memoria continua.
+       PyTorch y algunas librerías optimizadas requieren esto para operaciones
+       rápidas; sin .copy() el array podría tener un stride irregular.
+
+    TODO VECTORIZADO:
+    El proceso evita bucles por imagen — todas las operaciones se hacen en
+    una sola pasada usando broadcasting de NumPy. Esto es ~100x más rápido
+    que loops de Python.
 
     :param dataset: Dataset CIFAR-10 de torchvision.
-    :type dataset: torchvision.datasets.CIFAR10.
+    :type dataset: torchvision.datasets.CIFAR10 con atributos .data, .targets.
+
     :return: Tupla (X, Y) normalizada y transpuesta.
-    :rtype: Tuple[np.ndarray, np.ndarray] donde X shape (N, 3, 32, 32) float32
-            y Y shape (N,) int32.
+    :rtype: Tuple[np.ndarray, np.ndarray] donde:
+            - X: shape (N, 3, 32, 32), dtype float32, normalizado con media/std.
+            - Y: shape (N,), dtype int32, valores 0-9.
     """
+    # dataset.data es uint8 de shape (N, 32, 32, 3)
+    # Divide por 255 para pasar a [0, 1]: operación vectorizada sobre todo el array
     X = dataset.data.astype(np.float32) / 255.0  # (N, 32, 32, 3)
-    X = (X - _MEAN) / _STD  # (N, 32, 32, 3)
-    X = X.transpose(0, 3, 1, 2).copy()  # (N, 3, 32, 32)
+
+    # Normalización: (x - mean) / std
+    # Broadcasting automático: _MEAN y _STD son shape (3,), se añade a cada pixel
+    # axis=0 suma sobre: dimensión batch
+    # los arrays se expanden tácitamente para matchear dimensiones
+    X = (X - _MEAN) / _STD  # (N, 32, 32, 3) — broadcast operación
+
+    # Transpone NHWC → NCHW: axes (0,1,2,3) → (0,3,1,2)
+    # Copia el dato en nuevo layout en memoria para evitar strides complejos
+    X = X.transpose(0, 3, 1, 2).copy()  # (N, 3, 32, 32) C-contiguous
+
+    # Convierte etiquetas a int32 (esperado por los modelos)
     Y = np.array(dataset.targets, dtype=np.int32)
+
     return X, Y
 
 

@@ -196,13 +196,17 @@ def _forward(
     Forward pass vectorizado. Devuelve las pre-activaciones y activaciones
     de cada capa, necesarias para el backward.
 
-    Calcula todos los outputs de cada capa en forma vectorizada:
-        Z1 = W1 @ X.T + b1
-        A1 = ReLU(Z1)
-        Z2 = W2 @ A1 + b2
-        A2 = ReLU(Z2)
-        Z3 = W3 @ A2 + b3
-        A3 = Softmax(Z3)
+    OPERACIONES VECTORIZADAS EN NUMPY:
+    -----------------------------------
+    • X tiene forma (N, feature_dim) — N ejemplos en filas.
+    • X.T transpone a (feature_dim, N) — N ejemplos en columnas.
+    • Multiplicación matricial W @ X.T con W shape (output, input):
+      - Resultado: (output, N) — cada columna es la salida de un ejemplo.
+    • Broadcasting con b[:, np.newaxis] expande el vector (output,) a
+      (output, 1) para que NumPy lo replique sobre las N columnas.
+
+    Flujo de dimensiones:
+        (N, feature_dim) → _forward → (n_classes, N)
 
     :param params: Diccionario con pesos: W1, b1, W2, b2, W3, b3.
     :type params: Dict[str, np.ndarray].
@@ -216,18 +220,29 @@ def _forward(
                 - Z2: pre-activaciones capa 2, shape (hidden2, N).
                 - A2: activaciones capa 2 (ReLU), shape (hidden2, N).
                 - A3: probabilidades softmax salida, shape (n_classes, N).
+                        Están normalizadas (suma a 1 por columna).
     :rtype: Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray].
     """
-    X_T = X.T  # (feature_dim, N) — orientación columna para @ eficiente
+    # Transpone X a (feature_dim, N) para que la multiplicación matricial
+    # sea eficiente: (W @ X.T) procesa los N ejemplos en paralelo.
+    X_T = X.T  # (feature_dim, N)
 
-    Z1 = params["W1"] @ X_T + params["b1"][:, np.newaxis]  # (hidden1, N)
+    # Capa 1: proyección lineal seguida de ReLU
+    # W1 @ X.T: (hidden1, feature_dim) @ (feature_dim, N) = (hidden1, N)
+    # b1[:, np.newaxis]: expande (hidden1,) a (hidden1, 1) que se replica
+    # sobre las N columnas para que cada ejemplo reciba el mismo sesgo.
+    Z1 = params["W1"] @ X_T + params["b1"][:, np.newaxis]
     A1 = _relu(Z1)
 
-    Z2 = params["W2"] @ A1 + params["b2"][:, np.newaxis]  # (hidden2, N)
+    # Capa 2: igual que capa 1
+    # W2 @ A1: (hidden2, hidden1) @ (hidden1, N) = (hidden2, N)
+    Z2 = params["W2"] @ A1 + params["b2"][:, np.newaxis]
     A2 = _relu(Z2)
 
-    Z3 = params["W3"] @ A2 + params["b3"][:, np.newaxis]  # (n_classes, N)
-    A3 = _softmax(Z3)  # (n_classes, N)
+    # Capa 3: igual patrón pero softmax en lugar de ReLU
+    # W3 @ A2: (n_classes, hidden2) @ (hidden2, N) = (n_classes, N)
+    Z3 = params["W3"] @ A2 + params["b3"][:, np.newaxis]
+    A3 = _softmax(Z3)  # (n_classes, N) con valores en [0,1], suma=1 por columna
 
     return Z1, A1, Z2, A2, A3
 
@@ -243,65 +258,95 @@ def forward_and_gradients(
     Y: np.ndarray,
 ) -> Tuple[Dict[str, np.ndarray], float, float]:
     """
-    Forward pass + backward pass sobre un batch de features.
+    Forward pass + backward pass completo sobre un batch de features.
 
-    No modifica ``params``. Los gradientes se devuelven como Dict
-    para que el PS los serialice con Pickle y los promedíe.
+    DIAGRAMA DEL FLUJO:
+    -------------------
+    X (N, feature_dim)
+      │
+      ├─ forward(params, X)    →  Z1,A1,Z2,A2,A3
+      │
+      ├─ predicciones: argmax(A3) = [0..9]  (un índice por ejemplo)
+      │
+      ├─ loss: -Σ log(p_etiqueta_correcta)  (cross-entropy)
+      │
+      ├─ backward: regla de cadena inversa
+      │   δ3 = A3 - one_hot(Y)
+      │   δ2 = W3.T @ δ3 ⊙ relu'(Z2)
+      │   δ1 = W2.T @ δ2 ⊙ relu'(Z1)
+      │
+      └─ gradientes de pesos normalizados por N
 
-    La retropropagación sigue la regla de la cadena capa por capa:
-
-        δ3 = A3 − Y_onehot          ← gradiente de cross-entropy + softmax
-        δ2 = (W3.T @ δ3) ⊙ relu'(Z2)
-        δ1 = (W2.T @ δ2) ⊙ relu'(Z1)
-
-    Los gradientes de los pesos son el promedio sobre el batch (1/N),
-    lo que hace que los gradientes de distintos Workers sean directamente
-    comparables aunque tengan batch sizes distintos.
+    No modifica ``params``. Los gradientes se devuelven como Dict para
+    que el Parameter Server los serialice con Pickle y los promedíe.
 
     :param params: Pesos actuales del MLP.
     :type params: Dict[str, np.ndarray] con W1, b1, W2, b2, W3, b3.
 
-    :param X: Features del batch.
+    :param X: Features del batch (típicamente 50-500 ejemplos).
     :type X: np.ndarray de shape (N, feature_dim) float32.
 
-    :param Y: Etiquetas del batch.
+    :param Y: Etiquetas del batch como enteros 0-9.
     :type Y: np.ndarray de shape (N,) int32 con valores 0-9.
 
     :return: Tupla (gradients, mean_loss, accuracy_pct) donde:
-                - gradients: Dict con dW1, db1, dW2, db2, dW3, db3 (mismo shape que pesos).
-                - mean_loss: Cross-entropy loss promediada sobre el batch (float).
+                - gradients: Dict con 6 claves dW1, db1, dW2, db2, dW3, db3.
+                  Los gradientes se normalizan por N (batch size) para que
+                  sean comparables independientemente del tamaño del batch.
+                - mean_loss: Cross-entropy loss promediada (float).
                 - accuracy_pct: Porcentaje de predicciones correctas 0-100 (float).
     :rtype: Tuple[Dict[str, np.ndarray], float, float].
     """
     N = len(X)
     W2, W3 = params["W2"], params["W3"]
 
-    # ── Forward ──────────────────────────────────────────────────
+    # ── Forward: todas las activaciones se guardan para backward ──
     Z1, A1, Z2, A2, A3 = _forward(params, X)
 
-    # ── Métricas ──────────────────────────────────────────────────
+    # ── MÉTRICAS: accuracy y loss ─────────────────────────────────
+    # argmax(A3, axis=0): para cada ejemplo (columna), obtén la clase
+    # con máxima probabilidad. Resultado: (N,) con índices 0-9.
     preds = np.argmax(A3, axis=0)
-    correct = int(np.sum(preds == Y))
+    correct = int(np.sum(preds == Y))  # contar predicciones correctas
 
-    # Cross-entropy: −Σ log(p_correcta) / N
-    log_p = np.log(np.clip(A3, 1e-15, 1.0))
+    # Cross-entropy loss: -log(p_correcta) promediado
+    # log(A3) da log de probabilidades de todas las clases.
+    # A3[Y, np.arange(N)] extrae la probabilidad de la clase correcta
+    # por cada ejemplo usando advanced indexing: Y[i] es la fila (clase),
+    # np.arange(N)[i]=i es la columna (ejemplo).
+    log_p = np.log(np.clip(A3, 1e-15, 1.0))  # clip evita log(0)
     total_loss = -float(np.sum(log_p[Y, np.arange(N)]))
+    mean_loss = total_loss / N
+    accuracy = 100.0 * correct / N
 
-    # ── Backward ─────────────────────────────────────────────────
-    # Capa salida — softmax + cross-entropy se combinan en un gradiente limpio
-    # Copia A3 y resta 1 solo en los índices correctos: evita alocar la
-    # matriz one-hot completa (n_classes, N).
-    delta3 = A3.copy()  # (n_classes, N)
-    delta3[Y, np.arange(N)] -= 1.0
-    dW3 = (1.0 / N) * (delta3 @ A2.T)  # (n_classes, hidden2)
-    db3 = (1.0 / N) * delta3.sum(axis=1)  # (n_classes,)
+    # ─── BACKWARD: calcula gradientes usando regla de cadena ───
+    # EXPLICACIÓN: La retropropagación (backpropagation) calcula cómo afecta
+    # cada parámetro al loss final. Usamos la regla de la cadena (chain rule)
+    # capa por capa, desde la salida hacia la entrada.
+    #
+    # Capa salida — softmax + cross-entropy combinadas dan gradiente limpio
+    # Con probabilidades softmax P = A3 y etiquetas one-hot E (donde E[i,j]=1
+    # si j es la clase correcta), el gradiente es simplemente: dL/dZ3 = P - E
+    # Optimización: en lugar de crear matriz E completa (n_classes, N),
+    # copiamos A3 y restamos 1 solo en posiciones de etiquetas correctas.
+    # Índexación NumPy: Y[i] es la clase de ejemplo i; np.arange(N) es [0..N-1]
+    # delta3[Y, np.arange(N)] selecciona la diagonal Y[i] en ejemplo i.
+    delta3 = A3.copy()  # Copia para no modificar A3 original (n_classes, N)
+    delta3[Y, np.arange(N)] -= 1.0  # Resta 1 en clases correctas
+    # Gradiente respecto a W3: (dL/dZ3) @ A2.T con promediado 1/N
+    # Dimensiones: (n_classes,N) @ (N,hidden2) = (n_classes,hidden2) ✓
+    dW3 = (1.0 / N) * (delta3 @ A2.T)
+    # Gradiente respecto a b3: suma de gradientes por ejemplo, promediado
+    db3 = (1.0 / N) * delta3.sum(axis=1)
 
-    # Capa 2 — ReLU
-    delta2 = (W3.T @ delta3) * _relu_grad(Z2)  # (hidden2, N)
+    # Capa 2 — ReLU: gradiente fluye a través de la derivada ReLU
+    # Multiplicación element-wise (⊙) del gradiente con la máscara ReLU
+    # ReLU transmite gradientes donde Z2>0, anula donde Z2≤0
+    delta2 = (W3.T @ delta3) * _relu_grad(Z2)  # (hidden2, hidden1) x (hidden2, N)
     dW2 = (1.0 / N) * (delta2 @ A1.T)  # (hidden2, hidden1)
     db2 = (1.0 / N) * delta2.sum(axis=1)  # (hidden2,)
 
-    # Capa 1 — ReLU
+    # Capa 1 — ReLU: mismo patrón que capa 2
     delta1 = (W2.T @ delta2) * _relu_grad(Z1)  # (hidden1, N)
     dW1 = (1.0 / N) * (delta1 @ X)  # (hidden1, feature_dim)
     db1 = (1.0 / N) * delta1.sum(axis=1)  # (hidden1,)
@@ -495,6 +540,8 @@ def apply_gradients(
 
     if momentum == 0.0:
         # SGD puro — camino rápido sin estado adicional
+        # Actualización: θ ← θ − lr × ∇θ
+        # Cada parámetro se decrementa por su gradiente multiplicado por lr.
         for k, dk in zip(keys, grad_keys):
             params[k] -= learning_rate * gradients[dk]
         return
@@ -503,12 +550,20 @@ def apply_gradients(
         raise ValueError("velocities no puede ser None cuando momentum > 0.")
 
     # SGD con momentum — inicializa claves ausentes fuera del loop de actualización
+    # Esto evita crear ceros bajo la llave equivocada si hay typos en los nombres.
     for k in keys:
         if k not in velocities:
             velocities[k] = np.zeros_like(params[k])
 
-    # Actualización in-place: evita alocar arrays temporales por param por época
+    # Actualización con momentum in-place: evita alocar arrays temporales
+    # Fórmula (vectorizada en NumPy):
+    #   v ← μ × v + ∇θ         (velocidad acumulada)
+    #   θ ← θ − lr × v         (actualización)
+    # Esto hace que la velocidad "acumule" en la dirección correcta (momentum).
     for k, dk in zip(keys, grad_keys):
+        # In-place multiplication: v *= momentum (más rápido que v = v * momentum)
         velocities[k] *= momentum
+        # Suma el gradiente actual a la velocidad acumulada
         velocities[k] += gradients[dk]
+        # Decrementa el parámetro por la velocidad (no el gradiente directo)
         params[k] -= learning_rate * velocities[k]

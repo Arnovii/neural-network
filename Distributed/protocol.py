@@ -170,19 +170,40 @@ class MsgType(str, Enum):
 
 def encode(msg_type: MsgType, payload: Any) -> bytes:
     """
-    Serializa un mensaje a bytes listos para enviar por socket.
+    Serializa un mensaje a bytes listos para enviar por socket TCP.
 
-    :param msg_type: Tipo del mensaje.
-    :type msg_type: MsgType
+    FORMATO DEL PROTOCOLO:
+    ──────────────────────
+    ┌─────────────────┬──────────────────────┐
+    │ 4 bytes (BE)    │ N bytes              │
+    │ longitud N      │ pickle.dumps(msg)    │
+    └─────────────────┴──────────────────────┘
 
-    :param payload: Contenido del mensaje. Puede contener np.ndarray
-                    directamente; Pickle los serializa sin conversión.
-    :type payload: Any
+    El prefijo de 4 bytes es CRÍTICO: TCP es un stream sin límites de
+    mensaje. Sin el prefijo el receptor no sabe dónde termina un mensaje
+    y empieza el siguiente. Con big-endian los números son independientes
+    de la arquitectura de máquina.
 
-    :return: Bytes con prefijo de longitud seguidos del bloque Pickle.
-    :rtype: bytes
+    VENTAJA DE PICKLE:
+    ──────────────────
+    • np.ndarray se serializa nativo (binario) sin conversión a lista.
+    • Tamaño reducido: array (512,) float32 ocupa ~2 KB en Pickle vs
+      ~4 KB en JSON (diferencia crítica en redes lentas).
+    • Preserva tipos de datos: float32 sigue siendo float32 al deserializar.
+
+    :param msg_type: Tipo del mensaje de enumeración MsgType.
+    :type msg_type: MsgType, ej. MsgType.PARAMS, MsgType.GRADIENTS.
+
+    :param payload: Contenido del mensaje. Puede contener np.ndarray,
+                    diccionarios, floats. Pickle los maneja nativamente.
+    :type payload: Any, típicamente Dict con 'epochs', 'params', etc.
+
+    :return: Bytes con prefijo de longitud + bloque Pickle lista para enviar.
+    :rtype: bytes, formato: struct.pack(">I", len) + pickle.dumps(msg).
     """
     message = {"type": msg_type, "payload": payload}
+    # Serialización Pickle con protocolo más reciente (HIGHEST_PROTOCOL=5 en modern Python)
+    # Protocol 5 optimiza objetos grandes (crucial para arrays NumPy)
     body = pickle.dumps(message, protocol=pickle.HIGHEST_PROTOCOL)
 
     # Convierte la longitud del mensaje en un prefijo de 4 bytes en formato big-endian.
@@ -192,13 +213,22 @@ def encode(msg_type: MsgType, payload: Any) -> bytes:
 
 def decode(raw: bytes) -> Dict[str, Any]:
     """
-    Deserializa bytes a un diccionario de mensaje.
+    Deserializa bytes Pickle a un diccionario de mensaje Python.
 
-    :param raw: Bytes del cuerpo del mensaje (sin prefijo de longitud).
-    :type raw: bytes
+    FORMATO ESPERADO:
+    El bloque de bytes debe ser resultado de encode() (sin prefijo de longitud).
+    Contiene un dict serializado con Pickle con estructura:
+        {"type": MsgType, "payload": <datos>}
 
-    :return: Diccionario con claves ``"type"`` y ``"payload"``.
-    :rtype: Dict[str, Any]
+    PRESERVACIÓN DE TIPOS:
+    Pickle mantiene tipos NumPy: float32 sigue siendo float32 tras
+    deserialización, a diferencia de JSON que lo convierte a float.
+
+    :param raw: Bytes serializados con Pickle (sin prefijo de 4 bytes).
+    :type raw: bytes, resultado de pickle.dumps(dict).
+
+    :return: Diccionario con claves "type" (MsgType) y "payload" (Any).
+    :rtype: Dict[str, Any].
     """
     return pickle.loads(raw)
 
@@ -212,16 +242,34 @@ def send_message(sock: socket.socket, msg_type: MsgType, payload: Any) -> None:
     """
     Envía un mensaje completo por un socket TCP.
 
-    :param sock: Socket TCP conectado.
-    :type sock: socket.socket
+    MANEJO DE FRAGMENTACIÓN TCP:
+    ────────────────────────────
+    TCP no garantiza que sock.send() envíe todos los bytes en una llamada.
+    Si los datos son grandes, pueden ser fragmentados. Este helper implementa
+    un loop para asegurar que se envían exactamente len(data) bytes antes
+    de retornar.
 
-    :param msg_type: Tipo del mensaje.
-    :type msg_type: MsgType
+    EJEMPLO DE FLUJO:
+    ─────────────────
+    • Datos a enviar: 10 MB
+    • Llamada 1 a send(): devuelve 2 MB (3 MB restantes)
+    • Llamada 2 a send(): devuelve 5 MB (5 MB restantes)
+    • Llamada 3 a send(): devuelve 3 MB (0 MB restantes)
+    • Retorna — se enviaron 10 MB completos
 
-    :param payload: Contenido del mensaje.
-    :type payload: Any
+    :param sock: Socket TCP conectado (debe estar activo).
+    :type sock: socket.socket con estado ESTABLISHED.
 
-    :raises ConnectionError: Si el socket se cierra antes de enviar todo.
+    :param msg_type: Tipo de mensaje (PARAMS, GRADIENTS, etc.).
+    :type msg_type: MsgType, ej. MsgType.GRADIENTS.
+
+    :param payload: Contenido del mensaje (dict, array, etc.).
+    :type payload: Any, típicamente Dict con datos numéricos.
+
+    :return: None (mensaje enviado completo).
+    :rtype: NoneType.
+
+    :raises ConnectionError: Si socket se cierra antes de enviar todo.
     """
     data = encode(msg_type, payload)
 
@@ -230,6 +278,7 @@ def send_message(sock: socket.socket, msg_type: MsgType, payload: Any) -> None:
 
     while total_sent < len(data):
         # TCP puede enviar solo parte del mensaje en una llamada a sock.send()
+        # Envía desde el offset total_sent hasta el final
         sent = sock.send(data[total_sent:])
         if sent == 0:
             raise ConnectionError("Socket cerrado antes de completar el envío")
@@ -240,21 +289,45 @@ def receive_message(sock: socket.socket) -> Dict[str, Any]:
     """
     Recibe un mensaje completo desde un socket TCP.
 
-    Garantiza que el PS lea exactamente un mensaje completo, y luego lo
-    decodifica a un diccionario Python listo para usar.
+    PROTOCOLO DE RECEPCIÓN:
+    ──────────────────────
+    1. Lee exactamente 4 bytes → desempaqueta como big-endian unsigned int (longitud N).
+    2. Lee exactamente N bytes (el cuerpo del mensaje serializado con Pickle).
+    3. Deserializa Pickle y retorna Dict["type", "payload"].
 
-    :param sock: Socket TCP conectado.
-    :type sock: socket.socket
+    GARANTÍA DE COMPLETITUD:
+    El helper _recv_exact() maneja fragmentación TCP — garantiza leer
+    exactamente n_bytes antes de retornar, incluso si TCP fragmentó
+    el envío en múltiples packets.
 
-    :return: Diccionario con claves ``"type"`` y ``"payload"``.
-    :rtype: Dict[str, Any]
+    EJEMPLO:
+    ────────
+    • Receptor espera 4 bytes de longitud.
+    • TCP entrega 2 bytes en packet 1, 2 bytes en packet 2.
+    • _recv_exact(sock, 4) itera hasta recibir exactamente 4.
+    • Desempaqueta: len(body) = 1024
+    • Luego _recv_exact(sock, 1024) lee el cuerpo hasta obtener 1024 bytes total.
 
-    :raises ConnectionError: Si el socket se cierra inesperadamente.
+    :param sock: Socket TCP conectado (debe estar en estado ESTABLISHED).
+    :type sock: socket.socket.
+
+    :return: Diccionario con estructura:
+                {"type": MsgType, "payload": <contenido>}
+    :rtype: Dict[str, Any].
+
+    :raises ConnectionError: Si socket se cierra inesperadamente antes de
+                            completar la lectura (ej. peer disconnected).
     """
+    # Paso 1: Lee prefijo de longitud (4 bytes, big-endian)
     raw_length = _recv_exact(sock, 4)
-    # Convierte los 4 bytes de longitud a un entero usando big-endian.
+    # Desempaqueta: ">I" = (big-endian, unsigned int, 4 bytes)
+    # Resultado: tupla con un elemento, extraemos con [0]
     length = struct.unpack(">I", raw_length)[0]
+
+    # Paso 2: Lee el cuerpo del mensaje (length bytes)
     raw_body = _recv_exact(sock, length)
+
+    # Paso 3: Deserializa Pickle a Dict
     return decode(raw_body)
 
 

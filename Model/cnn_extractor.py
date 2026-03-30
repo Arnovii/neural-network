@@ -303,14 +303,30 @@ class CNNExtractor:
 
     def _weights_hash(self) -> str:
         """
-        Calcula el MD5 (8 hex primeros) de los pesos CNN actuales.
+        Calcula el MD5 (truncado a 8 hex) de los pesos CNN actuales.
 
-        Se usa como parte de la clave de caché de features para garantizar
-        que features extraídos con distintos pesos (aleatorios vs preentrenados)
-        nunca se mezclen. Calcular el hash de ~2 MB tarda < 5 ms.
+        PROPÓSITO: garantizar que features extraídos con distintos pesos
+        CNN nunca se mezclen en el caché. El hash se usa como parte del
+        nombre del archivo: {arch}_{hash8}_{split}_X.npy
 
-        :return: Hash MD5 truncado a 8 caracteres hexadecimales de los pesos.
-        :rtype: str.
+        ALGORITMO:
+        1. Itera sobre todos los parámetros del modelo.
+        2. Convierte cada tensor PyTorch a NumPy.
+        3. Serializa NumPy array a bytes.
+        4. Actualiza hash MD-5 acumulativo.
+        5. Retorna primeros 8 caracteres hexadecimales.
+
+        RENDIMIENTO: Calcular hash de ~44 MB (ResNet18) tarda ~5-10 ms
+        en CPU. Se ejecuta una sola vez por llamada a prepare().
+
+        EJEMPLO:
+        ───────
+        Mismos pesos → mismo hash → busca features en caché.
+        Pesos cambian (ej. preentrenado ImageNet vs random init)
+        → hash diferente → busca features con nuevo hash.
+
+        :return: Hash MD5 truncado a 8 caracteres hexadecimales.
+        :rtype: str, ej. "a3f7b8c2".
         """
         h = hashlib.md5()
         for tensor in self._model.state_dict().values():
@@ -536,7 +552,13 @@ class CNNExtractor:
     def _load_weights_if_cached(self) -> bool:
         """
         Carga los pesos del modelo más reciente con el mismo arch.
-        Busca {arch}_*_weights.pt en el directorio de caché.
+
+        Busca archivos matching el patrón ``{arch}_*_weights.pt`` en el
+        directorio de caché. Si encuentra múltiples candidatos, elige el
+        más recient por modificación (mtime). Luego establece modelo en eval().
+
+        :return: True si se cargó exitosamente un modelo cached, False si no hay candidatos.
+        :rtype: bool
         """
         import glob
 

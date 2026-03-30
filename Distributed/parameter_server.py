@@ -178,21 +178,34 @@ class ParameterServer:
         """
         Establece la CNN preentrenada que el PS distribuirá a los Workers.
 
-        Debe llamarse ANTES de train(). La CNN se envía a todos los
-        Workers al inicio de cada sesión via el mensaje CNN_WEIGHTS,
-        garantizando que todos usen exactamente los mismos pesos.
+        CRÍTICO: Debe llamarse ANTES de train(). La CNN se envía a todos los
+        Workers al inicio de cada sesión de entrenamiento mediante el mensaje
+        CNN_WEIGHTS. Esto garantiza que todos los Workers usan exactamente
+        los misma pesos, evitando divergencia accidental por diferencias
+        de inicialización.
 
-        :param cnn: CNNExtractor con pesos ya entrenados o cargados.
+        MODO PRECOMPUTED: CNN congelada (no se entrena).
+        MODO END-TO-END: CNN se entrena y sus pesos se actualizan cada época.
+
+        :param cnn: Instancia CNN Extractor con pesos ya inicializados o cargados
+                    desde archivo preentrenado.
+        :type cnn: CNNExtractor con atributos arch, device, feature_dim.
+
+        :return: None (modifica self._cnn).
+        :rtype: NoneType.
         """
         self._cnn = cnn
         _logger.ps(f"CNN configurada: arch={cnn.arch}, mode={self.training_mode}")
 
     def _get_cnn_params_bytes(self) -> bytes:
         """
-        Serializa los pesos CNN actuales para enviarlos a los Workers en E2E.
+        Serializa los pesos CNN actuales para enviarlos a los Workers.
 
-        En precomputado, esto es básicamente lo mismo que _get_weights_bytes().
-        En E2E, se usa en cada época para redistribuir pesos tras actualización.
+        En precomputado y end-to-end, usa la serialización de pesos CNN
+        del extractor. Permite distribuir la misma CNN a todos los Workers.
+
+        :return: Bytes serializados con torch.save() de state_dict CNN.
+        :rtype: bytes, tamaño ~2-44 MB según arquitectura.
         """
         if self._cnn is None:
             return b""
@@ -203,7 +216,26 @@ class ParameterServer:
         cnn_gradients_list: List[Dict[str, np.ndarray]],
         learning_rate: float,
     ) -> None:
-        """Solo se usa en la versión antigua del E2E (proxy gradients). No aplica en FedAvg."""
+        """
+        Aplica gradientes CNN promediados a los pesos locales del modelo.
+
+        Solo se usa en la versión antigua del E2E con proxy gradients.
+        No aplica en FedAvg (que simplemente promedia pesos finales).
+
+        Calcula el promedio de gradientes recibidos de todos los Workers,
+        luego aplica actualización SGD en-lugar (in-place) a la CNN:
+        param = param - lr * averaged_grad
+
+        :param cnn_gradients_list: Lista de diccionarios con gradientes CNN por Worker.
+                                   Cada dict mapea nombres de parámetros a arrays NumPy.
+        :type cnn_gradients_list: List[Dict[str, np.ndarray]]
+
+        :param learning_rate: Tasa de aprendizaje para actualización de pesos CNN.
+        :type learning_rate: float
+
+        :return: None (modifica self._cnn weights in-place).
+        :rtype: NoneType.
+        """
         if self._cnn is None or not cnn_gradients_list:
             return
 
@@ -230,8 +262,18 @@ class ParameterServer:
 
     def _handle_cnn_ready(self, worker_id: int, n_expected: int) -> None:
         """
-        Registra que un Worker confirmó haber extraído sus features (CNN_READY).
-        Cuando todos los Workers confirman, activa el evento de barrera.
+        Registra que un Worker confirmó extracción de features (CNN_READY).
+
+        Cuando todos los Workers esperados confirman, activa la barrera CNN_READY.
+
+        :param worker_id: ID del Worker que confirmó.
+        :type worker_id: int, asignado por PS.
+
+        :param n_expected: Número total de Workers esperados.
+        :type n_expected: int.
+
+        :return: None (modifica self._cnn_ready_count y activa barrera).
+        :rtype: NoneType.
         """
         with self._lock:
             self._cnn_ready_count += 1
@@ -248,7 +290,13 @@ class ParameterServer:
         """
         Imprime un mensaje de debug solo si self.debug es True.
 
-        :param msg: Mensaje a imprimir.
+        Útil para diagnóstico de entrenamiento distribuido sin contaminar log.
+
+        :param msg: Mensaje a imprimir en stdout.
+        :type msg: str
+
+        :return: None.
+        :rtype: NoneType.
         """
         if self.debug:
             print(msg)
@@ -264,7 +312,13 @@ class ParameterServer:
         CRÍTICO: Llamar SIEMPRE antes de iniciar una nueva sesión para
         evitar que state anterior contamine el nuevo entrenamiento.
 
-        :param new_training_mode: "precomputed" o "end_to_end"
+        :param new_training_mode: Modo de entrenamiento ("precomputed" o "end_to_end").
+        :type new_training_mode: str.
+
+        :return: None (modifica self state in-place).
+        :rtype: NoneType.
+
+        :raises ValueError: Si new_training_mode no es válido.
         """
         self._debug_print(
             "\n[PS][RESET] ════════════════════════════════════════════════════════════"
@@ -318,9 +372,13 @@ class ParameterServer:
 
     def listen(self) -> None:
         """
-        Abre el socket TCP y comienza a aceptar Workers en un hilo
-        de fondo. Retorna inmediatamente; las conexiones se procesan
-        de forma asíncrona.
+        Abre el socket TCP y comienza a aceptar conexiones de Workers en hilo.
+
+        Retorna inmediatamente; las conexiones se aceptan de forma asíncrona
+        en self._accept_thread. Los Workers se registran conforme llegan.
+
+        :return: None (inicia hilo daemon de aceptación).
+        :rtype: NoneType.
 
         :raises RuntimeError: Si el servidor ya está escuchando.
         """
@@ -345,8 +403,13 @@ class ParameterServer:
 
     def shutdown(self) -> None:
         """
-        Envía STOP a todos los Workers, cierra conexiones y detiene
-        el hilo de aceptación.
+        Envía STOP a todos los Workers, cierra conexiones y apaga servidor.
+
+        Limpia el estado del servidor para que pueda ser reutilizado con listen()
+        y train() nuevamente si es necesario.
+
+        :return: None (cierra sockets y detiene hilos).
+        :rtype: NoneType.
         """
         _logger.ps("Apagando servidor...")
         self._shutdown_flag.set()
@@ -372,7 +435,14 @@ class ParameterServer:
 
     @property
     def connected_workers(self) -> List[int]:
-        """IDs de los Workers actualmente conectados, ordenados."""
+        """
+        Obtiene los IDs de los Workers actualmente conectados.
+
+        Thread-safe: adquiere lock antes de acceder a diccionario de sockets.
+
+        :return: Lista de IDs de Workers conectados ordenados ascendentemente.
+        :rtype: List[int], ej. [0, 1, 3] si Workers 0, 1, 3 están conectados.
+        """
         with self._lock:
             return sorted(self._worker_sockets.keys())
 
@@ -382,8 +452,14 @@ class ParameterServer:
 
     def _accept_loop(self) -> None:
         """
-        Acepta conexiones entrantes indefinidamente hasta que se activa
-        el flag de apagado.
+        Acepta conexiones entrantes indefinidamente hasta que se activa el flag de apagado.
+
+        Se ejecuta en un hilo daemon. Utiliza socket.accept() con timeout para permitir
+        que el servidor compruebe el flag de apagado periódicamente. Para cada conexión,
+        lanza un hilo daemon _handshake() para realizar la negociación de identidad.
+
+        :return: None (ejecuta bucle infinito hasta shutdown).
+        :rtype: NoneType.
         """
         while not self._shutdown_flag.is_set():
             if self._server_sock is None:
@@ -1479,6 +1555,13 @@ class ParameterServer:
         Después de cargar, el caller debe llamar self._cnn._model.eval()
         para garantizar que BatchNorm use running stats (no batch stats).
         Esto se hace explícitamente en _train_end_to_end tras esta llamada.
+
+        :param weights_dict: Diccionario mapeo nombres de capas → arrays NumPy.
+                             Ej: {``conv1.weight``: array(...), ``bn1.bias``: array(...)}.
+        :type weights_dict: Dict[str, np.ndarray]
+
+        :return: None (carga pesos en-lugar en self._cnn._model).
+        :rtype: NoneType.
         """
         if self._cnn is None or not weights_dict:
             return
@@ -1534,7 +1617,18 @@ class ParameterServer:
                 self._remove_worker(wid)
 
     def _stop_worker(self, worker_id: int) -> None:
-        """Envía STOP y cierra el socket de un Worker."""
+        """
+        Envía mensaje STOP y cierra el socket de un Worker limpiamente.
+
+        Remueve el Worker de los diccionarios internos (_worker_sockets, _worker_addrs)
+        de forma thread-safe. Si el envío del STOP falla, cierra el socket de todas formas.
+
+        :param worker_id: ID único del Worker a detener.
+        :type worker_id: int
+
+        :return: None (cierra socket y limpia estado interno).
+        :rtype: NoneType.
+        """
         with self._lock:
             sock = self._worker_sockets.pop(worker_id, None)
             self._worker_addrs.pop(worker_id, None)
@@ -1546,7 +1640,19 @@ class ParameterServer:
                 pass
 
     def _remove_worker(self, worker_id: int) -> None:
-        """Elimina un Worker que perdió la conexión, sin enviar STOP."""
+        """
+        Elimina un Worker que perdió la conexión, sin enviar STOP.
+
+        Similar a _stop_worker() pero sin intentar enviar mensaje STOP.
+        Se utiliza cuando el socket ya está roto o desconectado.
+        Thread-safe: adquiere lock antes de remover de diccionarios.
+
+        :param worker_id: ID único del Worker a remover.
+        :type worker_id: int
+
+        :return: None (limpia estado interno y cierra socket).
+        :rtype: NoneType.
+        """
         with self._lock:
             sock = self._worker_sockets.pop(worker_id, None)
             self._worker_addrs.pop(worker_id, None)

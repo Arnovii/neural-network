@@ -139,10 +139,20 @@ class WorkerNode:
 
     def run(self) -> None:
         """
-        Conecta al PS, recibe el ID asignado y entra en el bucle
-        persistente de espera de sesiones de entrenamiento.
+        Ciclo de vida completo: Conecta al PS, sincroniza, entra en bucle
+        permanente de entrenamiento.
 
-        Bloquea hasta recibir STOP o hasta que la conexión se pierda.
+        FASES DE EJECUCIÓN:
+        ───────────────────
+        1. _connect()  → Envía READY, recibe WORKER_ID asignado.
+        2. _main_loop() → Bucle infinito procesando mensajes del PS.
+                         Espera TRAIN_START, ejecuta épocas, vuelve a esperar.
+        3. _disconnect() → Al recibir STOP, limpia conexión y sale.
+
+        El Worker persiste entre sesiones — nunca se regenera entre épocas
+        diferentes, solo recibe nuevos pesos desde el PS.
+
+        El método es bloqueante: no retorna hasta que el PS envíe STOP.
         """
         self._connect()
         self._log(
@@ -164,6 +174,15 @@ class WorkerNode:
         Establece la conexión TCP y completa el handshake con el PS.
 
         Envía READY (sin ID) y espera WORKER_ID con el ID asignado.
+        Como el Worker no tiene ID al inicio, el PS lo genera automáticamente.
+
+        AF_INET = IPv4. SOCK_STREAM = TCP (orientado a conexión, no datagramas).
+
+        :return: None (inicializa self._sock y self.worker_id).
+        :rtype: NoneType.
+
+        :raises ConnectionError: Si el PS no responde con WORKER_ID.
+        :raises OSError: Si la conexión TCP falla.
         """
 
         # AF_INET = IPv4.
@@ -180,7 +199,15 @@ class WorkerNode:
         self.worker_id = msg["payload"]["worker_id"]
 
     def _disconnect(self) -> None:
-        """Cierra la conexión TCP."""
+        """
+        Cierra la conexión TCP y limpia el estado interno del socket.
+
+        Se invoca al finalizar el Worker o perderse la conexión.
+        Maneja excepciones al cerrar para evitar errores en sockets rotos.
+
+        :return: None (establece self._sock = None).
+        :rtype: NoneType.
+        """
         if self._sock is not None:
             try:
                 self._sock.close()
@@ -368,12 +395,21 @@ class WorkerNode:
 
     def _handle_train_sample(self, payload: dict) -> None:
         """
-        Responde al PS con una muestra aleatoria de imágenes de train.
+        Responde al PS con una muestra aleatoria de imágenes de train raw.
 
         El PS usa esta muestra para preentrenar la CNN sin necesidad
         de usar los datos de prueba, eliminando el sesgo de evaluación.
         Solo se envían imágenes raw (no features) para que el PS
         pueda preentrenar con distintas CNNs sin re-solicitar datos.
+
+        Use un RNG con seed fijo (42) para garantizar reproducibilidad si se
+        solicita la misma muestra múltiples veces.
+
+        :param payload: Diccionario con ``n_samples`` (número de imágenes a enviar).
+        :type payload: dict
+
+        :return: None (envía ``TRAIN_SAMPLE_DATA`` al PS).
+        :rtype: NoneType.
         """
         n_samples = payload.get("n_samples", 10000)
         n_samples = min(n_samples, len(self._X_raw))
@@ -1090,7 +1126,18 @@ class WorkerNode:
     # ================================================================
 
     def _log(self, msg: str) -> None:
-        """Imprime un mensaje con el prefijo del Worker si verbose=True."""
+        """
+        Imprime un mensaje con el prefijo del Worker si verbose=True.
+
+        Útil para diagnóstico durante entrenamiento distribuido. Formato:
+        ``[Wn] mensaje`` donde ``n`` es el worker_id (o "?" si aún no asignado).
+
+        :param msg: Mensaje a imprimir en stdout.
+        :type msg: str
+
+        :return: None (solo escribe a stdout si verbose=True).
+        :rtype: NoneType.
+        """
         if self.verbose:
             wid = self.worker_id if self.worker_id is not None else "?"
             print(f"[W{wid}] {msg}")

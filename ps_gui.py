@@ -979,6 +979,11 @@ class DistributedPSApp:
         LISTENING → "Encender" deshabilitado, "Entrenar" habilitado
                     solo si hay Workers conectados, "Apagar" habilitado
         TRAINING  → todos deshabilitados excepto ninguno
+
+        También actualiza la pastilla de estado con color según state.
+
+        :return: None (modifica estado de botones en la UI).
+        :rtype: NoneType.
         """
         has_workers = bool(self._worker_status)
 
@@ -1078,7 +1083,21 @@ class DistributedPSApp:
             )
 
     def _update_session_column(self, worker_id: int, in_session: bool) -> None:
-        """Actualiza solo la columna 'Sesión actual' de un Worker."""
+        """
+        Actualiza solo la columna 'Sesión actual' de un Worker en el árbol.
+
+        Modifica el estado visual del Worker (``✓ Activo``, ``No``, ``—``)
+        dependiendo del flag in_session y el estado del sistema.
+
+        :param worker_id: ID del Worker a actualizar.
+        :type worker_id: int
+
+        :param in_session: True si el Worker participa en sesión actual.
+        :type in_session: bool
+
+        :return: None (modifica vista de árbol en UI).
+        :rtype: NoneType.
+        """
         tag = f"w{worker_id}"
         if self._wk_tree.exists(tag):
             current = self._wk_tree.item(tag, "values")
@@ -1159,9 +1178,14 @@ class DistributedPSApp:
 
     def _refresh_saved_models(self) -> None:
         """
-        Escanea el directorio de caché y actualiza la lista de modelos.
+        Escanea el directorio de caché y actualiza la lista de modelos CNN disponibles.
+
         Activa/desactiva el modo carga según haya modelos disponibles.
-        Llamado al iniciar y tras cada preentrenamiento completado.
+        Se invoca al iniciar la aplicación y tras cada preentrenamiento completado.
+        Pobla el dropdown de modelos ordenado por precisión (mejor primero).
+
+        :return: None (modifica dropdown y botones de UI).
+        :rtype: NoneType.
         """
         from Model.cnn_extractor import CNNExtractor
 
@@ -1289,7 +1313,15 @@ class DistributedPSApp:
                 widget.config(state=tk.NORMAL)
 
     def _on_system_mode_change(self) -> None:
-        """Maneja el cambio del modo de operación del sistema y actualiza estados."""
+        """
+        Maneja el cambio del modo de operación del sistema.
+
+        Actualiza estados de widgets según mode="precomputed" o mode="end_to_end".
+        Registra el cambio en log para trazabilidad.
+
+        :return: None (modifica UI y log).
+        :rtype: NoneType.
+        """
         mode = self._v_system_mode.get()
         self._update_widget_states()
 
@@ -1300,13 +1332,16 @@ class DistributedPSApp:
 
     def _on_cnn_mode_change(self) -> None:
         """
-        Alterna entre las secciones Cargar / Entrenar.
+        Alterna entre las secciones Cargar / Entrenar en la interfaz.
 
         Usa tkraise() en lugar de pack/pack_forget para que el frame
         visible suba al frente sin cambiar la posición en el layout.
         Ambos frames ocupan el mismo espacio en el contenedor.
 
         También actualiza los estados de controles dependientes del modo CNN.
+
+        :return: None (modifica frame visible y estado de UI).
+        :rtype: NoneType.
         """
         mode = self._v_cnn_mode.get()
         if mode == "load":
@@ -1320,7 +1355,18 @@ class DistributedPSApp:
         self._update_widget_states()
 
     def _on_cnn_model_selected(self, event=None) -> None:
-        """Actualiza la tarjeta de información al seleccionar un modelo."""
+        """
+        Actualiza la tarjeta de información al seleccionar un modelo en el dropdown.
+
+        Extrae metadatos del modelo seleccionado (arch, accuracy, loss, epochs, etc)
+        y actualiza las etiquetas de la UI. Si no hay selección válida, limpia info.
+
+        :param event: Evento Tkinter (ignorado, solo para binding).
+        :type event: Any
+
+        :return: None (modifica etiquetas de información en UI).
+        :rtype: NoneType.
+        """
         idx = self._cnn_dropdown.current()  # type: ignore
         if idx < 0 or idx >= len(self._saved_models):
             self._clear_model_info()
@@ -1348,7 +1394,15 @@ class DistributedPSApp:
         self._lbl_info_date.configure(text=f"Creado en       : {date}")  # type: ignore
 
     def _clear_model_info(self) -> None:
-        """Limpia la información del modelo (resetea etiquetas a —)."""
+        """
+        Limpia la información del modelo en la tarjeta.
+
+        Resetea todas las etiquetas de información a "—" (guion).
+        Se invoca cuando no hay modelo seleccionado o al inicializar.
+
+        :return: None (resotea etiquetas en UI).
+        :rtype: NoneType.
+        """
         for lbl, text in [
             (self._lbl_info_arch, "Arquitectura   : —"),
             (self._lbl_info_acc, "Precisión         : —"),
@@ -1451,7 +1505,16 @@ class DistributedPSApp:
         self.root.after(100, self._poll_queue)
 
     def _cmd_train(self) -> None:
-        """Lanza una sesión de entrenamiento con los Workers conectados."""
+        """
+        Lanza una sesión de entrenamiento distribuida con los Workers conectados.
+
+        Valida estado del servidor, recopila parámetros de UI, configura la CNN
+        si es necesario, y lanza el entrenamiento en un hilo daemon. Actualiza UI
+        durante el entrenamiento enviando eventos a la cola.
+
+        :return: None (lanza hilo de entrenamiento y retorna inmediatamente).
+        :rtype: NoneType.
+        """
         if self._state != self._S_LISTENING:
             return
         if not self._worker_status:
@@ -1745,7 +1808,16 @@ class DistributedPSApp:
         threading.Thread(target=_train_thread, daemon=True).start()
 
     def _cmd_shutdown(self) -> None:
-        """Apaga el servidor enviando STOP a todos los Workers."""
+        """
+        Apaga el servidor enviando STOP a todos los Workers.
+
+        Valida que el servidor no esté entrenando actualmente, pide confirmación
+        al usuario, luego lanza shutdown() en un hilo daemon. Limpia estado interno
+        y actualiza UI.
+
+        :return: None (lanza shutdown asincrónicamente).
+        :rtype: NoneType.
+        """
         if self._server is None or self._state == self._S_OFFLINE:
             return
         if self._state == self._S_TRAINING:
@@ -1783,7 +1855,17 @@ class DistributedPSApp:
     # ================================================================
 
     def _poll_queue(self) -> None:
-        """Lee mensajes de la cola y actualiza la UI. Se reprograma cada 100 ms."""
+        """
+        Lee mensajes de la cola de eventos y actualiza la UI.
+
+        Se reprograma cada 100 ms para mantener la UI responsiva.
+        Procesa eventos como conexiones de Workers, actualizaciones de estado,
+        y finalización de entrenamientos. Cada evento modifica el estado
+        interno y/o actualiza vistas (árbol de workers, gráficos, etc).
+
+        :return: None (actualiza UI y re-programa siguiente poll).
+        :rtype: NoneType.
+        """
         try:
             while True:
                 msg_type, payload = self._q.get_nowait()

@@ -60,16 +60,30 @@ class FormattedLogger:
 
     def __init__(self, use_colors: bool = True, use_timestamp: bool = False):
         """
-        Inicializa el logger.
+        Inicializa el logger con colores y timestamp opcionales.
 
-        :param use_colors: Si True, colorea los mensajes (desactivar si output no soporta ANSI)
-        :param use_timestamp: Si True, precede cada mensaje con timestamp
+        :param use_colors: Si True, colorea los mensajes ANSI.
+        :type use_colors: bool, default=True.
+
+        :param use_timestamp: Si True, precede cada mensaje con timestamp.
+        :type use_timestamp: bool, default=False.
+
+        :return: None (inicialización in-place).
+        :rtype: NoneType.
         """
         self.use_colors = use_colors
         self.use_timestamp = use_timestamp
 
     def _format_phase(self, phase: str) -> str:
-        """Obtiene la etiqueta de fase formateada."""
+        """
+        Obtiene la etiqueta de fase formateada con color opcional.
+
+        :param phase: Clave de fase (load, prep, train, eval, etc.).
+        :type phase: str.
+
+        :return: Etiqueta formateada con códigos ANSI opcionales.
+        :rtype: str.
+        """
         label = self.PHASES.get(phase, phase.upper())
         if self.use_colors:
             color = self.COLORS.get(phase, "")
@@ -77,7 +91,14 @@ class FormattedLogger:
         return f"[{label}]"
 
     def _format_timestamp(self) -> str:
-        """Retorna timestamp si está habilitado."""
+        """
+        Retorna timestamp en formato HH:MM:SS si está habilitado, sino lista vacía.
+
+        Utilizado internamente por log() para incluir información temporal en registros.
+
+        :return: String con timestamp encerrado en espacios (ej: " 14:32:47 ") o space vacío.
+        :rtype: str
+        """
         if self.use_timestamp:
             return f" {datetime.now().strftime('%H:%M:%S')} "
         return " "
@@ -181,19 +202,60 @@ class FormattedLogger:
         self.log("worker", message, progress, metric)
 
     def info(self, message: str) -> None:
-        """Registra mensaje informativo."""
+        """
+        Registra mensaje informativo con tipo de fase 'info'.
+
+        Wrapper sobre log() para facilitar logging de información general sin fase específica.
+
+        :param message: Mensaje a registrar.
+        :type message: str
+
+        :return: None (escribe a stdout o archivo configurado).
+        :rtype: NoneType.
+        """
         self.log("info", message)
 
     def warn(self, message: str) -> None:
-        """Registra advertencia."""
+        """
+        Registra advertencia con tipo de fase 'warn'.
+
+        Wrapper sobre log() para alertas y condiciones no críticas.
+
+        :param message: Mensaje de advertencia a registrar.
+        :type message: str
+
+        :return: None (escribe a stdout o archivo configurado).
+        :rtype: NoneType.
+        """
         self.log("warn", message)
 
     def error(self, message: str) -> None:
-        """Registra error."""
+        """
+        Registra error con tipo de fase 'error'.
+
+        Wrapper sobre log() para errores y excepciones.
+
+        :param message: Mensaje de error a registrar.
+        :type message: str
+
+        :return: None (escribe a stdout o archivo configurado).
+        :rtype: NoneType.
+        """
         self.log("error", message)
 
     def section(self, title: str) -> None:
-        """Registra un título de sección para mayor claridad."""
+        """
+        Registra un título de sección rodeado de líneas separadoras.
+
+        Imprime título centrado entre 70 caracteres de "=" para mejorar legibilidad visual
+        de logs estructurados. Útil para separar fases de entrenamiento o reproducibilidad.
+
+        :param title: Título de la sección a mostrar.
+        :type title: str
+
+        :return: None (escribe a stdout).
+        :rtype: NoneType.
+        """
         line = "=" * 70
         print(f"\n{line}")
         print(f"  {title}")
