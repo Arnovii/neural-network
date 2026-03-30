@@ -107,6 +107,89 @@ Features (from [ps_gui.py](ps_gui.py)):
 
 ---
 
+## Project Structure
+
+```
+neural-network/
+├── Data/                        # Datasets y caché de features
+│   ├── cifar-10-batches-py/     # CIFAR-10 raw (se descarga automáticamente, ~170 MB)
+│   ├── cifar10_train_nchw.npz   # Dataset procesado NCHW format
+│   └── feature_cache/           # Caché inteligente de features CNN
+│       ├── {arch}_{hash}_train_X.npy    # 50k train features (si PRECOMPUTED)
+│       ├── {arch}_{hash}_train_Y.npy
+│       ├── {arch}_{hash}_test_X.npy     # 10k test features (reutilizable)
+│       └── {arch}_{hash}_test_Y.npy
+│
+├── Distributed/                 # Núcleo del sistema distribuido
+│   ├── parameter_server.py      # ParameterServer: TCP listening, synchronization, training loop
+│   ├── worker_node.py           # WorkerNode: forward/backward, gradient computation, caching
+│   └── protocol.py              # Message serialization: 4-byte length + Pickle dict
+│
+├── Model/                       # Red neuronal central
+│   ├── cnn_extractor.py         # CNNExtractor: SimpleCNN/ResNet18, MD5-based cache
+│   ├── mlp.py                   # MLP NumPy backend: forward, backward, loss, gradients
+│   └── mlp_pytorch.py           # MLP PyTorch experimental version
+│
+├── Utils/                       # Utilidades y helpers
+│   ├── cifar_loader.py          # load_cifar10_train/test: descarga automática, NCHW format
+│   ├── logging_util.py          # Logger con colores para Worker/PS debugging
+│   └── results_exporter.py      # export_results: JSON con timestamp, métricas por época
+│
+├── Docker/                      # Configuración containerización
+│   ├── Dockerfile.worker        # Docker image para Workers
+│   └── run_workers.ps1          # PowerShell script: spawn 3+ containers
+│
+├── Exports/                     # Resultados de entrenamientos (JSON)
+│   └── resultado_YYYYMMDD_HHMMSS.json
+│
+├── docs/                        # Documentación técnica extensiva
+│   ├── 01_overview.md           # Visión general sistema (2 min read)
+│   ├── 02_architecture.md       # Design, responsibilities, data flow
+│   ├── 03_training_flow.md      # Per-epoch execution, timing breakdown
+│   ├── 04_modes_precomputed_vs_e2e.md    # Mode comparison, code examples
+│   ├── 05_worker_node.md        # Worker internals, caching, stratified partitioning
+│   ├── 06_parameter_server.md   # PS threading, synchronization primitives
+│   ├── 07_caching_system.md     # MD5 invalidation, performance analysis
+│   └── 08_data_flow.md          # Network flows, byte-level analysis
+│
+├── ps_terminal.py               # Parameter Server: terminal interface (CLI)
+├── ps_gui.py                    # Parameter Server: graphical interface (Tkinter + Matplotlib)
+├── worker.py                    # Worker Node: entry point
+│
+├── requirements.txt             # Python dependencies (numpy, torch, torchvision, matplotlib, tqdm)
+├── pyproject.toml               # Project metadata (build system, tool config)
+└── README.md                    # Este archivo
+```
+
+### Key Components Explained
+
+| Component | Purpose | Entry Point | Language |
+|-----------|---------|-------------|----------|
+| **Parameter Server** | Coordinates training, broadcasts weights, synchronizes barriers | `ps_terminal.py` or `ps_gui.py` | Python (CLI/Tkinter) |
+| **Worker Node** | Loads data locally, computes gradients, sends back to PS | `worker.py` | Python |
+| **CNN Extractor** | PyTorch feature extraction with intelligent MD5-based caching | `Model/cnn_extractor.py` | PyTorch |
+| **MLP (NumPy)** | Distributed classifier with explicit forward/backward | `Model/mlp.py` | NumPy (no autodiff) |
+| **Communication** | TCP sockets + Pickle message serialization | `Distributed/protocol.py` | Python sockets |
+
+### Cache Directory Convention
+
+Features are cached with split-aware keys:
+
+```
+{cache_dir}/{arch}_{weights_hash}_{split}_{X|Y}.npy
+
+Examples:
+  Data/feature_cache/simple_a1b2c3d4_train_X.npy    (50000, 512)
+  Data/feature_cache/simple_a1b2c3d4_train_Y.npy    (50000,)
+  Data/feature_cache/simple_a1b2c3d4_test_X.npy     (10000, 512)
+  Data/feature_cache/simple_a1b2c3d4_test_Y.npy     (10000,)
+  Data/feature_cache/resnet18_f5e6d7c8_train_X.npy  (50000, 512)
+```
+
+Hash changes when CNN weights change → automatic cache invalidation (no manual clearing needed).
+
+---
+
 ## Two Training Modes (Mutually Exclusive)
 
 **Short answer:** PRECOMPUTED is fast (~2s/epoch), END-TO-END is accurate (~98-99% vs 96%).
