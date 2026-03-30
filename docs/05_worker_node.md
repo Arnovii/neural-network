@@ -1,429 +1,414 @@
-# 5. WORKER NODE — ARQUITECTURA Y CICLO DE VIDA
+# 05. Worker Node: Internals y Caching
 
-## Ciclo de vida del Worker
+## Ciclo de Vida Completo
 
-```
-┌────────────────────────────────────────────────────────────────┐
-│               WORKER NODE LIFECYCLE                            │
-├────────────────────────────────────────────────────────────────┤
-│                                                                │
-│ 1. CONSTRUCCIÓN                                                │
-│    Worker(server_host, port, X_train, Y_train, ...)            │
-│    └─ Cargar 50K imágenes en RAM                               │
-│    └─ Inicializar CNN placeholder                              │
-│    └─ Pre-calcular índices por clase                           │
-│                                                                │
-│ 2. CONEXIÓN                                                    │
-│    worker.run()                                                │
-│    └─ Conectar TCP al PS                                       │
-│    └─ Enviar READY, recibir WORKER_ID                          │
-│                                                                │
-│ 3. CARGA DE CNN                                                │
-│    ◄─ CNN_WEIGHTS de PS                                        │
-│    └─ Cargar pesos                                             │
-│    └─ Congelar (precomputed) O habilitar (E2E)                 │
-│    └─ Extraer features (precomputed) O nada (E2E)              │
-│    └─ Enviar CNN_READY                                         │
-│                                                                │
-│ 4. SINCRONIZACIÓN                                              │
-│    └─ Esperar TRAIN_START                                      │
-│                                                                │
-│ 5. LOOP DE ENTRENAMIENTO                                       │
-│    ├─ Recibir PARAMS + seed                                    │
-│    ├─ Reconstruir índices                                      │
-│    ├─ Calcular gradientes (forward + backward)                 │
-│    ├─ Enviar GRADIENTS                                         │
-│    └─ Repetir (N épocas)                                       │
-│                                                                │
-│ 6. FIN DE SESIÓN                                               │
-│    ├─ Volver a paso 4 (esperar siguiente TRAIN_START)          │
-│    O                                                           │
-│    └─ Recibir STOP → desconectar                               │
-│                                                                │
-└────────────────────────────────────────────────────────────────┘
-```
+Un Worker tiene tres fases biofísicas:
 
----
-
-## Estructura de datos del Worker
+### Fase 1: Inicialización (Constructor)
 
 ```python
-class WorkerNode:
-    # Configuración
-    server_host: str              # IP del PS (ej. "192.168.1.100")
-    server_port: int              # Puerto TCP (ej. 9999)
-    worker_id: int                # Asignado por PS (0, 1, 2, …)
-    training_mode: str            # "precomputed" o "end_to_end"
-    
-    # Datos de entrenamiento
-    _X_raw: np.ndarray            # (50000, 3, 32, 32) — imágenes raw
-    _Y_raw: np.ndarray            # (50000,) — etiquetas
-    _X_features: np.ndarray       # (50000, 512) o empty — features cacheados
-    _Y_train: np.ndarray          # Copia de _Y_raw
-    
-    # Datos de prueba (solo si proporcionados)
-    _X_test: np.ndarray           # (10000, 3, 32, 32) — imagenes test
-    _Y_test: np.ndarray           # (10000,) — etiquetas test
-    
-    # Modelo CNN
-    _cnn: CNNExtractor            # Extractor de features
-    
-    # Parámetros MLP (recibidos del PS)
-    _mlp_params: Dict            # {W1, b1, W2, b2, W3, b3}
-    
-    # Índices por clase (precalculados)
-    _class_indices: List[np.ndarray]
-                                  # [0] = índices donde Y==0
-                                  # [1] = índices donde Y==1
-                                  # …
-                                  # [9] = índices donde Y==9
-    
-    # Socket TCP
-    _sock: socket.socket          # Conexión al PS
+worker = WorkerNode(
+    server_host="192.168.1.10",
+    server_port=9999,
+    X_train=(50000, 3, 32, 32),  # CIFAR-10 imágenes
+    Y_train=(50000,),
+    X_test=(10000, 3, 32, 32),   # datos test
+    Y_test=(10000,),
+    cnn_device="cuda",            # PyTorch device
+    cnn_seed=42,
+    hidden1=256, hidden2=128,
+    training_mode="precomputed",  # o "end_to_end"
+)
 ```
 
----
+**Estado después del constructor**:
+- `_sock = None` (no conectado)
+- `_cnn = CNNExtractor(arch="simple", seed=42)` (pesos aleatorios, serán sobrescritos)
+- `_X_raw = X_train` (datos raw en memoria, 50000×3×32×32)
+- `_X_features = empty array` (rellenado después de CNN_WEIGHTS)
+- `_class_indices = [where(Y==0), where(Y==1), ..., where(Y==9)]` (precalculado)
 
-## Reconstrucción de índices (stratified round-robin)
+**Memoria utilizada**: ~600 MB (50000 imágenes × 3×32×32×float32 ≈ 600 MB)
 
-### **Propósito**
-
-Cada Worker obtiene el mismo conjunto de índices si usa el mismo seed, pero distribuidos de forma balanceada.
-
-### **Algoritmo**
+### Fase 2: Conexión al PS (worker.run())
 
 ```python
-def _reconstruct_indices(self, seed, n_train, n_workers, worker_rank):
-    """
-    Retorna ~25% de los índices (12500 imgs de las 50000 totales).
-    
-    Invariante: cada Worker obtiene imgs de TODAS las clases.
-    Estrategia: round-robin dentro de cada clase.
-    
-    Ejemplo (2 workers, 5000 imgs por clase):
-    Clase 0: [0, 1, 2, 3, 4, …, 4999]
-    
-    Mezcla con seed:
-    Clase 0 mezclada: [42, 1001, 3, 4502, …]
-    
-    Round-robin por rank:
-    Worker 0 obtiene: [42, 3, 1, …]      (posiciones 0, 2, 4, …)
-    Worker 1 obtiene: [1001, 4502, …]   (posiciones 1, 3, 5, …)
-    
-    Resultado:
-    Worker 0: [42, 3, 1, …] + [otros indices clase 1] + … → 12500 total
-    Worker 1: [1001, 4502, …] + [otros indices clase 1] + … → 12500 total
-    
-    Garantías:
-    - Ambos workers obtienen datos de clase 0, 1, …, 9
-    - Balanceo perfecto (50-50)
-    - Determinístico (mismo seed → mismos índices)
-    """
-    rng = np.random.RandomState(seed)
-    n_per_class = n_train // 10  # 5000 por clase
-    
-    all_indices = []
-    for class_label in range(10):
-        class_indices = self._class_indices[class_label]
-        shuffled = rng.permutation(class_indices)
-        
-        # Distribuir en round-robin
-        my_indices = shuffled[worker_rank::n_workers]
-        all_indices.extend(my_indices)
-    
-    return np.array(all_indices)
+worker.run()  # Punto de entrada
+    ├─ worker._connect()
+    │   ├─ socket.socket(AF_INET, SOCK_STREAM)
+    │   ├─ socket.connect(server_host, server_port)  # TCP connect
+    │   ├─ send_message(MsgType.READY, {})          # "I'm ready"
+    │   └─ msg = receive_message()                   # Wait for WORKER_ID
+    │       └─ worker.worker_id = msg["worker_id"]  # e.g., 2
+    │
+    ├─ worker._log(f"Connected as Worker {worker_id}")
+    └─ worker._main_loop()
 ```
 
-### **Ejemplo numérico**
+**Después de _connect**:
+- `worker_id` asignado (e.g., 2)
+- Socket configurado, conectado al PS
+- Listo para recibir mensajes
 
-```
-Total: 50000 imágenes
-Clases: 10
-Por clase: 5000 imágenes
+### Fase 3: Bucle Principal (wait-for-messages)
 
-Worker 0 (rank=0), Worker 1 (rank=1), n_workers=2
-
-Clase 0:
-  Índices: [0, 1, 2, 3, 4, …, 4999]
-  Seed=42 mezcla: [3241, 102, 4501, 40, …]
-  Worker 0 obtiene (posiciones 0, 2, 4, …): [3241, 4501, …] ← 2500
-  Worker 1 obtiene (posiciones 1, 3, 5, …): [102, 40, …] ← 2500
-
-Clase 1:
-  Índices: [5000, 5001, …, 9999]
-  Seed=42 mezcla: [7401, 5123, 9211, …]
-  Worker 0 obtiene: [7401, 9211, …] ← 2500
-  Worker 1 obtiene: [5123, …] ← 2500
-
-… (repite para clases 2-9)
-
-Total por worker: 50000 / 2 = 25000
-Total de ambos: 50000
-Cobertura: ambos workers ven todas las clases
-```
-
----
-
-## Méthodos principales
-
-### **run()**
 ```python
-def run(self) -> None:
-    """
-    Punto de entrada. Conecta, carga CNN, entra en loop persistente.
-    """
-    self._connect()          # READY → WORKER_ID
-    self._main_loop()        # Espera mensajes indefinidamente
-    self._disconnect()       # Cierra conexión
-```
-
-### **_connect()**
-```python
-def _connect(self) -> None:
-    """
-    Envía READY, recibe WORKER_ID, guarda ID y socket.
-    """
-    self._sock = socket.socket()
-    self._sock.connect((self.server_host, self.server_port))
-    
-    # Handshake
-    send_message(self._sock, MsgType.READY, {})
-    msg = receive_message(self._sock)
-    self.worker_id = msg["payload"]["worker_id"]
-```
-
-### **_main_loop()**
-```python
-def _main_loop(self) -> None:
-    """
-    Loop persistente: espera mensajes del PS indefinidamente.
-    
-    Maneja:
-    - CNN_WEIGHTS: cargar CNN, extraer features (precomp) o habilitar (E2E)
-    - TRAIN_START: inicia sesión de N épocas
-    - STOP: terminar
-    """
+def _main_loop(self):
     while True:
-        msg = receive_message(self._sock)
+        msg = receive_message(self._sock)  # BLOQUEANTE
         
         if msg["type"] == MsgType.STOP:
             break
+        
         elif msg["type"] == MsgType.CNN_WEIGHTS:
             self._handle_cnn_weights(msg["payload"])
+        
+        elif msg["type"] == MsgType.REQUEST_TEST_FEATURES:
+            self._handle_request_test_features()
+        
+        elif msg["type"] == MsgType.TRAIN_SAMPLE:
+            self._handle_train_sample(msg["payload"])
+        
         elif msg["type"] == MsgType.TRAIN_START:
-            self._run_training_session(msg["payload"])
+            self._run_training_session(...)
 ```
 
-### **_handle_cnn_weights()**
+**Punto crítico**: El bucle es **bloqueante**. Si el Worker se queda en `receive_message()`, puede esperar indefinidamente. Si el PS envía un sleep(1000), el Worker se duerme 1 segundo esperandorespuesta.
+
+---
+
+## Manejo de CNN_WEIGHTS
+
+Cuando el PS envía `CNN_WEIGHTS`, el Worker:
+
+1. **Deserializa** los pesos (torch.load from bytes)
+2. **Carga en la CNN local** (state_dict.load)
+3. **Extrae features** de todo el dataset de train (con caché)
+4. **Confirma al PS** con CNN_READY
+
 ```python
-def _handle_cnn_weights(self, payload) -> None:
+def _handle_cnn_weights(self, payload: dict) -> None:
     """
-    Procesa CNN_WEIGHTS del PS:
-    1. Carga pesos CNN
-    2. Congelica (precomputed) O habilita (E2E)
-    3. Extrae features (precomputed) — con caché
-    4. Envía CNN_READY
-    
-    PRECOMPUTED:
-    ├─ set_trainable(False)
-    ├─ Extract + cache features = [CACHE HIT] ~0.5s o [CACHE MISS] ~30-60s
-    └─ CNN_READY
-    
-    END-TO-END:
-    ├─ set_trainable(True)
-    ├─ NO extraer features
-    └─ CNN_READY
+    PS envió los pesos de CNN. El Worker los carga, extrae features,
+    y confirma con CNN_READY.
     """
     arch = payload["arch"]
     weights_bytes = payload["weights_bytes"]
     
-    # Reconstruir si arch cambió
-    if self._cnn.arch != arch:
-        self._cnn = CNNExtractor(arch=arch, device=self._cnn.device)
+    # 1. Deserializar
+    weights_dict = torch.load(BytesIO(weights_bytes))
     
-    # Cargar pesos
-    self._cnn.load_weights_from_bytes(weights_bytes)
+    # 2. Cargar en CNN
+    self._cnn = CNNExtractor(arch=arch, device=self._cnn.device)
+    self._cnn.load_state_dict(weights_dict)
+    self._cnn.set_trainable(training_mode == "end_to_end")
     
-    if self.training_mode == "precomputed":
-        # Rama PRECOMPUTED
-        self._cnn.set_trainable(False)
-        # Extraer con caché inteligente
-        X_feat, Y = self._load_features_with_cache(
-            self._X_raw, self._Y_raw,
-            arch, batch_size=2048
-        )
-        self._X_features = X_feat
-    else:
-        # Rama END-TO-END
-        self._cnn.set_trainable(True)
-        self._X_features = np.empty((0,))  # Placeholder
+    # 3. Extraer features del COMPLETO dataset
+    X_features, _ = self._load_features_with_cache(
+        self._X_raw,
+        self._Y_raw,
+        arch=arch,
+        batch_size=self._optimal_batch_size(),
+        split="train",  # guardar con key="train"
+    )
     
-    # Confirmar
+    # 4. Guardar para uso en training
+    self._X_features = X_features  # (50000, 512)
+    
+    # 5. Confirmar al PS
     send_message(self._sock, MsgType.CNN_READY, {"worker_id": self.worker_id})
 ```
 
-### **_run_training_session()**
-```python
-def _run_training_session(self, payload) -> None:
-    """
-    Ejecuta una sesión de N épocas.
-    Por cada época: recibe PARAMS, calcula gradientes, envía GRADIENTS.
-    """
-    epochs = payload["epochs"]
-    n_train = payload["n_train"]
-    n_workers = payload["n_workers"]
-    worker_rank = payload["worker_rank"]
-    
-    for _ in range(epochs):
-        msg = receive_message(self._sock)
-        if msg["type"] == MsgType.PARAMS:
-            self._handle_params(msg["payload"], n_train, n_workers, worker_rank)
-```
+### Cálculo del Batch Size Óptimo
 
-### **_handle_params()**
-```python
-def _handle_params(self, payload, n_train, n_workers, worker_rank) -> None:
-    """
-    Procesa PARAMS de una época:
-    1. Reconstruir índices con seed
-    2. Cargar datos (indexar features o X_raw)
-    3. Forward CNN + MLP
-    4. Backward MLP (+ CNN si E2E)
-    5. Enviar GRADIENTS
-    """
-    epoch = payload["epoch"]
-    mlp_params = payload["params"]
-    seed = payload["seed"]
-    cnn_params = payload.get("cnn_params")  # None en precomputed
-    
-    # Reconstruir índices
-    indices = self._reconstruct_indices(seed, n_train, n_workers, worker_rank)
-    
-    if self.training_mode == "precomputed":
-        # RAMA PRECOMPUTED: features ya cacheados
-        X_batch = self._X_features[indices]
-        Y_batch = self.Y_train[indices]
-        gradients, loss, acc = forward_and_gradients(mlp_params, X_batch, Y_batch)
-        
-        send_message(self._sock, MsgType.GRADIENTS, {
-            "gradients": gradients,
-            "cnn_gradients": None
-        })
-    else:
-        # RAMA END-TO-END: calcular features on-the-fly
-        X_raw_batch = self._X_raw[indices]
-        Y_batch = self.Y_train[indices]
-        
-        # Cargar CNN con pesos actualizados
-        self._cnn.load_weights_from_bytes(cnn_params)
-        
-        # Forward CNN + MLP + backward
-        X_feat_batch = self._cnn.forward(X_raw_batch)
-        gradients, loss, acc = forward_and_gradients(mlp_params, X_feat_batch, Y_batch)
-        cnn_gradients = self._cnn.backward(loss)
-        
-        send_message(self._sock, MsgType.GRADIENTS, {
-            "gradients": gradients,
-            "cnn_gradients": cnn_gradients
-        })
-```
-
----
-
-## Optimizaciones principales
-
-### **1. Batch size adaptativo**
+El Worker adapta el batch size según arquitectura CNN y dispositivo:
 
 ```python
 def _optimal_batch_size(self) -> int:
     """
-    Calcula batch size dinámicamente según:
-    - Arquitectura CNN (simple vs resnet18)
-    - Dispositivo (CPU vs GPU)
-    - CPUs disponibles
+    Calcula batch size adaptativo para extracción CNN.
     
-    Objetivo: No congelar el proceso, aprovechar paralelismo.
-    
-    Heurística:
-    - Simple + CPU: 512 (ligero, muchas muestras)
-    - Simple + GPU: 2048 (más parallelismo)
-    - ResNet18 + CPU: 64 (pesado, pocas muestras)
-    - ResNet18 + GPU: 256 (moderado)
+    Trade-off: grande = fast pero memory-intensive, 
+               pequeño = lento pero safe.
     """
-    device_type = str(self._cnn.device).split(":")[0]
-    arch = self._cnn.arch
+    device_type = str(self._cnn.device).split(":")[0]  # cuda/cpu/mps
+    arch = self._cnn.arch  # simple vs resnet18
+    n_cpus = os.cpu_count()
     
     if arch == "resnet18":
-        return 64 if device_type == "cpu" else 256
-    else:  # simple
-        return 512 if device_type == "cpu" else 2048
+        # ResNet es pesada (18 capas)
+        if device_type == "cpu":
+            return 64  # muy conservador
+        elif device_type == "cuda":
+            return 256  # GPU es más forgiving
+        else:
+            return 128
+    else:
+        # SimpleCNN es más ligera
+        if device_type == "cpu":
+            return 512
+        elif device_type == "cuda":
+            return 2048  # pueder subir más
+        else:
+            return 1024
 ```
 
-### **2. Caché de features con hash**
+**Razón**: CNN forward pass es O(batch × depth × H × W). ResNet18 es ~18x más profunda que SimpleCNN → necesita batch 4x más pequeño.
+
+---
+
+## Sistema de Caché Inteligente
+
+### Función: _load_features_with_cache()
 
 ```python
-def _load_features_with_cache(self, X, Y, arch, batch_size, split="train"):
+def _load_features_with_cache(
+    self,
+    X: np.ndarray,        # (n_samples, 3, 32, 32)
+    Y: np.ndarray,        # (n_samples,)
+    arch: str,            # "simple" o "resnet18"
+    batch_size: int,
+    split: str,           # "train" o "test"
+) -> Tuple[np.ndarray, np.ndarray]:
     """
-    Extrae features con caché MD5:
+    Extrae features con caché automático e inteligente.
     
-    1. Calcula hash de pesos CNN actuales
-    2. Mira en Data/feature_cache/{arch}_{hash}_{split}_X.npy
-    3. Si existe y shape es correcto: CACHE HIT (~0.5s)
-    4. Si no existe: CACHE MISS → extrae (~30-60s) y guarda
+    Lógica:
+    1. Calcular hash MD5 de pesos CNN actuales
+    2. Construir cache key: {arch}_{hash8}_{split}_{X|Y}.npy
+    3. ¿Existe en disco? → cargar (< 0.5s)
+    4. ¿No? → CNN forward (primer uso o pesos cambiaron)
+    5. Guardar al disco para siguiente acceso
     """
-    weights_hash = self._cnn._weights_hash()  # MD5 de W
-    cache_key = f"{arch}_{weights_hash}_{split}"
-    cache_X_path = f"Data/feature_cache/{cache_key}_X.npy"
-    
-    if os.path.exists(cache_X_path):
-        X_feat = np.load(cache_X_path)
-        if X_feat.shape == (len(X), 512):  # Validar
-            return X_feat, Y
-    
-    # CACHE MISS: extraer
-    X_feat = self._cnn.extract_batched(X, batch_size)
-    np.save(cache_X_path, X_feat)
-    return X_feat, Y
 ```
 
-### **3. Indices pre-calculados por clase**
+### Flujo Detallado
+
+```
+Cache Query:
+├─ weight_hash = md5(cnn.state_dict())[:8]  # e.g., "a3f2c8d1"
+├─ cache_key = f"simple_a3f2c8d1_train"
+├─ cache_path_X = f"Data/feature_cache/{cache_key}_X.npy"
+├─ cache_path_Y = f"Data/feature_cache/{cache_key}_Y.npy"
+│
+├─ ¿Existen los archivos?
+│  ├─ SÍ (PRECOMPUTED con CNN congelada):
+│  │  ├─ X_feat = np.load(cache_path_X)
+│  │  ├─ Y = np.load(cache_path_Y)
+│  │  └─ Tiempo: 0.1-0.3s (disk I/O)
+│  │
+│  └─ NO (primera ejecución o CNN cambió):
+│     ├─ Para each batch en X:
+│     │  └─ X_batch_feat = cnn.extract(X_batch)
+│     ├─ Concatenar: X_features = [X_batch_feat1, X_batch_feat2, ...]
+│     ├─ np.save(cache_path_X, X_features)
+│     ├─ np.save(cache_path_Y, Y)
+│     └─ Tiempo: 3-30s (CNN forward, depende de arch)
+│
+└─ Devolver X_features
+```
+
+### Caché Key: Hash y Invalidación
+
+**Requerimiento**: Si pesos CNN cambian, debe recalcualarse features. Hash automáticamente invalida.
+
+**Ejemplo**: 
+- Época 0 (PRECOMPUTED): CNN pesos "A3F2..." → features cacheados "simple_a3f2_train_X.npy"
+- Época 1-N: CNN congelada → hash "A3F2..." (constante) → reutiliza caché
+- Vs END-TO-END: CNN pesos cambian cada época → hash distinto → siempre re-extrae
+
+**Ventaja sobre manualmente verificar**: 
+- Dev no necesita trackear "¿cambié los pesos?"
+- Sistema lo detecta automáticamente
+
+---
+
+## Reconstrucción Determinista de Indices
+
+Cuando el Worker recibe PARAMS, el payload incluye una semilla. Con esa semilla, **reconstruye sus índices de forma determinista**:
 
 ```python
-# En init: pre-calcular una sola vez
+def _reconstruct_indices(
+    self,
+    n_train: int,        # 50000
+    n_workers: int,      # 3
+    my_rank: int,        # 0, 1, or 2
+    seed: int,           # e.g., 45
+) -> np.ndarray:
+    """
+    Reconstruye los índices que este Worker debe procesar en esta época.
+    
+    Todos los Workers con el MISMO seed y rank obtienen EXACTAMENTE
+    los mismos índices (determinismo). Esta es la clave para que el
+    entrenamiento sea reproducible sin transmitir indices por red.
+    """
+    rng = np.random.RandomState(seed)
+    
+    # 1. Permutar indices de manera determinista
+    shuffled = np.arange(n_train)
+    rng.shuffle(shuffled)  # [3124, 18734, 202, ...] (determinista dado seed)
+    
+    # 2. Dividir round-robin: Worker i toma elementos donde idx % n_workers == i
+    my_indices = shuffled[my_rank::n_workers]
+    
+    # Resultado:
+    # Worker 0: [shuffled[0], shuffled[3], shuffled[6], ...]  (16667 elementos)
+    # Worker 1: [shuffled[1], shuffled[4], shuffled[7], ...]
+    # Worker 2: [shuffled[2], shuffled[5], shuffled[8], ...]
+    
+    return my_indices
+```
+
+**Ejemplo concreto**:
+```
+n_train = 50000, n_workers = 3, seed = 45
+shuffled = [3124, 18734, 202, 999, 25000, 1, 14111, ...]  (50000 elementos)
+
+Worker 0 (rank=0): [3124, 999, 14111, ...]     (0, 3, 6, 9, ...)
+Worker 1 (rank=1): [18734, 25000, ...]         (1, 4, 7, 10, ...)
+Worker 2 (rank=2): [202, 1, ...]               (2, 5, 8, 11, ...)
+```
+
+**Invariante**: Ejecutar dos veces con seed=45 → Worker 0 obtiene identicos indices → identicas muestras → identicos gradientes (hasta float precision).
+
+---
+
+## Manejo de Estratificación (Clases Balanceadas)
+
+Al construir, el Worker precalcula índices por clase:
+
+```python
+# En constructor
 self._class_indices = [
-    np.where(Y_train == digit)[0] for digit in range(10)
+    np.where(Y_train == digit)[0]
+    for digit in range(10)
 ]
 
-# En cada época: reutilizarlos
-indices = self._reconstruct_indices(seed)  # O(10 * len(clase) / 10) = O(n_train)
+# Result:
+# _class_indices[0] = [3, 15, 27, 100, ...]  (todos los índices Y==0)
+# _class_indices[1] = [4, 18, 32, 102, ...]  (todos los índices Y==1)
+# ...
+# _class_indices[9] = [8, 100, 255, ...]
 ```
+
+**Uso potencial**: Si necesitases estratificación (garantizar que cada batch tiene todas las clases → evitar 1-sample batches con Y=[0,0,0,0,...]), podrías usar:
+
+```python
+batch_per_class = n_batch // n_classes  # e.g., 100 // 10 = 10
+indices_batch = []
+for class_id in range(10):
+    sample_indices = rng.choice(
+        self._class_indices[class_id],
+        size=batch_per_class,
+        replace=True
+    )
+    indices_batch.extend(sample_indices)
+
+rng.shuffle(indices_batch)  # (opcional, para no tener clase-grupos)
+```
+
+**Realmente implementado**: Actualmente el código USA round-robin simple (no estratificado). Pero la estructura está lista.
 
 ---
 
-## 🔌 Manejo de mensajes del Worker
+## Mini-batching en End-To-End
 
+En END-TO-END, el Worker extrae features en **mini-batches** (no completo) para no saturar memoria:
+
+```python
+def _load_features_with_cache(...):
+    X_features_list = []
+    
+    # Dividir en mini-batches para CNN
+    for batch_start in range(0, len(X), batch_size):
+        batch_end = min(batch_start + batch_size, len(X))
+        X_batch = X[batch_start:batch_end]
+        
+        # CNN forward sobre mini-batch
+        X_batch_features = cnn.extract(X_batch)
+        X_features_list.append(X_batch_features)
+    
+    # Concatenar todos
+    X_features = np.concatenate(X_features_list, axis=0)
+    
+    # Guardar caché
+    np.save(cache_path_X, X_features)
 ```
-MENSAJE             RESPUESTA                    ACCIÓN
-────────────────────────────────────────────────────────────────
-CNN_WEIGHTS    ──►  CNN_READY         Cargar CNN, extraer/habilitar
-TRAIN_START    ──►  (inicia loop)     Comienza PARAMS/GRADIENTS
-PARAMS         ──►  GRADIENTS         Calcula gradientes
-REQUEST_TEST   ──►  TEST_FEATURES     Envía features test
-STOP           ──►  (desconexión)     Cierra conexión
-```
+
+**Por qué**: Forward 50000 imágenes de golpe en GPU = 50000×256×32×32×4 bytes ≈ 51 GB (no cabe). En mini-batches: 2048×256×32×32×4 ≈ 2 GB (manejable).
 
 ---
 
-## Puntos clave del Worker
+## Sincronización de training_mode
 
-1. **Persistente**: No se desconecta entre épocas/sesiones
-2. **Autónomo**: Reconstruye índices localmente — no confía en lista del PS
-3. **Agnóstico a red**: Carga datos locales, solo envía gradientes (60 KB o 50 MB)
-4. **Simétrico**: Todos los Workers ejecutan exactamente el mismo código
-5. **Determinístico**: Mismo seed → mismos índices (reproducible)
+El TRAIN_START message incluye `training_mode`. El Worker lo sincroniza:
+
+```python
+def _main_loop(self):
+    ...
+    elif msg["type"] == MsgType.TRAIN_START:
+        payload = msg["payload"]
+        
+        # Sincronizar mode desde PS
+        if "training_mode" in payload:
+            new_mode = payload["training_mode"]
+            if new_mode != self.training_mode:
+                print(f"Sync mode: {self.training_mode} → {new_mode}")
+                self.training_mode = new_mode
+        
+        # Ahora sí, entrenar con el mode correc
+        self._run_training_session(...)
+```
+
+**Razón**: 
+
+Después de una sesión PRECOMPUTED, pueden cambiar a END-TO-END sin reiniciar Workers. 
+
+El PS envía `{"training_mode": "end_to_end"}` en TRAIN_START del siguiente entrenamiento.
 
 ---
 
-**Documento**: `docs/05_worker_node.md`  
-**Última actualización**: 2026-03-27  
-**Nivel**: Intermedio → Avanzado
+## Manejo de Errores y Timeouts
+
+**No implementado** (debería estarlo):
+
+```python
+# IDEAL (no en código actual):
+def _main_loop(self):
+    timeout_seconds = 300  # 5 min
+    
+    while True:
+        msg = receive_message(self._sock, timeout=timeout_seconds)
+        
+        if msg is None:
+            # Timeout: PS no envió nada en 5 min
+            print("Timeout esperando PS. Desconectando.")
+            break
+        
+        # Procesar msg
+```
+
+**Actual**: Sin timeout. Si PS falla, Worker se queda esperando indefinidamente.
+
+---
+
+## Debugging y Logging
+
+El Worker usa un logger con colores:
+
+```python
+_logger.worker(f"Conectado como Worker {worker_id}")
+_logger.worker(f"PRECOMPUTED mode, features cacheados: {self._X_features.shape}")
+_logger.worker(f"Epoch {epoch}: loss={loss:.4f} accuracy={accuracy:.2f}%")
+```
+
+**Salida típica**:
+```
+[WORKER 2] Connected to PS as ID=2
+[WORKER 2] CNN features extracted: (16667, 512)
+[WORKER 2] Mode synchronized: precomputed
+[WORKER 2] Epoch 0: loss=0.328 accuracy=91.2%
+[WORKER 2] Sending GRADIENTS...
+[WORKER 2] Waiting for next epoch...
+```
+

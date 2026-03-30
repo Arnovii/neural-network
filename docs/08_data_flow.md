@@ -1,523 +1,506 @@
-# 8. DATA FLOW COMPLETO
+# 08. Flujo de Datos: Análisis de Red y Comunicación
 
-## Diagrama general
+## Análisis a Alto Nivel: Bytes por Época
+
+### Escenario: PRECOMPUTED Mode, 4 Workers, LAN
 
 ```
-╔════════════════════════════════════════════════════════════════════╗
-║                    DATOS CIFAR-10 (50,000 imágenes)                ║
-║                   √ uint8, shape (32×32×3)                         ║
-╚════════════════════════════════════════════════════════════════════╝
-                              │
-                              ▼
-           ┌──────────────────────────────────────┐
-           │      NORMALIZACIÓN (cifar_loader)    │
-           ├──────────────────────────────────────┤
-           │ • float32 / 255                      │
-           │ • (X - mean) / std per channel       │
-           │ • Transpose NHWC → NCHW              │
-           │ Shape: (50000, 3, 32, 32)            │
-           │ Size: 6.4 GB → 200 MB (float32)      │
-           └──────────────────────────────────────┘
-                              │
-                ┌─────────────┴─────────────┐
-                │                           │
-                ▼                           ▼
-    ┌───────────────────────┐   ┌──────────────────────┐
-    │   WORKER Node         │   │   PARAMETER SERVER   │
-    │                       │   │                      │
-    │ Almacena en RAM:      │   │ Mantiene:            │
-    │ _X_raw (50K) 200 MB   │   │ • Modelo CNN         │
-    │                       │   │ • Parámetros MLP     │
-    └───────────────────────┘   └──────────────────────┘
-                │
-    ┌───────────┴──────────┬───────────────────┐
-    │                      │                   │
-    ▼                      ▼                   ▼
-┌──────────────┐  ┌──────────────────┐  ┌──────────────┐
-│ PRECOMPUTED  │  │    END-TO-END    │  │ TEST DATA    │
-│   MODE       │  │      MODE        │  │              │
-└──────────────┘  └──────────────────┘  └──────────────┘
+Por Época:
+
+DOWNLINK (PS → Workers):
+  - PARAMS message: 1.135 MB × 4 workers = 4.54 MB
+  - Total downlink: ~4.5 MB
+  
+UPLINK (Workers → PS):
+  - GRADIENTS message: 1.135 MB × 4 workers = 4.54 MB
+  - Total uplink: ~4.5 MB
+
+TOTAL per epoch: ~9 MB (bidirectional)
+TOTAL per 100 epochs: ~900 MB
+```
+
+**Visualización de timing (LAN, ~1 Gbps)**:
+```
+4.5 MB downlink ÷ 1 Gbps = 4.5 MB ÷ 125 MB/s = 0.036s ≈ 36 ms
+4.5 MB uplink ÷ 1 Gbps = 4.5 MB ÷ 125 MB/s = 0.036s ≈ 36 ms
+
+Total network time: ~72 ms (negligible vs ~2500ms compute time)
+Network overhead: 72/2500 ≈ 3% (muy bajo)
 ```
 
 ---
 
-## FLUJO PRECOMPUTED
+## Desglose Byte-Level: PARAMS Message
 
-### **Fase 1: Extracción de features (ONCE)""
+### Estructura
 
-```
-WORKER NODE:
-┌─────────────────────────────────────────────────────┐
-│                                                     │
-│  _X_raw (50000, 3, 32, 32)  [200 MB en RAM]         │
-│          │                                          │
-│          ├─ CACHE CHECK?                            │
-│          │   ├─ Hash CNN weights → "abc123de"       │
-│          │   ├─ Look for:                           │
-│          │   │   Data/feature_cache/                │
-│          │   │   simple_abc123de_train_X.npy        │
-│          │   │                                      │
-│          │   ├─ [CACHE HIT] → _X_features           │
-│          │   │  (~0.5s via np.load)                 │
-│          │   │                                      │
-│          │   └─ [CACHE MISS]                        │
-│          │      │                                   │
-│          ▼      ▼ CNN Forward (PyTorch)             │
-│       ┌─────────────────────────────────┐           │
-│       │ For each batch (2048 imgages):  │           │
-│       │ │                               │           │
-│       │ ├─ To GPU/device                │           │
-│       │ ├─ Conv → BN → ReLU → MaxPool   │           │
-│       │ ├─ Conv → BN → ReLU → MaxPool   │           │
-│       │ ├─ Conv → BN → ReLU → MaxPool   │           │
-│       │ ├─ AdaptiveAvgPool(1)           │           │
-│       │ ├─ Result: (2048, 512)          │           │
-│       │ └─ Back to CPU, append          │           │
-│       │                                 │           │
-│       │ Total time: ~30-60s             │           │
-│       └─────────────────────────────────┘           │
-│             │                                       │
-│             ▼                                       │
-│       _X_features (50000, 512)  [200 MB in RAM]     │
-│             │                                       │
-│             ├─ Save to cache:                       │
-│             │   Data/feature_cache/                 │
-│             │   simple_abc123de_train_X.npy         │
-│             │   (~200 MB, ~1-2s write)              │
-│             └─ _class_indices pre-computed          │
-│                                                     │
-│  ✓ CNN_READY sent to PS                             │
-│                                                     │
-└─────────────────────────────────────────────────────┘
-
-SETUP TIME: ~0.5-60s (depend cache hit/miss)
+```python
+{
+    "type": "PARAMS",              # str, ~10 bytes (Python overhead)
+    "payload": {
+        "epoch": 5,                # int, ~8 bytes
+        "params": {
+            "W1": ndarray,         # (256, 512) float32
+            "b1": ndarray,         # (256,) float32
+            "W2": ndarray,         # (128, 256) float32
+            "b2": ndarray,         # (128,) float32
+            "W3": ndarray,         # (10, 128) float32
+            "b3": ndarray,         # (10,) float32
+        },
+        "seed": 12345,             # int, ~8 bytes
+        "training_mode": "precomputed"  # str, ~20 bytes
+    }
+}
 ```
 
-### **Fase 2: Training session (EACH EPOCH)**
+### Cálculo de Size
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│ PARAMETER SERVER                                        │
-├─────────────────────────────────────────────────────────┤
-│                                                         │
-│  [epoch = 0]                                            │
-│                                                         │
-│  seed_0 = 42  (random)                                  │
-│       │                                                 │
-│       ├─ Generate PARAMS:                               │
-│       │  ├─ epoch: 0                                    │
-│       │  ├─ params: {W1, b1, W2, b2, W3, b3}            │
-│       │  ├─ seed: 42                                    │
-│       │  └─ cnn_params: None  ← CRITICAL                │
-│       │                                                 │
-│       └─► [BROADCAST to all Workers]                    │
-│                                                         │
-└─────────────────────────────────────────────────────────┘
-                      │
-        ┌─────────────┴─────────────┐
-        │                           │
-        ▼                           ▼
-┌──────────────┐            ┌──────────────┐
-│ WORKER 0     │            │ WORKER 1     │
-├──────────────┤            ├──────────────┤
-│ rank = 0     │            │ rank = 1     │
-│ n_workers = 2│            │ n_workers = 2│
-│              │            │              │
-│ RECONSTRUCT  │            │ RECONSTRUCT  │
-│ indices:     │            │ indices:     │
-│              │            │              │
-│ seed = 42    │            │ seed = 42    │
-│ round-robin  │            │ round-robin  │
-│ by class     │            │ by class     │
-│              │            │              │
-│ indices[0] = │            │ indices[0] = │
-│ [0, 2, 4, …] │            │ [1, 3, 5, …] │
-│ (pares)      │            │ (impares)    │
-│              │            │              │
-│ X_batch =    │            │ X_batch =    │
-│ features     │            │ features     │
-│ [indices]    │            │ [indices]    │
-│ (25K, 512)   │            │ (25K, 512)   │
-│              │            │              │
-│ Y_batch =    │            │ Y_batch =    │
-│ Y_train[idx] │            │ Y_train[idx] │
-│              │            │              │
-└──────────────┘            └──────────────┘
-       │                            │
-       ├────────────────────────────┤
-       │     FORWARD + BACKWARD     │
-       │        (both parallel)     │
-       │                            │
-       ▼                            ▼
-┌──────────────────────┐   ┌──────────────────────┐
-│ MLP ONLY:            │   │ MLP ONLY:            │
-│                      │   │                      │
-│ Z1 = X @ W1 + b1     │   │ Z1 = X @ W1 + b1     │
-│ A1 = ReLU(Z1)        │   │ A1 = ReLU(Z1)        │
-│ Z2 = A1 @ W2 + b2    │   │ Z2 = A1 @ W2 + b2    │
-│ A2 = ReLU(Z2)        │   │ A2 = ReLU(Z2)        │
-│ Logits = A2@W3+b3    │   │ Logits = A2@W3+b3    │
-│                      │   │                      │
-│ Loss = XE(L, Y)      │   │ Loss = XE(L, Y)      │
-│                      │   │                      │
-│ Backward:            │   │ Backward:            │
-│ dW1, db1, …          │   │ dW1, db1, …          │
-│ dW3 = 128×10         │   │ dW3 = 128×10         │
-│ dW2 = 256×128        │   │ dW2 = 256×128        │
-│ dW1 = 512×256        │   │ dW1 = 512×256        │
-│ Size: ~60 KB         │   │ Size: ~60 KB         │
-│                      │   │                      │
-└──────────────────────┘   └──────────────────────┘
-       │                            │
-       │       SEND GRADIENTS       │
-       ├────────────────────────────┤
-       │                            │
-       ▼                            ▼
-┌─────────────────────────────────────────────────────────┐
-│ PARAMETER SERVER (COLLECTING GRADIENTS)                 │
-├─────────────────────────────────────────────────────────┤
-│                                                         │
-│  Received from Worker 0: ∇L_0                           │
-│  Received from Worker 1: ∇L_1                           │
-│                                                         │
-│  ∇̄ = (∇L_0 + ∇L_1) / 2  [average]                       │
-│                                                         │
-│  W ← W - lr * ∇̄         [SGD update]                    │
-│                                                         │
-│  Evaluate test:                                         │
-│  ├─ X_test_raw (10K, 3, 32, 32)                         │
-│  ├─ X_test_feat = CNN(X_test_raw)  [PS CPU]             │
-│  ├─ Logits = MLP(X_test_feat)                           │
-│  ├─ Accuracy, Loss → history                            │
-│  │                                                      │
-│  └─ Callback: on_epoch_end(0, 10, 96.5%, 0.12, …)       │
-│                                                         │
-└─────────────────────────────────────────────────────────┘
+W1: 256 × 512 × 4 bytes (float32) = 524,288 bytes
+b1: 256 × 4 bytes = 1,024 bytes
+W2: 128 × 256 × 4 bytes = 131,072 bytes
+b2: 128 × 4 bytes = 512 bytes
+W3: 10 × 128 × 4 bytes = 5,120 bytes
+b3: 10 × 4 bytes = 40 bytes
 
-[REPEAT for epochs 1-9]
+Total params: ~661 KB
 
-TIME PER EPOCH:
-├─ Send PARAMS: 0.1s
-├─ Worker compute: 2s (MLP forward+backward)
-├─ Receive GRADIENTS: 0.1s (60 KB per worker)
-├─ Average + update: 0.1s
-└─ Evaluate test: 10s (CNN forward PS CPU)
+Pickle overhead (metadata, dict structure): ~20%
+Pickle serialized: 661 KB × 1.2 = ~795 KB
 
-TOTAL: ~12s / epoch = ~120s for 10 epochs
+Message length prefix: 4 bytes
 
-[BREAKDOWN]
-├─ Setup (first time): 60s (extract features)
-├─ Setup (cached): 0.5s
-├─ 10 epochs: 120s
-└─ TOTAL: 60-120s for session
+TOTAL PARAMS message: ~795 KB
+```
+
+**Discrepancia respecto 1.135 MB**: Más arriba dije 1.135 MB. La diferencia viene de overhead de Pickle (tipos, refs, etc.). Aproximar como 1 MB es conservador.
+
+---
+
+## Desglose Byte-Level: GRADIENTS Message
+
+### Estructura
+
+```python
+{
+    "type": "GRADIENTS",
+    "payload": {
+        "worker_id": 2,            # int, ~8 bytes
+        "epoch": 5,                # int, ~8 bytes
+        "gradients": {
+            "W1": ndarray,         # (256, 512) float32 — MISMA SHAPE QUE W1
+            "b1": ndarray,         # (256,) float32
+            "W2": ndarray,         # (128, 256) float32
+            "b2": ndarray,         # (128,) float32
+            "W3": ndarray,         # (10, 128) float32
+            "b3": ndarray,         # (10,) float32
+        },
+        "loss": 0.234,             # float, ~8 bytes
+        "accuracy": 91.2,          # float, ~8 bytes
+    }
+}
+```
+
+### Cálculo de Size
+
+Idéntico al PARAMS:
+- Gradients tienen EXACTAMENTE la same shape que pesos
+- Total: ~795 KB + metadata
+
+**TOTAL GRADIENTS message: ~795 KB**
+
+---
+
+## CNN_WEIGHTS Message (Inicial)
+
+Solo se envía UNA vez por sesión de entrenamiento (al inicio).
+
+### SimpleCNN
+
+```python
+state_dict = {
+    "conv1.weight":      (64, 3, 3, 3),         float32 ≈ 7 KB
+    "conv1.bias":        (64,),                 float32 ≈ 256 B
+    "bn1.weight":        (64,),                 float32 ≈ 256 B
+    "bn1.running_mean":  (64,),                 float32 ≈ 256 B
+    ...
+    "fc.weight":         (512, 256),            float32 ≈ 512 KB
+    "fc.bias":           (512,),                float32 ≈ 2 KB
+}
+
+Total params: 3 conv blocks + 3 fc layers ≈ 600 KB
+Pickle serialized + overhead: ≈ 800 KB
+```
+
+### ResNet18
+
+```
+18 residual blocks, cada uno con múltiples conv layers
+Total parameters: ~11 million
+Bytes: 11M × 4 bytes (float32) = 44 MB
+Pickle serialized + overhead: ≈ 50 MB
+```
+
+### Transmission del CNN_WEIGHTS
+
+```
+PRECOMPUTED:
+  SimpleCNN broadcast: 800 KB (1ª vez, luego ignorado)
+  Total init overhead: 800 KB × 4 workers = 3.2 MB
+
+END-TO-END:
+  CNN weights cada época (cambio después de update)
+  ResNet18 broadcast: 50 MB × N epochs = 50 × 10 = 500 MB
+  Total init overhead + training: 50 MB × 4 workers × 10 epochs = 2 GB downlink
 ```
 
 ---
 
-## FLUJO END-TO-END
+## Peticiones de Test Features
 
-### **Fase 1: SETUP (menor)**
+**Solo una vez por entrenamiento** (después de CNN_READY, antes de epoch 1).
 
-```
-WORKER NODE:
-┌──────────────────────────────────────┐
-│ Recibe CNN_WEIGHTS                   │
-│                                      │
-│ NO EXTRAE FEATURES:                  │
-│ _X_features = np.empty((0,))         │
-│                                      │
-│ set_trainable(True)                  │
-│ → Pesos CNN requieren gradientes     │
-│                                      │
-│ Guarda _X_raw en RAM (200 MB)        │
-│                                      │
-│ ✓ CNN_READY sent to PS               │
-│                                      │
-│ SETUP TIME: ~1-2s                    │
-└──────────────────────────────────────┘
+### REQUEST_TEST_FEATURES Message
+
+```python
+{
+    "type": "REQUEST_TEST_FEATURES",
+    "payload": {}  # sin contenido
+}
+
+Size: ~50 bytes
 ```
 
-### **Fase 2: Training session (EACH EPOCH)**
+### TEST_FEATURES Response
 
-```
-┌─────────────────────────────────────────────────────────┐
-│ PARAMETER SERVER                                        │
-├─────────────────────────────────────────────────────────┤
-│                                                         │
-│  [epoch = 0]                                            │
-│                                                         │
-│  seed_0 = 42  (random)                                  │
-│       │                                                 │
-│       ├─ Generate PARAMS:                               │
-│       │  ├─ epoch: 0                                    │
-│       │  ├─ params: {W1, b1, W2, b2, W3, b3}  [MLP]     │
-│       │  ├─ seed: 42                                    │
-│       │  └─ cnn_params: <weights_bytes>  ← CRITICAL     │
-│       │     Size: 50 MB (torch.save CNN state)          │
-│       │                                                 │
-│       └─► [BROADCAST to all Workers] (50 MB/worker)     │
-│              Total network: 50 MB × K workers           │
-│                                                         │
-└─────────────────────────────────────────────────────────┘
-                      │
-        ┌─────────────┴─────────────┐
-        │                           │
-        ▼                           ▼
-┌──────────────┐            ┌──────────────┐
-│ WORKER 0     │            │ WORKER 1     │
-├──────────────┤            ├──────────────┤
-│              │            │              │
-│ Load CNN     │            │ Load CNN     │
-│ weights from │            │ weights from │
-│ cnn_params   │            │ cnn_params   │
-│ (50 MB)      │            │ (50 MB)   [NETWORK TRAFFIC]
-│              │            │              │
-│ indices =    │            │ indices =    │
-│ reconstruct  │            │ reconstruct  │
-│ (seed=42)    │            │ (seed=42)    │
-│              │            │              │
-│ X_raw_batch  │            │ X_raw_batch  │
-│ [indices]    │            │ [indices]    │
-│ (25K,3,32,32)│            │ (25K,3,32,32)│
-│              │            │              │
-└──────────────┘            └──────────────┘
-       │                            │
-       ├────────────────────────────┤
-       │  CNN FORWARD+BACKWARD      │
-       │  (GPU accelerated if avail)│
-       │                            │
-       ▼                            ▼
-┌──────────────────────┐   ┌──────────────────────┐
-│ CNN FORWARD:         │   │ CNN FORWARD:         │
-│ X_raw → Conv → … →   │   │ X_raw → Conv → … →   │
-│ Features (25K, 512)  │   │ Features (25K, 512)  │
-│                      │   │                      │
-│ Time: 5-10s          │   │ Time: 5-10s          │
-│                      │   │                      │
-│ MLP FORWARD:         │   │ MLP FORWARD:         │
-│ Features → MLP       │   │ Features → MLP       │
-│ Logits, Loss         │   │ Logits, Loss         │
-│                      │   │                      │
-│ Time: 0.1s           │   │ Time: 0.1s           │
-│                      │   │                      │
-│ CNN BACKWARD:        │   │ CNN BACKWARD:        │
-│ ∂L/∂CNN_weights      │   │ ∂L/∂CNN_weights      │
-│ Size: 50 MB gradients│   │ Size: 50 MB gradients│
-│ Time: 5-10s          │   │ Time: 5-10s          │
-│                      │   │                      │
-│ MLP BACKWARD:        │   │ MLP BACKWARD:        │
-│ ∂L/∂MLP_weights      │   │ ∂L/∂MLP_weights      │
-│ Size: 60 KB          │   │ Size: 60 KB          │
-│                      │   │                      │
-│ Time: 0.1s           │   │ Time: 0.1s           │
-│                      │   │                      │
-└──────────────────────┘   └──────────────────────┘
-       │                            │
-       │    SEND GRADIENTS (BOTH!)  │
-       ├────────────────────────────┤
-       │                            │
-       ▼                            ▼
-┌─────────────────────────────────────────────────────────┐
-│ PARAMETER SERVER (COLLECTING GRADIENTS)                 │
-├─────────────────────────────────────────────────────────┤
-│                                                         │
-│  Received from Worker 0:                                │
-│  ├─ MLP gradients: 60 KB                                │
-│  ├─ CNN gradients: 50 MB  ← BIG!                        │
-│                                                         │
-│  Received from Worker 1:                                │
-│  ├─ MLP gradients: 60 KB                                │
-│  ├─ CNN gradients: 50 MB                                │
-│                                                         │
-│  [NETWORK TRAFFIC] 50 MB/worker × 2 = 100 MB received   │
-│                                                         │
-│  Average gradients:                                     │
-│  ├─ ∇̄_MLP = (∇MLP[0] + ∇MLP[1]) / 2                     │
-│  ├─ ∇̄_CNN = (∇CNN[0] + ∇CNN[1]) / 2                     │
-│                                                         │
-│  Update parameters:                                     │
-│  ├─ MLP: W ← W - lr * ∇̄_MLP                             │
-│  ├─ CNN: W ← W - lr * ∇̄_CNN  ← CNN CAMBIA               │
-│                                                         │
-│  Request TEST_FEATURES from Worker 0:                   │
-│  ├─ Worker 0 extracts X_test_feat (5-10s GPU)           │
-│  ├─ Sent to PS: 40 MB                                   │
-│                                                         │
-│  Evaluate test:                                         │
-│  ├─ X_test_feat (received from worker) → MLP            │
-│  ├─ Logits, Accuracy, Loss → history                    │
-│                                                         │
-└─────────────────────────────────────────────────────────┘
+```python
+{
+    "type": "TEST_FEATURES",
+    "payload": {
+        "X_test_features": (10000, 512),  # float32
+        "Y_test": (10000,),               # int32
+    }
+}
 
-[REPEAT for epochs 1-9]
-
-TIME PER EPOCH:
-├─ Send PARAMS (MLP + CNN weights): 5-10s (network)
-├─ Worker CNN forward: 5s
-├─ Worker MLP forward: 0.1s
-├─ Worker CNN backward: 5s
-├─ Worker MLP backward: 0.1s
-├─ Receive GRADIENTS: 10-20s (100 MB network)
-├─ Average + update: 0.1s (now for both MLP + CNN)
-├─ Request + receive TEST_FEATURES: 10-20s (network + extraction)
-├─ Evaluate test (MLP only, features from worker): 0.1s
-└─ Total: ~35-50s per epoch
-
-TOTAL FOR SESSION:
-├─ Setup: 1-2s
-├─ 10 epochs: 350-500s
-└─ TOTAL: ~6-8 minutes for session
-
-[BOTTLENECK] Network bandwidth (sending/receiving 50 MB CNN params)
+Size calculation:
+  X: 10000 × 512 × 4 = 20 MB
+  Y: 10000 × 4 = 40 KB
+  Total: ~20 MB
+  + Pickle overhead: ~24 MB
 ```
 
 ---
 
-## Tamaños de datos
+## Protocolo de Mensajes: Nivel Socket
 
-| Concepto | Formato | Tamaño | Notas |
-|----------|---------|--------|-------|
-| **X_raw (train)** | (50K, 3, 32, 32) uint8 | 150 MB | original |
-| **X_raw normalized** | (50K, 3, 32, 32) float32 | 6.4 GB | memory, normalizado |
-| **X_features** | (50K, 512) float32 | 100 MB | CNN output |
-| **Y_train** | (50K,) int32 | 200 KB | etiquetas |
-| **W1** | (512, 256) float32 | 512 KB | MLP weight layer 1 |
-| **W2** | (256, 128) float32 | 128 KB | MLP weight layer 2 |
-| **W3** | (128, 10) float32 | 5 KB | MLP weight layer 3 |
-| **MLP total** | all weights + bias | ~1.3 MB | ~60 KB gradients |
-| **CNN state** | for simple or resnet | 50-100 MB | depends arch |
-| **X_test (raw)** | (10K, 3, 32, 32) uint8 | 30 MB | test data |
-| **X_test_features** | (10K, 512) float32 | 20 MB | CNN output test |
-
----
-
-## Network traffic analysis
-
-### **PRECOMPUTED (2 workers, 10 epochs)**
+### Format Binary Detallado
 
 ```
-Baseline: zero before training
-│
-├─ CNN_WEIGHTS broadcast
-│  └─ 50 MB (simple) × 2 workers = 100 MB ↓
-│
-├─ Testing (PS CPU):
-│  ├─ (no extra network traffic for test)
-│  └─ Eval happens on PS
-│
-├─ Per epoch loop (× 10):
-│  ├─ PARAMS send: 1 MB × 2 = 2 MB ↓
-│  ├─ GRADIENTS receive: 60 KB × 2 = 120 KB ↑
-│  └─ (repeat 10 times)
-│
-└─ STOP message: <1 KB
+┌─────────────┬────────────────────────────────────────────────────┐
+│  4 bytes    │  N bytes                                           │
+│  big-endian │  pickle.dumps({                                    │
+│  uint32(N)  │      "type": MsgType enum value,                   │
+│             │      "payload": dict or None                       │
+│             │  })                                                │
+└─────────────┴────────────────────────────────────────────────────┘
 
-TOTAL: ~100 MB down + ~1.2 MB up = 101.2 MB
+Ejemplo PARAMS:
+  Header: 0x00 0x00 0x03 0x2F  (815 bytes en big-endian = 0x032F)
+  Payload: pickled data (815 bytes)
 ```
 
-### **END-TO-END (2 workers, 10 epochs)**
+### Implementación
 
-```
-Baseline: zero before training
-│
-├─ CNN_WEIGHTS broadcast
-│  └─ 50 MB × 2 = 100 MB ↓
-│
-├─ Per epoch loop (× 10):
-│  ├─ PARAMS send (MLP + CNN): 50 MB × 2 = 100 MB ↓
-│  ├─ GRADIENTS receive (MLP + CNN): 50 MB × 2 = 100 MB ↑
-│  └─ (repeat 10 times)
-│
-├─ TEST_FEATURES  (epoch 0 or end):
-│  └─ 40 MB (features) ↑
-│
-└─ STOP message: <1 KB
+```python
+def send_message(sock: socket, msg_type: MsgType, payload: dict):
+    """Serializa y envía un mensaje."""
+    message = {
+        "type": msg_type,
+        "payload": payload,
+    }
+    
+    # Pickle
+    data = pickle.dumps(message)
+    
+    # Prepend length
+    length = len(data)
+    header = struct.pack(">I", length)  # big-endian uint32
+    
+    # Send
+    sock.sendall(header + data)
 
-TOTAL: ~1.1 GB down + ~1.1 GB up = 2.2 GB
-└─ 20x more than PRECOMPUTED!
+def receive_message(sock: socket) -> dict:
+    """Recibe y deserializa un mensaje."""
+    # Recibir header (4 bytes)
+    header = sock.recv(4)
+    if len(header) < 4:
+        raise ConnectionError("Unable to receive message header")
+    
+    # Parse length
+    length = struct.unpack(">I", header)[0]
+    
+    # Recibir payload (length bytes)
+    data = b""
+    while len(data) < length:
+        chunk = sock.recv(min(4096, length - len(data)))
+        if not chunk:
+            raise ConnectionError("Connection lost")
+        data += chunk
+    
+    # Unpickle
+    message = pickle.loads(data)
+    return message
 ```
 
 ---
 
-## Flujo TEST data
+## TCP Buffering y Fragmentacion
 
-### **PRECOMPUTED**
+### Característica de TCP: Stream Oriented
 
-```
-┌──────────────────────────────────┐
-│ PS Constructor                   │
-├──────────────────────────────────┤
-│ X_test, Y_test = load_cifar10..  │ (provided at init)
-│        │                         │
-│        ▼                         │
-│ Stored for evaluation            │
-│ (PS CPU only, never to workers)  │
-│                                  │
-└──────────────────────────────────┘
-                │
-    ┌───────────┴──────────────────┐
-    │                              │
-    ▼                       (each epoc)
-    ├─ X_feat = CNN(X_test)  [PS local]
-    ├─ logits = MLP(X_feat)
-    └─ Accuracy, Loss computed locally
-       (no network traffic for test)
+TCP no preserva límites de mensajes. Si envías 1 MB:
+- Puede llegar en 10 chunks de 100 KB
+- O 1000 chunks de 1 KB
+- El receptor debe ser tolerante
+
+**Por eso el 4-byte length prefix es crítico**: Permite `receive_message()` saber cuántos bytes esperar exactamente.
+
+### Send Example
+
+```python
+# Enviar PARAMS (1 MB)
+send_message(sock, MsgType.PARAMS, {...})
+    ├─ pickle.dumps(): 1 MB (+ overhead)
+    ├─ struct.pack(">I", 1000000): "\x00\x0f\x42\x40"
+    └─ sock.sendall(header + data): TCP transmission
+        ├─ TCP layer dividespaquetes (MTU ~1500 bytes)
+        └─ Red: packets de 1.5 KB cada uno hasta totalizr 1 MB
 ```
 
-### **END-TO-END**
+### Recv Example
 
-```
-┌─────────────────────────────────┐
-│ PS Constructor                  │
-├─────────────────────────────────┤
-│ X_test, Y_test (provided)       │ (optional in E2E)
-│        │                        │
-│ Cannot use directly             │
-│ reason: CNN on Worker GPU,      │
-│        PS CPU                   │
-│                                 │
-└─────────────────────────────────┘
-                │
-    ┌───────────┴───────────────────┐
-    │       After CNN_READY         │
-    ▼                               │
-    ├─ REQUEST_TEST_FEATURES        │
-    │  to Worker 0                  │
-    │                               │
-    └─► Worker 0:                   │
-        ├─ X_test_feat =            │
-        │  CNN.forward(X_test)      │
-        │  (uses worker GPU)        │
-        │                           │
-        └─ SEND TEST_FEATURES       │
-           ~40 MB ↑ (network!)      │
-           │                        │
-    ┌──────┴────────────────────────┐
-    │                               │
-    ▼  (each epoch)                 │
-    ├─ X_feat = _X_test_features    │
-    │  (cached from worker)         │
-    ├─ logits = MLP(X_feat)         │
-    └─ Accuracy, Loss computed      │
-       (no further network traffic) │
+```python
+# Recibir PARAMS (1 MB)
+receive_message(sock)
+    ├─ recv(4): obtiene header "\x00\x0f\x42\x40"
+    ├─ unpack: length = 1000000
+    ├─ Loop:
+    │   ├─ recv(4096): primer chunk, 4 KB (TCP buffer)
+    │   ├─ recv(4096): segundo chunk, 4 KB
+    │   ├─ ...
+    │   └─ Repetir hasta sumar 1 MB
+    └─ pickle.loads(): deserializar y devolver
 ```
 
 ---
 
-## Resumen: PRECOMPUTED vs END-TO-END
+## Latencia de Red: Casos Reales
 
-| Aspecto | PRECOMPUTED | END-TO-END |
-|---------|-------------|-----------|
-| **Setup data flow** | Raw → CNN → Features → Caché | Raw → stored |
-| **Epoch data flow** | Features → MLP → Gradients | Raw → CNN → Features → MLP → Gradients (both) |
-| **CNN participating** | PS (read-only) | Worker GPU (training) |
-| **Test flow** | PS on CPU (fast) | Worker extracts, sends to PS |
-| **Network bytes/epoch** | 2 MB (PARAMS) + 120 KB (GRADS) | 100 MB down + 100 MB up |
-| **Storage** | Features cached (100-200 MB) | Raw always in RAM |
-| **Parallelism** | Perfect (workers independent) | Network becomes bottleneck |
+### LAN (Same Facility, 1 Gbps)
+
+```
+Send message ~1 MB:
+  - Time: 1 MB ÷ 125 MB/s ≈ 8 ms
+  - Latency: ~1 ms roundtrip (ping)
+  - Total: 8-10 ms
+
+Overhead per epoch:
+  - 2 messages (PARAMS + GRADIENTS) × 2 = ~20 ms
+  - Compute time: 2000-2500 ms
+  - Ratio: 20/2500 ≈ 0.8% (negligible)
+```
+
+### WAN (Different Countries, 30 Mbps, 100ms latency)
+
+```
+Send message ~1 MB:
+  - Time: 1 MB ÷ 3.75 MB/s ≈ 267 ms
+  - Latency: ~100 ms roundtrip
+  - Total: 367 ms per message
+
+Overhead per epoch:
+  - 2 messages × 2: ~734 ms
+  - Compute time: 2000-2500 ms
+  - Ratio: 734/2500 ≈ 29% (SIGNIFICANT)
+  
+10 epochs: 2.5s × 10 + 7.3s × 10 = 97 segundos (vs 27s en LAN)
+```
+
+**Conclusión**: WAN es viable pero el overhead de red es substancial. END-TO-END con CNN_WEIGHTS sería prohibitivo (50 MB × 10 epochs = 500 MB = ~1500s en WAN).
 
 ---
 
-**Documento**: `docs/08_data_flow.md`  
-**Última actualización**: 2026-03-27  
-**Nivel**: Avanzado
+## Optimizaciones Posibles (No Implementadas)
+
+### 1. Gradient Compression
+
+Enviar float16 en lugar de float32 (50%, pero alguna pérdida):
+
+```python
+# Antes
+gradients_f32 = {...}  # 795 KB
+
+# Después (hipotético)
+gradients_f16 = {k: v.astype(np.float16) for k, v in gradients_f32.items()}
+# Size: 795 KB / 2 ≈ 397 KB (50% reduction)
+```
+
+**Trade-off**: Pequeña pérdida de precisión (float16 = 16 bits) pero 2x menos red.
+
+### 2. Gradient Quantization
+
+Convertir a int8 con scaling:
+
+```python
+# Antes: 1000 valores float32 = 4 KB
+# Después: 1000 valores int8 + scaling factor = 1 KB + overhead
+# Total: 1.1 KB (90% reduction)
+
+Técnica:
+  original ∈ [-0.5, 0.5]
+  scaled = int(original / 0.5 * 127)  # -127 ← -0.5, +127 ← +0.5
+  transmitted = max(-128, min(127, scaled))  # clip to int8
+  
+  Receiver:
+    recovered = transmitted * 0.5 / 127  # approximate original
+```
+
+### 3. Selective Broadcast (Enviar solo pesos que cambiaron)
+
+Detectar qué parámetros MLP NO cambiaron y omitirlos:
+
+```python
+# Hipotético
+changed = {}
+for param_name in params:
+    if not np.allclose(new_params[param_name], old_params[param_name]):
+        changed[param_name] = new_params[param_name]
+
+# Enviar solo 'changed'
+# Workers aplicar update solo a modified
+```
+
+**Risk**: Complejidad, debugging difícil, savings pequeños (típicamente todos cambian).
+
+### 4. Asynchronous Gradient Aggregation
+
+En lugar de esperar todos workers para promediar:
+
+```python
+# Actual (sincrónico)
+wait_for_all_workers()
+average_gradients()
+update()
+
+# Hipotético (asincrónico + stale gradients)
+average_available_workers()
+update()
+# Pero Workers 3-4 pueden estar rezagados → stale gradients problem
+```
+
+**Risk**: Convergencia puede compirse, trade-off no es claro.
+
+---
+
+## Análisis de Scalabilidad
+
+### Cuello de Botella Actual: Receive Sequential
+
+```python
+# PS recibe gradients secuencialmente
+for _ in range(n_workers):
+    msg = receive_message()  # Bloqueante
+```
+
+Si Worker 1 y 2 envían inmediatamente pero Worker 3 espera 10s:
+- PS no puede empezar a procesar gradients 1 y 2 hasta recibir 3
+- También bloqueante: otros Workers intenten comunicar algo (error) no pueden
+
+**Solución**: Usar threading + queue:
+
+```python
+# Ideal (no en código actual)
+import threading
+import queue
+
+grad_queue = queue.Queue()
+
+def receive_thread():
+    while True:
+        msg = receive_message()
+        grad_queue.put(msg)
+
+threading.Thread(target=receive_thread, daemon=True).start()
+
+# Main thread
+messages = [grad_queue.get() for _ in range(n_workers)]  # No bloqueante
+```
+
+**Beneficio**: PS puede procesar un mensaje parcial mientras otros llegan.
+
+---
+
+## Estimación de Throughput Teórico
+
+### PRECOMPUTED, 100 Workers
+
+```
+Per epoch:
+  Downlink: 1 MB × 100 = 100 MB
+  Uplink: 1 MB × 100 = 100 MB
+
+LAN (10 Gbps):
+  Time: 100 MB ÷ 1.25 GB/s = 80 ms downlink
+       100 MB ÷ 1.25 GB/s = 80 ms uplink
+  Total: 160 ms overhead (vs 2.5s compute) = 6% overhead
+
+WAN (1 Gbps):
+  Time: 100 MB ÷ 125 MB/s = 800 ms downlink
+       100 MB ÷ 125 MB/s = 800 ms uplink
+  Total: 1600 ms overhead (vs 2.5s compute) = 64% overhead
+
+100 epochs:
+  LAN: 100 × 2.5s + 100 × 0.16s = 250s + 16s = 266s
+  WAN: 100 × 2.5s + 100 × 1.6s = 250s + 160s = 410s
+```
+
+**Escalability**: 
+- LAN good: network is NOT bottleneck
+- WAN problematic: network is 40% of training time
+
+---
+
+## Monitoreo de Tráfico (Debugging)
+
+```python
+# Hooks para medir bytes transmitidos
+
+bytes_sent_total = 0
+bytes_recv_total = 0
+
+def send_message_monitored(sock, msg_type, payload):
+    global bytes_sent_total
+    # ... (serialize)
+    sent_bytes = sock.sendall(header + data)
+    bytes_sent_total += len(header) + len(data)
+
+def receive_message_monitored(sock):
+    global bytes_recv_total
+    # ... (deserialize)
+    bytes_recv_total += len(header) + len(data)
+
+# Después de train
+print(f"Total sent: {bytes_sent_total / 1e6:.2f} MB")
+print(f"Total recv: {bytes_recv_total / 1e6:.2f} MB")
+```
+
+Esperado para PRECOMPUTED 10 epochs, 3 workers:
+```
+PARAMS: 1 MB × 3 × 10 = 30 MB
+GRADIENTS: 1 MB × 3 × 10 = 30 MB
+CNN_WEIGHTS (initial): 0.8 MB × 3 = 2.4 MB
+Other (WORKER_ID, CNN_READY, etc.): ~1 MB
+
+Total: ~63 MB downlink, ~63 MB uplink
+```
+

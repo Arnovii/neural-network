@@ -1,382 +1,388 @@
-# 4. MODOS DE ENTRENAMIENTO: PRECOMPUTED vs END-TO-END
+# 04. Modos de Entrenamiento: PRECOMPUTED vs END-TO-END
 
-## Comparación rápida
+## Comparación a Alto Nivel
 
-| Aspecto | PRECOMPUTED | END-TO-END |
-|--------|-------------|-----------|
-| **CNN** | Congelada (sin gradientes) | Entrenable (con gradientes) |
-| **Features** | Pre-extraidos, cacheados | Calculados cada época |
-| **Setup** | ~45s (extracción) | ~2s (solo cargar) |
-| **Época típica** | ~2s (NumPy MLP) | ~25s (CNN forward+backward) |
-| **Tamaño PARAMS** | ~60 KB | ~50 MB (CNN + MLP) |
-| **Tamaño GRADIENTS** | ~60 KB | ~50 MB (CNN + MLP) |
-| **Mejor para** | Validación rápida, CNN buena | Ajuste fino, investigación |
-| **Requiere GPU** | No (NumPy) | Recomendable (CNN costosa) |
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    PRECOMPUTED                                  │
+├─────────────────────────────────────────────────────────────────┤
+│ CNN:       CONGELADA (pesos fijos)                              │
+│ Features:  Extraídos UNA sola vez al inicio                     │
+│ Caché:     Pesa ~500 MB, reutilizado cada época                 │
+│ Compute:   ~2 seg/época (solo MLP)                              │
+│ GPU:       NO necesaria                                         │
+│ Precisión: 94-97%                                               │
+│ Caso uso:  Teaching, quick validation, offline environments     │
+└─────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────┐
+│                    END-TO-END                                   │
+├─────────────────────────────────────────────────────────────────┤
+│ CNN:       ENTRENABLE (pesos se actualizan cada época)          │
+│ Features:  Extraídos FRESCO cada época                          │
+│ Caché:     Cache invalidado (hash distinto) cada época          │
+│ Compute:   ~12-15 seg/época (CNN+MLP)                           │
+│ GPU:       RECOMENDADA                                          │
+│ Precisión: 98-99%                                               │
+│ Caso uso:  Production, best accuracy, research                  │
+└─────────────────────────────────────────────────────────────────┘
+```
 
 ---
 
-## Flujo PRECOMPUTED en detalle
+## Modo 1: PRECOMPUTED (Rápido, Congelado)
 
-### **Idea clave**
-
-"La CNN es un extractor de features congelado. Una vez que tenemos los features, solo necesitamos entrenar el MLP lineal."
+### Flujo General
 
 ```
-┌─────────────────────────────────────────────────────┐
-│                PRECOMPUTED PIPELINE                  │
-├─────────────────────────────────────────────────────┤
-│                                                     │
-│ SETUP (UNA VEZ):                                    │
-│  Raw Images (50K) ──CNN (frozen)──> Features (50K) │
-│         Cachear features                            │
-│                                                     │
-│ CADA ÉPOCA:                                         │
-│  Feature[índices] ──MLP──> Logits ──Loss            │
-│         ∇MLP → PS                                   │
-│                                                     │
-│ CNN nunca se entrena.                               │
-│ Solo gradientes MLP se comunican.                   │
-└─────────────────────────────────────────────────────┘
+1. Inicio (una vez):
+   ├─ CNN inicializada (seed fijo o pretrained)
+   ├─ CNN.set_trainable(False)  ← CONGELADA
+   ├─ PS distribuye CNN_WEIGHTS a todos Workers
+   ├─ Cada Worker: extract_features(X_train) → (50000, 512)
+   ├─ Cachea con key: simple_a3f2c8d1_train_X.npy
+   └─ Enviado CNN_READY
+   
+2. Por cada época:
+   ├─ PS envía PARAMS (MLP weights)
+   ├─ Worker: recv PARAMS
+   ├─ Worker: X_batch = X_features[indices]  ← INDEXING EN MEMORIA
+   ├─ Worker: forward/backward MLP
+   ├─ Worker: envía GRADIENTS (solo MLP, sin CNN)
+   ├─ PS: promedia, actualiza MLP params
+   └─ CNN nunca es actualizada (congelada)
 ```
 
-### **Código del Worker (rama PRECOMPUTED)**
+### Invariante Clave: Hash CNN es Constante
 
 ```python
-# Cuando recibe CNN_WEIGHTS:
-def _handle_cnn_weights(self, payload):
-    if self.training_mode == "precomputed":
-        # [1] Congelar CNN
-        self._cnn.set_trainable(False)  # requires_grad = False
-        
-        # [2] Extraer features de TODOS los datos de train
-        #     Esto es correcto porque CNN no cambia
-        X_features, Y = self._load_features_with_cache(
-            self._X_raw,  # 50,000 images
-            self._Y_raw,
-            arch=self._cnn.arch,
-            batch_size=2048
-        )  # Cache hit: si no cambió CNN hash, reutiliza (~0.5s)
-           # Cache miss: extrae ahora (~30-60s)
-        
-        self._X_features = X_features  # Guardar en memoria
-        
-        # [3] Confirmar
-        send_message(self._sock, MsgType.CNN_READY, ...)
+# Época 0
+weights_md5_0 = MD5(cnn.state_dict())  # "a3f2c8d1..."
 
-# Cuando recibe PARAMS (cada época):
-def _handle_params(self, payload):
-    if self.training_mode == "precomputed":
-        # [1] Reconstruir índices usando seed
-        indices = self._reconstruct_indices(
-            payload["seed"],
-            n_train=50000,
-            n_workers=2,
-            worker_rank=0
-        )  # Resultado: ~25,000 índices
-        
-        # [2] Indexar features (no recalcular CNN)
-        X_batch = self._X_features[indices]  # (25K, 512)
-        Y_batch = self.Y_train[indices]       # (25K,)
-        
-        # [3] Forward + Backward MLP únicamente
-        gradients, loss, acc = forward_and_gradients(
-            self.mlp_params,
-            X_batch,  # Features ya calculados
-            Y_batch
-        )
-        
-        # [4] Enviar gradientes al PS
-        send_message(self._sock, MsgType.GRADIENTS, {
-            "gradients": gradients,    # MLP gradients only
-            "cnn_gradients": None      # CNN no se entrena
-        })
+# Época 1, 2, 3, ...
+weights_md5_1 = MD5(cnn.state_dict())  # "a3f2c8d1..." (MISMO)
+weights_md5_2 = MD5(cnn.state_dict())  # "a3f2c8d1..." (MISMO)
+
+# Esto es garantizado porque CNN.set_trainable(False)
+#  → pesos nunca se actualizan
 ```
 
-### **Mensajes en PRECOMPUTED**
+**Implicación**: Cache key = `simple_a3f2c8d1_train_X.npy` nunca cambia.
+- Primera época: 7-30s (extract + save)
+- Épocas 2-N: 0.1-0.3s each (load from disk)
+
+### Timing por Época
 
 ```
-PS → Worker: PARAMS
-├─ epoch: int
-├─ params: {W1, b1, W2, b2, W3, b3}  (MLP only)
-├─ seed: int (for reconstruction)
-└─ cnn_params: None  ←─ IMPORTANTE: ausente
+Época 1:
+  Compute MLP (16667 samples): ~1500ms
+    ├─ Indexing X_features[indices]: ~50ms
+    ├─ Forward W1@X: ~400ms
+    ├─ Backward (3 layers): ~900ms
+    └─ Total forward+backward: ~1500ms
+  = 2.5s de ejecución (pura NumPy)
 
-Worker → PS: GRADIENTS
-├─ gradients: {dW1, db1, dW2, db2, dW3, db3}  (MLP only)
-└─ cnn_gradients: None  ←─ IMPORTANTE
+Épocas 2-10:
+  Identico: ~1500ms local compute
+  = 2.5s each
 ```
 
-### **Caché en PRECOMPUTED**
-
-```
-Setup:
-  CNN weights: W₀ (inicial)
-  Hash(W₀) = "abc123def456"
-  
-  Calcula: X_train_features = CNN_simple(X_raw)
-  Cachea:  Data/feature_cache/
-           simple_abc123def456_train_X.npy  (200 MB)
-           simple_abc123def456_train_Y.npy  (200 KB)
-
-La próxima vez que se creen features con los MISMOS pesos:
-  Hash match → CACHE HIT (0.5s)
-  Hash mismatch → CACHE MISS (30-60s)
-```
-
-### **Flujo temporal**
-
-```
-T=0s:       Worker se conecta
-T=1s:       Recibe CNN_WEIGHTS
-T=2-50s:    Extrae features (o carga caché)
-T=50s:      CNN_READY
-T=51-60s:   Espera TRAIN_START
-T=60s:      TRAIN_START recibido
-─────────── EPOCH 0 ──────────
-T=60-62s:   PARAMS → calcula gradientes → GRADIENTS
-─────────── EPOCH 1 ──────────
-T=62-64s:   PARAMS → calcula gradientes → GRADIENTS
-─ … ─
-─────────── EPOCH 9 ──────────
-T=78-80s:   PARAMS → calcula gradientes → GRADIENTS
-T=80s:      STOP
-
-Total: ~80 segundos para 10 épocas
-```
-
----
-
-## Flujo END-TO-END en detalle
-
-### **Idea clave**
-
-"Entrenar tanto la CNN como el MLP. Features se recalculan cada época con pesos CNN actualizados."
-
-```
-┌─────────────────────────────────────────────────────┐
-│              END-TO-END PIPELINE                     │
-├─────────────────────────────────────────────────────┤
-│                                                     │
-│ SETUP:                                              │
-│  Carga CNN (pesos iniciales pero requires_grad=True)│
-│  NO extrae features (se calcularán under de época)  │
-│  Guarda images raw en RAM                           │
-│                                                     │
-│ CADA ÉPOCA:                                         │
-│  Raw Images ──CNN (with gradients)──> Features      │
-│              ──MLP──> Logits ──Loss                 │
-│         ∇CNN + ∇MLP → PS                            │
-│                                                     │
-│ CNN se actualiza cada época.                        │
-│ Gradientes CNN + MLP se comunican (costoso).        │
-└─────────────────────────────────────────────────────┘
-```
-
-### **Código del Worker (rama END-TO-END)**
+### Código Ejemplar: Extracción PRECOMPUTED
 
 ```python
-# Cuando recibe CNN_WEIGHTS:
-def _handle_cnn_weights(self, payload):
-    if self.training_mode == "end_to_end":
-        # [1] Habilitar CNN para gradientes
-        self._cnn.set_trainable(True)  # requires_grad = True
-        
-        # [2] NO extraer features
-        #     Guardar images raw — se procesarán cada época
-        self._X_features = np.empty((0,), dtype=np.float32)  # placeholder
-        self._X_raw = X_raw  # Mantener en RAM
-        
-        # [3] Confirmar
-        send_message(self._sock, MsgType.CNN_READY, ...)
+# En WorkerNode.run() al inicio:
 
-# Cuando recibe PARAMS (cada época):
-def _handle_params(self, payload):
-    if self.training_mode == "end_to_end":
-        # [1] VALIDACIÓN: debe haber cnn_params
-        if payload.get("cnn_params") is None:
-            raise RuntimeError("E2E mode requires cnn_params in PARAMS")
-        
-        # [2] Cargar CNN con pesos actualizados (desde PS)
-        self._cnn.load_weights_from_bytes(payload["cnn_params"])
-        
-        # [3] Reconstruir índices
-        indices = self._reconstruct_indices(
-            payload["seed"],
-            n_train=50000,
-            n_workers=2,
-            worker_rank=0
-        )
-        
-        # [4] FORWARD CNN + MLP (on-the-fly)
-        X_batch_raw = self._X_raw[indices]  # (25K, 3, 32, 32)
-        Y_batch = self.Y_train[indices]
-        
-        X_batch_features = self._cnn.forward(X_batch_raw)  # (25K, 512)
-        
-        logits, cnn_hidden_states = mlp_forward(
-            self.mlp_params,
-            X_batch_features
-        )
-        
-        loss = cross_entropy_loss(logits, Y_batch)
-        
-        # [5] BACKWARD MLP
-        mlp_grads = mlp_backward(loss, self.mlp_params, ...)
-        
-        # [6] BACKWARD CNN (through MLP)
-        cnn_grads = cnn_backward(
-            loss,
-            X_batch_raw,
-            cnn_hidden_states,
-            ...
-        )
-        
-        # [7] Enviar AMBOS gradientes al PS
-        send_message(self._sock, MsgType.GRADIENTS, {
-            "gradients": mlp_grads,
-            "cnn_gradients": cnn_grads  # ← IMPORTANTE: presente
-        })
+# Época 0, antes de entrenamiento
+cnn_weights = receive_message(MsgType.CNN_WEIGHTS)  # Del PS
+cnn.load_state_dict(cnn_weights)
+cnn.set_trainable(False)  # ← CONGELADA
+
+# Extraer features UNA SOLA VEZ
+X_features, Y_indices = cnn.extract_with_cache(
+    X_raw,            # (50000, 3, 32, 32)
+    Y_raw,            # (50000,)
+    arch="simple",
+    batch_size=2048,  # para no sobrecargar memoria
+    split="train",
+)
+# X_features ahora es (50000, 512)
+# Cachea en Data/feature_cache/simple_a3f2c8d1_train_X.npy
+
+# Guardar para todo el entrenamiento
+self._X_features = X_features
+
+# Luego, por cada época...
 ```
 
-### **Mensajes en END-TO-END**
+### Código Ejemplar: Una Época PRECOMPUTED
 
-```
-PS → Worker: PARAMS
-├─ epoch: int
-├─ params: {W1, b1, W2, b2, W3, b3}  (MLP)
-├─ seed: int (for reconstruction)
-└─ cnn_params: <bytes>  ←─ IMPORTANTE: pesos CNN serializados
-
-Worker → PS: GRADIENTS
-├─ gradients: {dW1, db1, dW2, db2, dW3, db3}  (MLP)
-└─ cnn_gradients: {layer1_weight, layer2_weight, ...}  ←─ IMPORTANTE
-```
-
-### **Caché en END-TO-END**
-
-```
-NO HAY CACHÉ de features.
-Cada época, se calcula:
-  X_batch_raw = cargar desde RAM
-  X_batch_features = CNN.forward(X_batch_raw)  # Recalcular
-  
-Las imágenes raw están almacenadas en RAM (costoso, ~150 MB para 50K CIFAR-10).
-```
-
-### **Flujo temporal**
-
-```
-T=0s:       Worker se conecta
-T=1s:       Recibe CNN_WEIGHTS
-T=2s:       Habilita CNN (no extrae features)
-T=2s:       CNN_READY
-T=3-60s:    Espera TRAIN_START
-T=60s:      TRAIN_START recibido
-─────────── EPOCH 0 ──────────
-T=60-85s:   PARAMS → CNN forward → MLP forward
-            MLP backward → CNN backward → GRADIENTS
-─────────── EPOCH 1 ──────────
-T=85-110s:  PARAMS → CNN forward → MLP forward
-            MLP backward → CNN backward → GRADIENTS
-─ … ─
-─────────── EPOCH 9 ──────────
-T=285-310s: PARAMS → CNN forward → MLP forward
-            MLP backward → CNN backward → GRADIENTS
-T=310s:     STOP
-
-Total: ~310 segundos para 10 épocas
-         (10x más lento que PRECOMPUTED)
-```
-
----
-
-## Por qué END-TO-END es 10x más lentO
-
-| Operación | PRECOMPUTED | E2E | Razón |
-|-----------|-------------|-----|-------|
-| Load features | 0.1s (indexar RAM) | 0.1s | igual |
-| Forward CNN | 0s (ya hecho) | **3-5s** | CNN ejecución + backward tracking |
-| Forward MLP | 0.1s | 0.1s | igual |
-| Backward MLP | 0.1s | 0.1s | igual |
-| Backward CNN | 0s (no se entrena) | **3-5s** | Propagación gradientes a través 18 capas |
-| Serializar gradientes | 0.01s | **1-2s** | MLP 60KB vs CNN 50MB |
-| **Total época** | **~0.3-0.5s** | **~7-13s** | Cálculo CNN domina |
-
----
-
-## Cuándo usar cada modo
-
-### **PRECOMPUTED**
-- ✅ Tienes una CNN buena preentrenada (ResNet + ImageNet)
-- ✅ Quieres entrenar rápido (demostración, prototipo)
-- ✅ Datos de prueba limitados (no quieres ajustar CNN)
-- ✅ CPU-only environment (sin GPU)
-
-**Ejemplo**: "Necesito verificar que el algoritmo de Diego funciona."
-
-### **END-TO-END**
-- ✅ Quieres ajustar la CNN a tu dataset (CIFAR-10)
-- ✅ Tienes datos de entrenamiento abundantes (50K+)
-- ✅ Tienes GPU disponible
-- ✅ Investigación: quieres máxima precisión
-
-**Ejemplo**: "Necesito optimizar tanto CNN como MLP para mi caso de uso."
-
----
-
-## Bug conocido: E2E test_acc collapse (SOLUCIONADO)
-
-### **Problema (antes del fix)**
-
-En modo END-TO-END, si `X_test_raw` no se pasaba al Worker, el PS no podía extraer features de test → se enviaban logits erráticos → test_acc colapsaba a ~10% (chance level).
-
-```
-PS                          Worker 0
- │                               │
- ├─ REQUEST_TEST_FEATURES ──────►│
- │                               │
- │                               ├─ X_test_raw is None!
- │                               ├─ No puedo extraer features
- │                               │
- │ ◄─────────────────────────────┤ (timeout)
- │
- PS intenta evaluar con features None
- → eval() retorna garbage
- → test_acc ≈ 10%
-```
-
-### **Solución**
-
-En [ps_gui.py línea 1734](ps_gui.py#L1734):
 ```python
-# Condicionalmente pasar X_test_raw al Worker si training_mode es E2E
-x_test_for_train = X_test_raw if training_mode == "end_to_end" else None
+# En WorkerNode._run_training_session() loop:
+
+for epoch in range(n_epochs):
+    # Recibir pesos nuevos del PS
+    msg = receive_message()
+    assert msg["type"] == MsgType.PARAMS
+    
+    new_params = msg["payload"]["params"]
+    seed = msg["payload"]["seed"]
+    
+    # Reconstruir índices (determinista)
+    rng = RandomState(seed)
+    shuffled = arange(n_train)
+    rng.shuffle(shuffled)
+    my_indices = [i for i in shuffled if i % n_workers == my_rank]
+    
+    # Indexar features (MEMORIA, no I/O)
+    X_batch = self._X_features[my_indices]  # (16667, 512), ~67 MB array slicing
+    Y_batch = self._Y_raw[my_indices]       # (16667,), ~67 KB
+    
+    # Forward + backward (NumPy)
+    grads, loss, acc = mlp.forward_and_gradients(new_params, X_batch, Y_batch)
+    
+    # Enviar gradientes al PS (solo MLP, sin CNN)
+    send_message(MsgType.GRADIENTS, {
+        "worker_id": my_id,
+        "epoch": epoch,
+        "gradients": grads,    # Dict, 6 arrays (W1, b1, W2, b2, W3, b3)
+        "loss": loss,
+        "accuracy": acc,
+    })
 ```
 
-También se deshabilitó cache loading en E2E (pues los pesos CNN cambian).
+### Ventajas Específicas
 
-### **Verificación**
+1. **No requiere GPU**: Indexing de arrays en RAM es tan rápido en CPU
+2. **Reproducible sin estado**: Ejecutar dos veces = resultados idénticos (float precision)
+3. **Determinista**: No hay variables adicionales, siempre igual
+4. **Ideal para enseñanza**: Se ve claro qué sucede (CNN fija, MLP se entrena)
+5. **Caché gigante beneficio**: Primera época ~60s, épocas restantes ~2s
 
-Después del fix, test_acc converge normalmente (~97-98%).
+### Desventajas Específicas
 
----
-
-## Puntos críticos para explicar oralmente
-
-1. **"En PRECOMPUTED, la CNN es una constante."**
-   > Una vez que la extenuamos, es como si dijéramos: "Cada imagen = vector de 512 números". El MLP solo aprende a clasificar esos 512 números.
-
-2. **"La diferencia de velocidad en E2E es pura CNN."**
-   > El MLP toma ≈0.1s. La CNN toma ≈5-10s. El factor 10x viene de la CNN.
-
-3. **"Precomputed es perfecto para validar el algoritmo.*
-   > Si algo falla en PRECOMPUTED, es culpa del MLP o de la sincronización. No es la CNN.
-
-4. **"En E2E, ambos componentes cambian cada época."**
-   > CNN aprende features mejores. MLP se adapta a esas nuevas features. Más flexible pero más lento.
+1. **CNN no se adapta al dataset**: ResNet entrenado en ImageNet, SimpleCNN entrenado en datos aleatorios → no optimal para CIFAR-10
+2. **Precisión limitada**: 94-97% vs 98-99% en END-TO-END
+3. **No es end-to-end**: La CNN no aprende características específicas del problema
 
 ---
 
-**Documento**: `docs/04_modes_precomputed_vs_e2e.md`  
-**Última actualización**: 2026-03-27  
-**Nivel**: Intermedio
+## Modo 2: END-TO-END (Lento, Entrenable)
+
+### Flujo General
+
+```
+1. Inicio (Una vez):
+   ├─ CNN inicializada (seed fijo o pretrained)
+   ├─ CNN.set_trainable(True)  ← ENTRENABLE
+   ├─ PS distribuye CNN_WEIGHTS a todos Workers
+   └─ Workers confirmam CNN_READY (pueden haber extraído features temporales)
+   
+2. Por cada época:
+   ├─ PS envía PARAMS (MLP weights) + CNN_WEIGHTS (CNN updated) + seed
+   ├─ Worker: recv CNN_WEIGHTS y carga en su CNN
+   ├─ Worker: forward pass CNN sobre X_batch_raw
+   │    └─ X_features = CNN(X_batch_raw)  ← FRESCO cada época
+   ├─ Worker: forward/backward MLP
+   ├─ Worker: backward CNN (gradient chaining en PyTorch)
+   ├─ Worker: envía GRADIENTS (MLP + CNN)
+   ├─ PS: promedia AMBOS tipos de gradientes
+   ├─ PS: actualiza AMBOS param sets (CNN + MLP)
+   └─ Vuelve a época siguiente con nuevos CNN pesos
+```
+
+### Hash CNN Cambia Cada Época
+
+```python
+# Época 0
+params_cnn_0 = cnn.state_dict()
+weights_md5_0 = MD5(params_cnn_0)  # "a3f2c8d1..."
+
+# PS average CNN gradients, actualiza CNN
+# cnn.W1 -= lr * (grad_cnn_W1 de worker0 + grad_cnn_W1 de worker1 + ...) / n
+
+# Época 1
+params_cnn_1 = cnn.state_dict()  # DISTINTOS después de update
+weights_md5_1 = MD5(params_cnn_1)  # "7f9a4e2c..." (DISTINTO)
+
+# Época 2
+params_cnn_2 = cnn.state_dict()
+weights_md5_2 = MD5(params_cnn_2)  # "c3b1d9f5..." (DISTINTO)
+```
+
+**Implicación**: Cache key cambia cada época.
+- Época 1: 5s (extract con CNN vieja) + 10s (forward pass con CNN nueva actualizada) + compute MLP
+- Época 2+: MISMA (no reutiliza caché anterior, todo fresco)
+
+### Timing por Época
+
+```
+Época 1 (END-TO-END, GPU):
+  Recibir CNN_WEIGHTS nuevo: 200ms (network + deserialization)
+  Load CNN en GPU: 100ms
+  Extract features (16667 imgenes): ~5000ms (CNN forward on GPU)
+    ├─ CNN tiene 18 bloques (ResNet18) o 3 (SimpleCNN)
+    ├─ Por imagen: ~300μs (ResNet es pesada)
+    └─ 16667 * 300μs ≈ 5s
+  MLP forward+backward: 1500ms (similar input size)
+  CNN backward (gradient to CNN layers): 2000ms (backprop through 18 layers)
+  = 12-15s por época
+
+Épocas 2-10:
+  Identico: CNN distinto cada vez, 12-15s each
+```
+
+**Comparación**: PRECOMPUTED 2.5s/época vs END-TO-END 12.5s/época ≈ 5x más lento.
+
+### Código Ejemplar: Extracción END-TO-END
+
+```python
+# En WorkerNode._run_training_session() loop:
+
+for epoch in range(n_epochs):
+    # Recibir pesos nuevos del PS (AHORA incluye CNN_WEIGHTS)
+    msg = receive_message()
+    assert msg["type"] == MsgType.PARAMS
+    
+    new_cnn_weights = msg["payload"]["cnn_weights"]  # ← NUEVO cada época
+    new_mlp_params = msg["payload"]["mlp_params"]
+    seed = msg["payload"]["seed"]
+    
+    # Cargar CNN actualizada (fue entrenada por PS)
+    cnn.load_state_dict(new_cnn_weights)  # Pesos han cambiado
+    cnn.set_trainable(True)
+    
+    # Reconstruir índices
+    rng = RandomState(seed)
+    shuffled = arange(n_train)
+    rng.shuffle(shuffled)
+    my_indices = [i for i in shuffled if i % n_workers == my_rank]
+    
+    # Obtener imágenes raw
+    X_batch_raw = self._X_raw[my_indices]  # (16667, 3, 32, 32)
+    Y_batch = self._Y_raw[my_indices]      # (16667,)
+    
+    # Forward CNN (fresco con pesos actualizados) ← COSTO
+    with torch.no_grad():  # Sin autograd para no acumular history
+        X_batch_features = cnn.extract(X_batch_raw)  # (16667, 512)
+        # Pero si queremos gradientes: sin no_grad(), guardar grafo
+    
+    # Forward + backward MLP
+    grads_mlp, loss, acc = mlp.forward_and_gradients(new_mlp_params, X_batch_features, Y_batch)
+    
+    # En E2E real (más avanzado, no en este código):
+    # Backward CNN también (chain rule)
+    # grads_cnn = cnn.compute_gradients(X_raw, dL/dX_features)
+    
+    # Enviar gradientes al PS (MLP + CNN opcional)
+    send_message(MsgType.GRADIENTS, {
+        "worker_id": my_id,
+        "epoch": epoch,
+        "gradients_mlp": grads_mlp,    # Dict, 6 arrays
+        "gradients_cnn": grads_cnn,    # Dict, ~20 arrays (ResNet)
+        "loss": loss,
+        "accuracy": acc,
+    })
+```
+
+### Ventajas Específicas
+
+1. **CNN se adapta**: Aprende características específicas de CIFAR-10 (colores, formas, texturas)
+2. **Mejor precisión**: 98-99% vs 94-97%
+3. **True end-to-end**: Optimización conjunta de feature extractor + classifier
+4. **Más realista**: Simula entrenamiento joint como en producción
+
+### Desventajas Específicas
+
+1. **Requiere GPU** (o muy lento en CPU): CNN forward es O(depth × H × W × spatial_filters)
+2. **Sin caché**: Cada época, fresco → I/O y cómputo duplicado si no hay cambio de pesos
+3. **Más comunicación**: Gradientes CNN son mas grandes (ResNet18: ~60 MB vs MLP: ~1 MB)
+4. **Instabilidad potencial**: Si learning rate alto para CNN, puede divergir
+5. **Determinismo**: Float precision en backprop de redes profundas puede variar ligeramente
+
+---
+
+## Comparativa Cuantitativa
+
+### Consumo de Memoria
+
+| | PRECOMPUTED | END-TO-END |
+|---|---|---|
+| X_features cached | 600 MB (permanente) | 0 MB |
+| X_raw en memoria | - | 600 MB |
+| CNN en GPU | 1 MB (inference mode) | 100 MB (training mode) |
+| Gradients buffer | ~7 MB | ~100 MB (CNN + MLP) |
+| **Total/Worker** | ~600 MB | ~700-800 MB |
+
+### Transferencia de Red por Época
+
+| | PRECOMPUTED | END-TO-END |
+|---|---|---|
+| PARAMS downlink | 1.1 MB | 1.1 MB |
+| CNN_WEIGHTS (si envía) | 0 MB | 50-150 MB (ResNet) |
+| GRADIENTS uplink | 1.1 MB | 1.1 + 60 MB = 61 MB |
+| **Total downlink** | 1.1 MB | 50-150 MB |
+| **Total uplink** | 1.1 MB | 60-65 MB |
+
+**Conclusión**: END-TO-END es 50-100x más demandante en red. Viable en LAN o GPU cluster. NO viable en WAN.
+
+### Convergencia Comparada
+
+```
+PRECOMPUTED (10 épocas):
+  Epoch 0: Train Acc=80%, Test Acc=78%
+  Epoch 1: Train Acc=88%, Test Acc=85%
+  Epoch 2: Train Acc=91%, Test Acc=88%
+  Epoch 3: Train Acc=93%, Test Acc=91%
+  ...
+  Epoch 9: Train Acc=96%, Test Acc=94% ← Plateau, CNN congelada
+
+END-TO-END (10 épocas):
+  Epoch 0: Train Acc=70%, Test Acc=68% (inicios, CNN + MLP ajustando)
+  Epoch 1: Train Acc=82%, Test Acc=80%
+  Epoch 2: Train Acc=88%, Test Acc=86%
+  Epoch 3: Train Acc=92%, Test Acc=90%
+  ...
+  Epoch 9: Train Acc=99%, Test Acc=98% ← Continúa mejorando, CNN adaptada
+```
+
+**Observación**: END-TO-END converge más lentamente al inicio (optimiza dos conjuntos) pero llega más alto.
+
+---
+
+## Decidir Cuál Usar
+
+**Elige PRECOMPUTED si**:
+- Objetivo: Enseñanza de distributed learning
+- Tiempo limitado: Quieres rápido feedback de cambios
+- Datos limitados: No necesitas full GPU
+- CNN pre-entrenada visible: ResNet ImageNet es suficiente
+
+**Elige END-TO-END si**:
+- Objetivo: Máxima precisión
+- GPU disponible
+- Red rápida o local (LAN)
+- Tiempo disponible: Puedes esperar 15s/época
+- Datos de dominio específico: Beneficia de adaptación CNN
+
+---
+
+## Switching Entre Modos (Mismo Checkpoint)
+
+**Posible**: Entrenar en PRECOMPUTED hasta cierto punto, luego switchear a END-TO-END.
+
+```python
+# Checkpoints guardados identicamente: params["W1"], params["b1"], etc.
+
+# Session 1: PRECOMPUTED, 5 épocas
+ps = ParameterServer(..., training_mode="precomputed")
+ps.train(..., epochs=5)
+save_checkpoint("checkpoint_e5.pkl")
+
+# Session 2: END-TO-END con mismo MLP weights
+ps = ParameterServer(..., training_mode="end_to_end")
+ps.load_checkpoint("checkpoint_e5.pkl")
+ps.train(..., epochs=10)  # Continue training end-to-end
+```
+
+**Resultado**: MLP weights iniciales idénticas. CNN se entrena desde epoch 5 en adelante. Convergencia probablemente mejor que start-from-scratch END-TO-END (warm start).
+

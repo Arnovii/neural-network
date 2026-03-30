@@ -1,542 +1,429 @@
-# 6. PARAMETER SERVER — ARQUITECTURA Y SINCRONIZACIÓN
+# 06. Parameter Server: Orquestación Distribuida
 
-## Rol central
+## Fases de Ciclo de Vida
 
-El Parameter Server es el orquestador centralizado. **Nunca ve datos de entrenamiento locales**, pero coordina:
-- Sincronización entre Workers
-- Distribución de modelos (CNN + MLP)
-- Promediación de gradientes
-- Evaluación en datos de prueba
+### Fase 1: Creación e Inicialización
+
+```python
+ps = ParameterServer(
+    host="0.0.0.0",         # Escucha en todas las IPs
+    port=9999,
+    on_worker_connected=callback_worker_connected,
+    on_gradients_received=callback_grads,
+    on_epoch_end=callback_epoch,
+    training_mode="precomputed",
+)
+
+ps.set_cnn(cnn_model)  # CNN a distribuir a Workers
+```
+
+**Estado inicially**:
+- `_server_sock = None` (no escuchando aún)
+- `_worker_sockets = {}` (vacío)
+- `_cnn = cnn_model` (preentrenada o inicializada)
+- `_training_mode = "precomputed"`
+
+### Fase 2: Listen (Aceptar Workers)
+
+```python
+ps.listen()  # Lanza hilo de fondo
+    ├─ Create TCP socket, bind(host:port), listen()
+    ├─ Lanza _accept_thread (bloqueante)
+    │   └─ while True:
+    │       ├─ sock, addr = accept()  # Bloquea hasta que Worker conecte
+    │       ├─ Ejecutar handshake:
+    │       │   ├─ msg = receive_message(sock)  # recibe READY
+    │       │   ├─ next_id = _next_id++
+    │       │   ├─ send_message(sock, WORKER_ID, {"worker_id": next_id})
+    │       │   ├─ _worker_sockets[next_id] = sock
+    │       │   └─ on_worker_connected(next_id, addr)
+    │       └─ Vuelve a aceptar
+    └─ Devuelve inmediatamente (thread en background)
+```
+
+**Invariante**: `listen()` NO bloquea al que llamó. Retorna inmediatamente. El hilo de aceptación continúa indefinidamente.
+
+### Fase 3: Espera Workers (Sincronización Manual)
+
+La aplicación (ps_terminal.py o ps_gui.py) espera manualmente:
+
+```python
+# En ps_terminal.py
+n_workers_expected = 3
+print(f"Waiting for {n_workers_expected} workers...")
+
+while len(ps._worker_sockets) < n_workers_expected:
+    time.sleep(0.5)
+    print(f"  Connected: {len(ps._worker_sockets)}/{n_workers_expected}")
+
+print("All workers connected. Starting training.")
+```
+
+**Alternativa** (no implementada): Barrera automática con threading.Event.
+
+### Fase 4: Entrenamiento
+
+```python
+history = ps.train(
+    epochs=10,
+    learning_rate=0.01,
+    X_test=X_test,
+    Y_test=Y_test,
+)
+```
+
+Es la función principal. Devuelve un diccionario con historial de pérdidas/precisiones.
 
 ---
 
-## Ciclo de vida del PS
+## Flujo train() en Detalle
 
-```
-┌────────────────────────────────────────────────────────────────┐
-│                PS LIFECYCLE                                    │
-├────────────────────────────────────────────────────────────────┤
-│                                                                │
-│ 1. CONSTRUCCIÓN                                                │
-│    PS(host="0.0.0.0", port=9999)                               │
-│    └─ Inicializar estructuras (dicts de workers)               │
-│    └─ Preparar sockets TCP                                     │
-│                                                                │
-│ 2. ESCUCHA (LISTENING STATE)                                   │
-│    ps.listen()                                                 │
-│    └─ Abre servidor TCP                                        │
-│    └─ Hilo de fondo acepta Workers indefinidamente             │
-│    └─ Workers se conectan con READY                            │
-│    └─ PS asigna IDs (0, 1, 2, …)                               │
-│    └─ Estado: LISTENING (espera ordenes)                       │
-│                                                                │
-│ 3. CONFIGURACIÓN DE CNN                                        │
-│    ps.set_cnn(cnn)                                             │
-│    └─ Cargar/crear CNN preentrenada                            │
-│    └─ Será distribuida a Workers en siguiente sesión           │
-│                                                                │
-│ 4. SESIÓN DE ENTRENAMIENTO (TRAINING STATE)                    │
-│    ps.train(epochs=10, training_mode="precomputed", …)         │
-│    ├─ [SINCRONIZACIÓN CNN]                                     │
-│    │  ├─ Enviar CNN_WEIGHTS a todos los Workers                │
-│    │  └─ Esperar barrera CNN_READY                             │
-│    │                                                           │
-│    ├─ LOOP DE ÉPOCAS (N épocas)                                │
-│    │  ├─ Generar seed aleatorio                                │
-│    │  ├─ Enviar PARAMS (con seed) a cada Worker                │
-│    │  ├─ Esperar GRADIENTS de TODOS los Workers                │
-│    │  ├─ Promediar: ∇̄ = (1/N) * Σ ∇                            │
-│    │  ├─ Actualizar: W ← W − lr * ∇̄                            │
-│    │  ├─ Evaluar en test (si hay datos)                        │
-│    │  └─ Callback: on_epoch_end()                              │
-│    │                                                           │
-│    └─ [FIN DE SESIÓN]                                          │
-│       └─ Retorna a LISTENING (listo para siguiente sesión)     │
-│                                                                │
-│ 5. APAGADO (SHUTDOWN)                                          │
-│    ps.shutdown()                                               │
-│    └─ Envía STOP a todos los Workers                           │
-│    └─ Cierra conexiones TCP                                    │
-│    └─ Detiene hilo de aceptación                               │
-│                                                                │
-└────────────────────────────────────────────────────────────────┘
-```
-
----
-
-## Estructuras de datos del PS
+### Sintaxis
 
 ```python
-class ParameterServer:
-    # Configuración
-    host: str = "0.0.0.0"        # Escucha en todas las IPs
-    port: int = 9999             # Puerto TCP
-    training_mode: str           # "precomputed" o "end_to_end"
+def train(
+    self,
+    epochs: int,
+    learning_rate: float = 0.01,
+    X_test: Optional[np.ndarray] = None,
+    Y_test: Optional[np.ndarray] = None,
+    verbose: bool = True,
+) -> dict:
+    """
+    Sesión de entrenamiento ONE.
     
-    # Modelo
-    _cnn: CNNExtractor           # CNN centralizada
-    _mlp_params: Dict            # Parámetros MLP {W1, b1, …}
-    
-    # Workers conectados
-    _worker_sockets: Dict[int, socket]  # worker_id → socket TCP
-    _worker_addrs: Dict[int, str]       # worker_id → "IP:port"
-    _next_id: int = 0                   # Contador para asignar IDs
-    
-    # Workers en sesión actual
-    _active_training_workers: List[int]  # None si no hay sesión
-    
-    # Métricas de época actual
-    _epoch_gradients: Dict[int, Dict]    # worker_id → gradients
-    _epoch_metrics: Dict[int, Tuple]     # worker_id → (loss, acc)
-    
-    # Test data (opcional)
-    _X_test_features: np.ndarray         # (10000, 512) o None
-    _Y_test_from_worker: np.ndarray      # (10000,) o None
-    
-    # Sincronización
-    _cnn_ready_event: threading.Event    # Barrera CNN_READY
-    _cnn_ready_count: int                # Contador de CNN_READY recibidos
-    
-    # Threading
-    _lock: threading.Lock               # Mutex para _worker_sockets, etc.
-    _server_sock: socket               # Socket servidor TCP
-    _accept_thread: threading.Thread   # Hilo de aceptación
-    _shutdown_flag: threading.Event    # Flag para parar
+    Puede ser llamado múltiples veces sin reiniciar el PS.
+    """
 ```
 
----
+### Inicialización de CNN y Features de Test
 
-## Métodos principales
-
-### **listen()**
 ```python
-def listen(self) -> None:
-    """
-    Abre servidor TCP en background.
-    Acepta Workers indefinidamente hasta shutdown().
-    
-    Retorna inmediatamente — las conexiones se procesan en hilo aparte.
-    """
-    self._server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    self._server_sock.bind((self.host, self.port))
-    self._server_sock.listen(32)  # Queue de 32 conexiones
-    
-    # Inicia hilo de aceptación
-    self._accept_thread = threading.Thread(target=self._accept_loop)
-    self._accept_thread.start()
-    
-    print(f"Escuchando en {self.host}:{self.port}")
+# Paso 1: Reset training state
+self._reset_training_state(self.training_mode)
+
+# Paso 2: Cargar features de test (solo si hay datos test)
+if X_test is not None and Y_test is not None:
+    # Extractar features con la CNN del PS
+    X_test_features, _ = self._cnn.extract_with_cache(
+        X_test, Y_test,
+        split="test",
+    )
+    self._X_test_features = X_test_features    # Guardar para evaluate
+    self._Y_test_from_worker = Y_test
+else:
+    self._X_test_features = None
+    self._Y_test_from_worker = None
 ```
 
-### **_accept_loop()** (en hilo de fondo)
+### Envío de CNN_WEIGHTS a Workers
+
 ```python
-def _accept_loop(self) -> None:
-    """
-    Bucle infinito que acepta conexiones TCP.
-    Por cada nueva conexión, ejecuta _handshake en hilo aparte.
-    """
-    while not self._shutdown_flag.is_set():
-        try:
-            conn, addr = self._server_sock.accept()
-        except socket.timeout:
-            continue  # Timeout corto para verificar shutdown_flag
-        except:
-            break
-        
-        # Handshake en hilo aparte (no bloquea accept())
-        threading.Thread(
-            target=self._handshake,
-            args=(conn, addr),
-            daemon=True
-        ).start()
+# Paso 3: Distribuir CNN a Workers
+cnn_weights_bytes = self._cnn._get_weights_bytes()
+
+for worker_id in self._worker_sockets:
+    send_message(self._worker_sockets[worker_id], MsgType.CNN_WEIGHTS, {
+        "arch": self._cnn.arch,
+        "weights_bytes": cnn_weights_bytes,
+    })
 ```
 
-### **_handshake()** (en hilo aparte)
+**Nota**: Envía a TODOS los Workers en el `_worker_sockets` dict. Si un Worker se conectó más tarde, también lo recibe (late-joiner).
+
+### Barrera CNN_READY
+
 ```python
-def _handshake(self, conn, addr) -> None:
-    """
-    Realiza handshake con un Worker que acaba de conectarse.
-    
-    1. Lee READY
-    2. Asigna ID único
-    3. Envía WORKER_ID
-    4. Registra en _worker_sockets
-    5. Llama callback on_worker_connected
-    """
-    msg = receive_message(conn)
-    if msg["type"] != MsgType.READY:
-        conn.close()
-        return
-    
-    # Asignar ID atomicamente
-    with self._lock:
-        worker_id = self._next_id
-        self._next_id += 1
-        self._worker_sockets[worker_id] = conn
-        self._worker_addrs[worker_id] = f"{addr[0]}:{addr[1]}"
-    
-    # Enviar WORKER_ID
-    send_message(conn, MsgType.WORKER_ID, {"worker_id": worker_id})
-    
-    # Callback
-    if self.on_worker_connected:
-        self.on_worker_connected(worker_id, f"{addr[0]}:{addr[1]}")
+# Paso 4: Esperar a que todos extraigan features
+self._cnn_ready_event.clear()
+self._cnn_ready_count = 0
+
+print(f"[PS] Waiting for CNN_READY from all workers...")
+
+# Bloquea hasta CNN_READY_EVENT se activa (visto en _handle_cnn_ready callback)
+self._cnn_ready_event.wait()  # Bloqueante
+
+print(f"[PS] All workers ready with features.")
 ```
 
-### **train()**
-```python
-def train(self, epochs, training_mode, test_data=None, learning_rate=0.01) -> Dict:
-    """
-    Ejecuta una sesión de entrenamiento.
-    
-    :param epochs: Número de épocas
-    :param training_mode: "precomputed" o "end_to_end"
-    :param test_data: (X_test, Y_test) o None
-    :param learning_rate: Tasa de aprendizaje
-    :return: { "accuracy_history": […], "loss_history": […], … }
-    """
-    # Limpiar estado anterior
-    self._reset_training_state(training_mode)
-    
-    # Obtener Workers conectados
-    with self._lock:
-        active_workers = sorted(self._worker_sockets.keys())
-    
-    if not active_workers:
-        raise RuntimeError("No hay Workers conectados")
-    
-    self._active_training_workers = active_workers
-    n_workers = len(active_workers)
-    
-    # Send CNN_WEIGHTS a todos
-    self._broadcast_cnn_weights(active_workers)
-    
-    # Esperar CNN_READY de todos
-    self._cnn_ready_event.wait()  # Barrera de sincronización
-    
-    # [E2E ONLY] Solicitar TEST_FEATURES si es necesario
-    if training_mode == "end_to_end" and test_data is not None:
-        X_test, Y_test = test_data
-        self._request_test_features(active_workers[0])  # Worker 0
-    
-    # LOOP DE ÉPOCAS
-    history = {"train_acc": [], "train_loss": [], "test_acc": [], "test_loss": []}
-    
-    for epoch in range(epochs):
-        # Generar seed de época
-        seed = np.random.randint(0, 2**31 - 1)
-        
-        # Enviar PARAMS a cada Worker
-        self._broadcast_params(
-            active_workers,
-            epoch=epoch,
-            seed=seed,
-            learning_rate=learning_rate
-        )
-        
-        # Esperar GRADIENTS de todos
-        gradients_dict = self._collect_gradients(active_workers)
-        
-        # Promediar gradientes
-        avg_gradients = self._average_gradients(gradients_dict)
-        
-        # Actualizar parámetros
-        self._update_parameters(avg_gradients, learning_rate)
-        
-        # Evaluar
-        train_acc, train_loss = self._evaluate_train(active_workers)
-        test_acc, test_loss = self._evaluate_test(test_data) if test_data else (None, None)
-        
-        history["train_acc"].append(train_acc)
-        history["train_loss"].append(train_loss)
-        history["test_acc"].append(test_acc)
-        history["test_loss"].append(test_loss)
-        
-        # Callback
-        if self.on_epoch_end:
-            self.on_epoch_end(epoch, epochs, train_acc, train_loss, test_acc, test_loss)
-    
-    # Retorna a LISTENING
-    self._active_training_workers = None
-    return history
-```
+**Mecanismo**: Mientras el PS espera, el hilo de lectura (que recibe mensajes de cada Worker) ejecuta callbacks. Cuando llega CNN_READY #N del N-ésimo Worker, se activa el evento.
 
----
+**Risk**: Si un Worker nunca envía CNN_READY, el PS espera para siempre (deadlock).
 
-## Distribución de CNN
-
-### **_broadcast_cnn_weights()**
+### Loop Principal: Época a Época
 
 ```python
-def _broadcast_cnn_weights(self, worker_ids) -> None:
-    """
-    Envía CNN_WEIGHTS a todos los Workers y espera CNN_READY.
-    """
-    weights_bytes = self._cnn._get_weights_bytes()
+# Paso 5: Entrenar por N épocas
+params = mlp.init_params(FEATURE_DIM, hidden1, hidden2, NUM_CLASSES, seed=42)
+
+for epoch in range(epochs):
+    # 5a. Crear semilla para esta época
+    epoch_seed = 42 + epoch
     
-    for wid in worker_ids:
-        with self._lock:
-            sock = self._worker_sockets.get(wid)
-        
-        if sock is None:
-            continue
-        
-        send_message(sock, MsgType.CNN_WEIGHTS, {
-            "arch": self._cnn.arch,
-            "weights_bytes": weights_bytes
+    # 5b. Enviar PARAMS a todos los Workers
+    for worker_id in self._worker_sockets:
+        send_message(self._worker_sockets[worker_id], MsgType.PARAMS, {
+            "epoch": epoch,
+            "params": params,
+            "seed": epoch_seed,
+            "training_mode": self.training_mode,
         })
     
-    # Esperar CNN_READY de todos
-    self._cnn_ready_event.clear()
-    self._cnn_ready_count = 0
+    # 5c. Recibir GRADIENTS de todos (bloqueante)
+    self._epoch_gradients.clear()
+    self._epoch_metrics.clear()
     
-    while self._cnn_ready_count < len(worker_ids):
-        # Recibir CNN_READY en hilos aparte (listeners activos)
-        time.sleep(0.1)
-    
-    print(f"[PS] Todos los {len(worker_ids)} Workers listos (CNN_READY)")
-```
-
----
-
-## Sincronización de parámetros
-
-### **_broadcast_params()**
-
-```python
-def _broadcast_params(self, worker_ids, epoch, seed, learning_rate) -> None:
-    """
-    Envía PARAMS a cada Worker.
-    
-    PRECOMPUTED:
-    ├─ epoch, params (MLP), seed
-    └─ cnn_params: None
-    
-    END-TO-END:
-    ├─ epoch, params (MLP), seed
-    └─ cnn_params: CNN weights serialized
-    """
-    payload = {
-        "epoch": epoch,
-        "params": self._mlp_params,
-        "seed": seed,
-        "training_mode": self.training_mode,
-        # Otros parámetros de sesión
-        "n_train": 50000,
-        "n_workers": len(worker_ids),
-    }
-    
-    if self.training_mode == "end_to_end":
-        payload["cnn_params"] = self._cnn._get_weights_bytes()
-    
-    # Enviar a cada worker con su rank
-    for rank, wid in enumerate(worker_ids):
-        with self._lock:
-            sock = self._worker_sockets.get(wid)
+    for _ in range(len(self._worker_sockets)):
+        msg = receive_message()  # Bloqueante hasta recibir UN mensaje
         
-        if sock is None:
-            continue
-        
-        payload_wid = payload.copy()
-        payload_wid["worker_rank"] = rank
-        
-        send_message(sock, MsgType.PARAMS, payload_wid)
-```
-
----
-
-## Recolección y promediación de gradientes
-
-### **_collect_gradients()**
-
-```python
-def _collect_gradients(self, worker_ids) -> Dict[int, Dict]:
-    """
-    Espera GRADIENTS de todos los Workers.
-    Usa listeners activos (threads que escuchan a cada socket).
-    """
-    gradients_dict = {}
+        if msg["type"] == MsgType.GRADIENTS:
+            worker_id = msg["payload"]["worker_id"]
+            gradients = msg["payload"]["gradients"]
+            loss = msg["payload"]["loss"]
+            accuracy = msg["payload"]["accuracy"]
+            
+            self._epoch_gradients[worker_id] = gradients
+            self._epoch_metrics[worker_id] = (loss, accuracy)
+            
+            # Callback
+            if self.on_gradients_received:
+                self.on_gradients_received(worker_id, epoch, loss, accuracy)
     
-    for wid in worker_ids:
-        with self._lock:
-            sock = self._worker_sockets.get(wid)
-        
-        if sock is None:
-            raise RuntimeError(f"Worker {wid} desconectado durante entrenamiento")
-        
-        # Recibir GRADIENTS
-        msg = receive_message(sock)
-        if msg["type"] != MsgType.GRADIENTS:
-            raise RuntimeError(f"Worker {wid} envió {msg['type']}, esperaba GRADIENTS")
-        
-        gradients_dict[wid] = msg["payload"]
+    # 5d. Promediar gradientes
+    averaged_grads = self._average_gradients(self._epoch_gradients)
     
-    return gradients_dict
-```
-
-### **_average_gradients()**
-
-```python
-def _average_gradients(self, gradients_dict) -> Dict:
-    """
-    Promedia los gradientes de todos los Workers.
+    # 5e. Actualizar pesos
+    mlp.apply_gradients(params, averaged_grads, learning_rate)
     
-    Algebra:
-    θ_avg = (1/N) * Σ ∇L(θ_i)  para i en workers
-    
-    Importante: es un promedio simple, no ponderado.
-    """
-    if not gradients_dict:
-        raise ValueError("No hay gradientes para promediar")
-    
-    all_wids = sorted(gradients_dict.keys())
-    n = len(all_wids)
-    
-    # Stack y promedia cada parámetro
-    avg_grads = {}
-    
-    # Para MLP
-    mlp_grads_list = [gradients_dict[wid]["gradients"] for wid in all_wids]
-    
-    for param_name in mlp_grads_list[0].keys():
-        stacked = np.array([g[param_name] for g in mlp_grads_list])
-        avg_grads[param_name] = np.mean(stacked, axis=0)
-    
-    # Para CNN (si E2E)
-    if self.training_mode == "end_to_end":
-        cnn_grads_list = [
-            gradients_dict[wid].get("cnn_gradients", {})
-            for wid in all_wids
-        ]
-        avg_grads["cnn"] = {}
-        
-        if cnn_grads_list[0]:  # Si hay
-            for layer_name in cnn_grads_list[0].keys():
-                stacked = np.array([g.get(layer_name) for g in cnn_grads_list])
-                avg_grads["cnn"][layer_name] = np.mean(stacked, axis=0)
-    
-    return avg_grads
-```
-
-### **_update_parameters()**
-
-```python
-def _update_parameters(self, avg_gradients, learning_rate) -> None:
-    """
-    Aplica SGD: W ← W − lr * ∇̄
-    """
-    # MLP
-    for param_name in self._mlp_params.keys():
-        self._mlp_params[param_name] -= learning_rate * avg_gradients[param_name]
-    
-    # CNN (si E2E)
-    if self.training_mode == "end_to_end" and self._cnn is not None:
-        for layer_name, grad in avg_gradients.get("cnn", {}).items():
-            # Actualizar parámetros CNN via PyTorch
-            self._cnn._apply_gradient(layer_name, grad, learning_rate)
-```
-
----
-
-## Evaluación
-
-### **_evaluate_test()**
-
-```python
-def _evaluate_test(self, test_data) -> Tuple[float, float]:
-    """
-    Evalúa en datos de prueba.
-    
-    PRECOMPUTED:
-    ├─ X_test (raw) → CNN (local) → features
-    ├─ features → MLP → logits
-    └─ Calcular accuracy
-    
-    END-TO-END:
-    ├─ Worker 0 envió X_test_features (con su GPU)
-    ├─ X_test_features → MLP → logits
-    └─ Calcular accuracy
-    """
-    if test_data is None:
-        return None, None
-    
-    X_test, Y_test = test_data
-    
-    if self.training_mode == "precomputed":
-        # Extraer features con CNN del PS (CPU)
-        X_test_feat = self._cnn.extract_batched(X_test, batch_size=2048)
+    # 5f. Evaluar en test (si disponible)
+    if self._X_test_features is not None:
+        test_acc, test_loss = mlp.evaluate(params, self._X_test_features, self._Y_test_from_worker)
     else:
-        # Usar features recibidos del Worker
-        X_test_feat = self._X_test_features
-        if X_test_feat is None:
-            return None, None
+        test_acc, test_loss = None, None
     
-    # Forward MLP
-    logits = mlp_forward(self._mlp_params, X_test_feat)
+    # 5g. Calcular métricas de train (promedio de workers)
+    train_accs = [acc for loss, acc in self._epoch_metrics.values()]
+    train_losses = [loss for loss, acc in self._epoch_metrics.values()]
+    train_acc = np.mean(train_accs)
+    train_loss = np.mean(train_losses)
     
-    # Accuracy
-    predictions = np.argmax(logits, axis=1)
-    accuracy = np.mean(predictions == Y_test) * 100
+    # 5h. Callback y logging
+    if self.on_epoch_end:
+        self.on_epoch_end(epoch, epochs, train_acc, train_loss, test_acc, test_loss)
     
-    # Loss
-    loss = cross_entropy_loss(logits, Y_test)
-    
-    return accuracy, loss
+    if verbose:
+        print(f"Epoch {epoch+1}/{epochs} | "
+              f"Train Acc={train_acc:.2f}% Loss={train_loss:.4f} | "
+              f"Test Acc={test_acc:.2f}% Loss={test_loss:.4f}")
+```
+
+### Shutdown
+
+```python
+# Paso 6: Enviar STOP a todos cuando termines
+for worker_id in self._worker_sockets:
+    send_message(self._worker_sockets[worker_id], MsgType.STOP, None)
+
+# Opcionalmente, cierra sockets
 ```
 
 ---
 
-## Manejo de conexiones en múltiples hilos
+## Threading Model del PS
 
-### **Por qué threading**
+### Threads principales
 
-- `listen()` abre servidor TCP en hilo
-- `_accept_loop()` acepta conexiones indefinidamente
-- Por cada Worker que se conecta, `_handshake()` se ejecuta en hilo aparte
-- Durante `train()`, hay múltiples hilos listeners esperando GRADIENTS de cada Worker
+1. **Main thread** (ps_terminal.py):
+   - Llama a `ps.listen()` (inicia background thread)
+   - Espera Workers manualmente
+   - Llama a `ps.train()` (bloqueante)
+   - Recibe callbacks
 
-### **Sincronización con mutex**
+2. **Accept thread** (`_accept_thread`):
+   - Bloqueante en `socket.accept()`
+   - Cuando Worker conecta: handshake + callback
+
+3. **Message receiver threads** (uno por Worker implícitamente):
+   - `receive_message()` es bloqueante
+   - **Problema**: Si hay 3 Workers, `ps.receive_message()` recibe de primero que llegue, pero el resto está "pendiente"
+   - **Solución actual**: No es verdaderamente async. El PS es semi-syncrónico.
+
+### Sincronización con Mutex
 
 ```python
 self._lock = threading.Lock()
 
-# Sin lock: race condition
-# with self._lock:
-#     self._worker_sockets[wid] = sock  # Seguro
-
-# Sin lock:
-# if wid in self._worker_sockets:          # Otro thread podría borrar aquí
-#     sock = self._worker_sockets[wid]     # Crash
+# Protegidas:
+with self._lock:
+    self._next_id += 1
+    self._worker_sockets[next_id] = sock
 ```
 
----
-
-## Manejo de fallos
-
-| Escenario | Efecto | Solución |
-|-----------|--------|----------|
-| Worker se desconecta en setup | CNN_READY timeout | Implement timeout, retry |
-| Worker envía gradientes tarde | Epoch bloqueado | Timeout + failover |
-| PS se cae durante training | Workers esperan indefinidamente | Workers timeout + reconnect |
-| Red interrumpida | Conexión pierde datos | TCP handles partial) + retransmit |
+**Por qué**:  Si el accept thread intenta asignar ID 5 mientras el train thread lee `_worker_sockets`, race condition.
 
 ---
 
-## Callbacks del PS
+## Promediado de Gradientes
 
 ```python
-ps = ParameterServer(
-    on_worker_connected=lambda wid, addr: print(f"Worker {wid} connected"),
-    on_worker_joined_late=lambda wid, addr: print(f"Worker {wid} arrived late"),
-    on_epoch_end=lambda epoch, total, train_acc, train_loss, test_acc, test_loss:
-        print(f"Epoch {epoch}: {train_acc:.2f}%"),
-    on_gradients_received=lambda wid, epoch, loss, acc:
-        print(f"Worker {wid} gradients ready"),
-)
+def _average_gradients(
+    self,
+    epoch_gradients: Dict[int, Dict[str, np.ndarray]],
+) -> Dict[str, np.ndarray]:
+    """
+    Promedia gradientes de todos los Workers.
+    
+    Input: {
+        0: {"W1": array(...), "b1": array(...), ...},
+        1: {"W1": array(...), "b1": array(...), ...},
+        2: {"W1": array(...), "b1": array(...), ...},
+    }
+    
+    Output: {
+        "W1": (promedio de worker 0, 1, 2),
+        "b1": (promedio),
+        ...
+    }
+    """
+    if not epoch_gradients:
+        return {}
+    
+    all_param_names = list(epoch_gradients[0].keys())
+    averaged = {}
+    
+    for param_name in all_param_names:
+        grad_list = [
+            epoch_gradients[worker_id][param_name]
+            for worker_id in sorted(epoch_gradients.keys())
+        ]
+        grad_stack = np.array(grad_list)
+        averaged[param_name] = np.mean(grad_stack, axis=0)
+    
+    return averaged
+```
+
+**Matemática**:
+```
+grad_stack.shape = (n_workers, *param_shape)
+
+Para W1: (256, 512)
+  grad_stack W1: (3, 256, 512)
+  mean(axis=0): (256, 512)
+
+Para b1: (256,)
+  grad_stack b1: (3, 256)
+  mean(axis=0): (256,)
 ```
 
 ---
 
-**Documento**: `docs/06_parameter_server.md`  
-**Última actualización**: 2026-03-27  
-**Nivel**: Intermedio → Avanzado
+## Manejo de Late Joiners
+
+Si un Worker se conecta DURANTE el entrenamiento:
+
+```python
+elif msg["type"] == MsgType.READY:
+    # En middleware/accept loop
+    with self._lock:
+        next_id = self._next_id
+        self._next_id += 1
+    
+    # Checar si estamos entrenando
+    if self._active_training_workers is not None:
+        # Sí, hay entrenamiento activo
+        if self.on_worker_joined_late:
+            self.on_worker_joined_late(next_id, addr)
+        
+        # Registrar worker pero NO incluirlo en sesión actual
+        self._worker_sockets[next_id] = sock
+        
+        # Nota: Este worker recibirá CNN_WEIGHTS pero NO PARAMS
+        # de este entrenamiento. Se incluirá en el SIGUIENTE.
+    else:
+        # No hay entrenamiento, registrar normally
+        self._worker_sockets[next_id] = sock
+```
+
+**GUI feedback**: ps_gui mostraría "Worker 5 joined (waiting for next session)".
+
+---
+
+## Checkpointing (no en código base)
+
+Idealmente, el PS debería guardar checkpoints:
+
+```python
+# Versión extendida (no está en código actual)
+def save_checkpoint(self, path: str) -> None:
+    checkpoint = {
+        "epoch": current_epoch,
+        "params": params,
+        "training_mode": self.training_mode,
+        "cnn_state": self._cnn.state_dict(),
+    }
+    with open(path, "wb") as f:
+        pickle.dump(checkpoint, f)
+
+def load_checkpoint(self, path: str) -> None:
+    with open(path, "rb") as f:
+        checkpoint = pickle.load(f)
+    # Restaurar estado
+```
+
+**Beneficio**: Poder continuar entrenamiento después de crash o cambio de modo.
+
+---
+
+## Gestión de Errores Robusta (Ausente)
+
+Problemas NO manejados actualmente:
+
+1. **Worker timeout**: Si Worker 2 falla, PS espera forever en `receive_message()`
+2. **Red cortada**: Si conexión TCP cae, `receive_message()` levanta excepción
+3. **Worker desconecta a mitad de época**: Otros Workers ya escribieron gradientes, Worker 3 no
+
+**Ideal**:
+```python
+try:
+    for _ in range(len(self._worker_sockets)):
+        msg = receive_message(timeout=30)  # 30 segundo TIMEOUT
+        ...
+except socket.timeout:
+    print("Worker timeout. Aborting epoch.")
+    break
+```
+
+---
+
+## Evaluación en Test
+
+El PS evalúa en el MISMO proceso (bloqueante):
+
+```python
+if self._X_test_features is not None:
+    test_acc, test_loss = mlp.evaluate(
+        params,
+        self._X_test_features,  # (10000, 512)
+        self._Y_test,           # (10000,)
+    )
+```
+
+**Timing**: 10000 imágenes × forward MLP ≈ 100-200ms en NumPy.
+
+**Alternativa posible**: Enviar a un Worker designado, pero actualmente no está.
+
+---
+
+## Logging y Debugging
+
+El PS usa un logger con colores:
+
+```python
+_logger.ps(f"Listening on {host}:{port}")
+_logger.ps(f"Worker {worker_id} connected from {addr}")
+_logger.ps(f"Received PARAMS epoch={epoch} from worker {worker_id}")
+_logger.ps(f"Epoch {epoch}: Train Acc={acc:.2f}% Loss={loss:.4f}")
+```
+
+**Debug mode**: `ParameterServer(debug=True)` imprime tracebacks adicionales.
+

@@ -1,389 +1,383 @@
-# 7. SISTEMA DE CACHÉ DE FEATURES
+# 07. Sistema de Caché: Algoritmo e Invalidación
 
-## Propósito
+## Visión General del Sistema de Caché
 
-Evitar recalcular las features CNN si los pesos no han cambiado. En PRECOMPUTED, esto puede ahorrar **30-60 segundos** por sesión (1 setup).
+El caché es un **sistema de dos niveles basado en hash**:
 
-**Idea**: Si CNN tiene los mismos pesos que la última vez, los features son idénticos → reutilizar del disco.
+```
+Nivel 1 — Pesos CNN:
+  Data/feature_cache/{arch}_{seed}_weights.pt
+  
+Nivel 2 — Features pre-extraídos:
+  Data/feature_cache/{arch}_{weights_hash8}_{split}_X.npy
+  Data/feature_cache/{arch}_{weights_hash8}_{split}_Y.npy
+```
+
+**Idea central**: El hash de los pesos CNN es la **llave de invalidación**. Si los pesos cambian, el hash cambia → nueva clave → nuevos archivos → se re-extraen features automáticamente.
 
 ---
 
-## Estrategia de cache key
+## Flujo Completo del Caché
 
-### **Definición**
-
-```
-cache_key = "{arch}_{weights_hash}_{split}"
-
-Ejemplo:
-- arch = "simple"
-- weights_hash = "abc123de"  (primeros 8 hex de MD5 de pesos)
-- split = "train" (o "test")
-
-cache_key = "simple_abc123de_train"
-```
-
-### **Hash de pesos**
+### Paso 1: Computar Hash de Pesos CNN
 
 ```python
-def _weights_hash(self) -> str:
+def _get_weights_hash(self) -> str:
     """
-    Calcula MD5 de los pesos CNN.
+    Calcula MD5 de los pesos CNN actuales.
     
-    1. Serializar state_dict a bytes (determinístico)
-    2. MD5(bytes) → "abc123def456…"
-    3. Tomar primeros 8 hex → "abc123de"
-    
-    Propiedad: pesos idénticos → hash idéntico
-              pesos diferentes → hash diferente (con ~99.999% prob)
+    Esto es determinístico: dado los mismos pesos, siempre el mismo MD5.
     """
-    import hashlib
-    import io
-    
     # Serializar state_dict
+    weights_bytes = self._get_weights_bytes()
+    
+    # Calcular MD5
+    weight_hash = hashlib.md5(weights_bytes).hexdigest()[:8]
+    
+    # Ejemplo: "a3f2c8d1"
+    return weight_hash
+```
+
+### Paso 2: Construir Cache Key
+
+```python
+weight_hash = cnn._get_weights_hash()  # "a3f2c8d1"
+arch = "simple"
+split = "train"
+
+cache_key = f"{arch}_{weight_hash}_{split}"
+# Result: "simple_a3f2c8d1_train"
+```
+
+### Paso 3: Verificar Existencia en Disco
+
+```python
+cache_path_X = f"Data/feature_cache/{cache_key}_X.npy"
+cache_path_Y = f"Data/feature_cache/{cache_key}_Y.npy"
+
+if os.path.exists(cache_path_X) and os.path.exists(cache_path_Y):
+    # CACHE HIT
+    X = np.load(cache_path_X)
+    Y = np.load(cache_path_Y)
+    print(f"Cache HIT: {cache_key}")
+else:
+    # CACHE MISS
+    print(f"Cache MISS: {cache_key} — extracting...")
+    X, Y = cnn.extract_and_save(cache_key)
+```
+
+### Paso 4: Extract o Load
+
+```python
+def extract_with_cache(...):
+    # Si hit: return X, Y
+    # Si miss: 
+    #   compute X_features = cnn.extract(X_raw) en batches
+    #   save X_features
+    #   save Y
+    #   return X_features, Y
+```
+
+---
+
+## Invalidación Automática
+
+**Escenario 1: PRECOMPUTED mode (Hash constante)**
+
+```
+Época 0:
+  CNN weights: W = [1, 2, 3, ...]
+  MD5(W) = "a3f2c8d1"
+  extract_with_cache() → cache_key = "simple_a3f2c8d1_train"
+    ├─ Hit: No (1ª vez)
+    ├─ Extract features (60s)
+    ├─ Save "simple_a3f2c8d1_train_X.npy" (600 MB)
+    └─ Save "simple_a3f2c8d1_train_Y.npy" (26 KB)
+
+Épocas 1-10:
+  CNN weights: W = [1, 2, 3, ...] (NO CAMBIÓ)
+  MD5(W) = "a3f2c8d1" (= época anterior)
+  extract_with_cache() → cache_key = "simple_a3f2c8d1_train"
+    ├─ Hit: SÍ
+    ├─ Load "simple_a3f2c8d1_train_X.npy" (0.1s)
+    └─ Return features
+```
+
+**Timing acumulado**: 60s (epoch 0) + 0.1s × 10 = 60.1s total
+
+**Sin caché** (hipotético): 60s × 11 = 660s total. Speedup: 11x.
+
+---
+
+## Escenario 2: END-TO-END Mode (Hash cambia cada época)
+
+```
+Época 0:
+  CNN weights: W₀ (iniciales)
+  MD5(W₀) = "a3f2c8d1"
+  extract_with_cache() → "simple_a3f2c8d1_train"
+    ├─ Miss
+    ├─ Extract (30s, con GPU)
+    └─ Save
+
+Época 1:
+  PS actualiza CNN: W₁ = W₀ - lr * gradients
+  MD5(W₁) = "7f9a4e2c" (DISTINTO)
+  extract_with_cache() → "simple_7f9a4e2c_train"
+    ├─ Miss (nueva clave)
+    ├─ Extract (30s)
+    └─ Save
+
+Época 2:
+  PS actualiza CNN: W₂ = W₁ - lr * gradients
+  MD5(W₂) = "c3b1d9f5" (DISTINTO)
+  extract_with_cache() → "simple_c3b1d9f5_train"
+    ├─ Miss (NUEVA clave)
+    ├─ Extract (30s)
+    └─ Save
+```
+
+**Timing**: 30s × 11 epochs = 330s total
+
+**Caché efectividad**: 0% (nunca reutiliza). Pero el código está preparado: si hubiera dos épocas con los mismos CNN weights (hipotético), automáticamente reutilizaría.
+
+---
+
+## ¿Por Qué Usar MD5 en lugar de Alternativas?
+
+### Alternativa 1: Versioning manual (❌ Frágil)
+
+```python
+# Mala práctica
+cache_version = 1
+cache_key = f"simple_v{cache_version}_train"
+
+# Problema: developer olvida incrementar version
+# después de cambiar CNN → stale cache
+```
+
+### Alternativa 2: Timestamp (❌ No determinista)
+
+```python
+# Mala práctica
+import time
+timestamp = int(time.time())
+cache_key = f"simple_{timestamp}_train"
+
+# Problema: mismo CNN boots a tiempos distintos → claves distintas
+```
+
+### Alternativa 3: Pedir a Worker (❌ Network waste)
+
+```python
+# Mala práctica
+"Hey Worker, ¿qué hash tienes? Envíamelo."
+# Worker responde con hash
+
+# Problema: latencia de red innecesaria
+```
+
+### Elección: MD5 de state_dict (✓ Correcto)
+
+```python
+# Buena práctica
+weights_bytes = torch.save(cnn.state_dict())
+hash = md5(weights_bytes).hexdigest()[:8]
+
+# Ventajas:
+# - Determinístico: mismo CNN → mismo hash
+# - Automático: no requiere dev intervention
+# - Compacto: 8 caracteres hex
+```
+
+---
+
+## Detalles de Implementación
+
+### Serialización de Weights (PyTorch)
+
+```python
+def _get_weights_bytes(self) -> bytes:
+    """Serializa state_dict a bytes."""
+    import io
+    import torch
+    
     buffer = io.BytesIO()
     torch.save(self._model.state_dict(), buffer)
-    data = buffer.getvalue()
-    
-    # MD5
-    full_hash = hashlib.md5(data).hexdigest()
-    return full_hash[:8]  # abc123de
+    buffer.seek(0)
+    return buffer.read()  # bytes
 ```
 
-### **Rutas de caché**
-
-```
-Data/feature_cache/
-├── simple_abc123de_train_X.npy      (200 MB, features 50K train)
-├── simple_abc123de_train_Y.npy      (200 KB, etiquetas 50K train)
-│
-├── simple_abc123de_test_X.npy       (40 MB, features 10K test)
-├── simple_abc123de_test_Y.npy       (40 KB, etiquetas 10K test)
-│
-├── resnet18_def456ab_train_X.npy
-├── resnet18_def456ab_train_Y.npy
-│
-└── … (más combinaciones de hash)
-```
-
----
-
-## Flujo de carga con caché
+### Cálculo MD5
 
 ```python
-def _load_features_with_cache(X, Y, arch, batch_size, split="train"):
-    """
-    Intenta cargar features con caché. Si no existe o está corrupto,
-    extrae y guarda.
-    """
-    
-    # PASO 1: Calcular cache key
-    weights_hash = self._weights_hash()
-    cache_key = f"{arch}_{weights_hash}_{split}"
-    cache_X_path = f"Data/feature_cache/{cache_key}_X.npy"
-    cache_Y_path = f"Data/feature_cache/{cache_key}_Y.npy"
-    
-    # PASO 2: Intentar cargar (CACHE HIT)
-    if os.path.exists(cache_X_path) and os.path.exists(cache_Y_path):
-        try:
-            X_feat = np.load(cache_X_path, allow_pickle=False)
-            Y_cached = np.load(cache_Y_path, allow_pickle=False)
-            
-            # Validar shape
-            if X_feat.shape == (len(X), 512) and Y_cached.shape == Y.shape:
-                print(f"[CACHE HIT][{split.upper()}] {cache_key}")
-                return X_feat, Y
-            else:
-                print(f"[SHAPE INVALID][{split.upper()}] Regenerating…")
-        except Exception as e:
-            print(f"[CACHE CORRUPT][{split.upper()}] {e}. Regenerating…")
-    
-    # PASO 3: CACHE MISS — extraer features nuevas
-    print(f"[CACHE MISS][{split.upper()}] Extracting with CNN…")
-    
-    t0 = time.perf_counter()
-    X_feat = self._cnn.extract_batched(X, batch_size=batch_size, verbose=True)
-    t_extract = time.perf_counter() - t0
-    
-    # PASO 4: Validar shape
-    assert X_feat.shape == (len(X), 512), f"Shape mismatch: {X_feat.shape}"
-    
-    # PASO 5: Guardar en caché
-    try:
-        os.makedirs("Data/feature_cache", exist_ok=True)
-        np.save(cache_X_path, X_feat)
-        np.save(cache_Y_path, Y)
-        print(f"[CACHE SAVE][{split.upper()}] {cache_key} ({t_extract:.1f}s)")
-    except Exception as e:
-        print(f"[CACHE SAVE ERROR][{split.upper()}] {e}")
-        # Continuar sin guardar — no es fatal
-    
-    return X_feat, Y
+import hashlib
+
+weight_hash = hashlib.md5(weights_bytes).hexdigest()
+# Result: "a3f2c8d1f7c9b1e4a5d3c7f9..." (32 caracteres)
+
+weight_hash_short = weight_hash[:8]
+# Result: "a3f2c8d1" (8 caracteres, suficiente para colisiones)
 ```
 
----
+**Por qué 8 caracteres**: 16^8 ≈ 4 billones posibles valores. Probabilidad de colisión para 10000 pesos distintos ≈ 10^-9 (negligible).
 
-## Formato de archivos .npy
-
-**Archivo**: `simple_abc123de_train_X.npy`
-```
-┌─────────────────────────────────────┐
-│ NumPy .npy Format                   │
-├─────────────────────────────────────┤
-│ Magic (6 bytes)     : \x93 N U M P Y │
-│ Version (2 bytes)   : \x01 \x00     │
-│ Header length (2 bytes) : depends   │
-│ Header (JSON)       : {"descr": "< │
-│                       f8", „shape": │
-│                       [50000, 512], │
-│                       "fortran…     │
-│ Data: 50000 × 512 × 8 bytes = 200 MB│
-│ (float64)                           │
-└─────────────────────────────────────┘
-```
-
-**Propiedades**:
-- ✅ Binario (eficiente)
-- ✅ NumPy native (fast load)
-- ✅ Datos tipados (float32/float64, int32, etc.)
-- ✅ Metadatos en header (shape, dtype)
-
----
-
-## Cache hit / Miss patterns
-
-### **Setup 1: Primera ejecución**
-
-```
-PS carga CNN (weights iniciales)
-Worker recibe CNN_WEIGHTS
-│
-├─ Calcula hash: "abc123de"
-├─ Busca: Data/feature_cache/simple_abc123de_train_X.npy
-├─ NO existe (primer uso)
-│
-├─ [CACHE MISS]
-├─ Extrae features
-├─ Guarda en caché
-│
-└─ Tiempo: ~45s (extracción + I/O)
-```
-
-### **Setup 2: Misma CNN, nueva sesión**
-
-```
-PS carga CNN (mismo archivo de pesos que Setup 1)
-Worker recibe CNN_WEIGHTS
-│
-├─ Calcula hash: "abc123de" (igual que antes)
-├─ Busca: Data/feature_cache/simple_abc123de_train_X.npy
-├─ EXISTE
-│
-├─ [CACHE HIT]
-├─ Carga desde disco (fast)
-│
-└─ Tiempo: ~0.5s (I/O de 200 MB)
-```
-
-### **Setup 3: CNN diferente, nueva sesión**
-
-```
-PS entrena CNN E2E, guarda nuevos pesos
-PS carga CNN (pesos actualizados)
-Worker recibe CNN_WEIGHTS
-│
-├─ Calcula hash: "def456ab" (diferente que Setup 1)
-├─ Busca: Data/feature_cache/simple_def456ab_train_X.npy
-├─ NO existe (pesos nuevos)
-│
-├─ [CACHE MISS]
-├─ Extrae features con CNN nueva
-├─ Guarda en caché con nuevo hash
-│
-└─ Tiempo: ~45s (extracción + I/O)
-```
-
----
-
-## Impacto de rendimiento
-
-### **Sin caché**
-
-```
-Setup (primera vez): ~60s (extracción siempre)
-Setup (sesión 2):     ~60s (extracción siempre)
-Setup (sesión 3):     ~60s (extracción siempre)
-
-Total 3 sesiones: ~180s
-```
-
-### **Con caché**
-
-```
-Setup 1: ~60s (extracción + guardado)
-Setup 2: ~0.5s (CACHE HIT)
-Setup 3: ~0.5s (CACHE HIT, si pesos no cambiaron)
-
-Total 3 sesiones: ~61s
-───────────────────────────────────
-Mejora: 180s → 61s = 3x más rápido
-```
-
-**Observación**: El caché es útil para validación/demostración rápida.
-
----
-
-## Validación de caché
-
-### **Checks implementados**
+### Cache Path Construction
 
 ```python
-# [1] Archivo existe
-if not os.path.exists(cache_X_path):
-    → CACHE MISS
+cache_dir = "Data/feature_cache"
+os.makedirs(cache_dir, exist_ok=True)
 
-# [2] Carga sin error (no corrupto)
-try:
-    X_feat = np.load(cache_X_path, allow_pickle=False)
-except:
-    → CACHE CORRUPT
+arch = self.arch  # "simple" o "resnet18"
+weight_hash = self._get_weights_hash()  # "a3f2c8d1"
+split = "train"  # o "test"
 
-# [3] Shape exacto
-expected_n = len(X)          # 50000
-expected_dim = 512
-if X_feat.shape != (expected_n, expected_dim):
-    → SHAPE INVALID
-```
+path_X = f"{cache_dir}/{arch}_{weight_hash}_{split}_X.npy"
+path_Y = f"{cache_dir}/{arch}_{weight_hash}_{split}_Y.npy"
 
-### **Escenarios de corrupción**
-
-| Escenario | Efecto | Manejo |
-|-----------|--------|--------|
-| Discodiscadenado mid-write | Archivo incompleto | load() falla → re-extract |
-| Modificación manual de .npy | Datos basura | load() siempre falla → re-extract |
-| Cambio X input shape | Shape no coincide | Shape check → re-extract |
-| numpy versión diferente | Lectura falla | load() maneja automático |
-
----
-
-## Logging del caché
-
-### **Mensajes tipificados**
-
-```
-[CACHE HIT][TRAIN]     → Features cargados instantáneamente
-[CACHE HIT][TEST]      → Features de prueba desde caché
-[CACHE MISS][TRAIN]    → Extrayendo features…
-[CACHE MISS][TEST]     → Extrayendo features de test…
-[CACHE CORRUPT][TRAIN] → Error leyendo caché, regenerando…
-[CACHE CORRUPT][TEST]  → Error leyendo caché, regenerando…
-[SHAPE INVALID][TRAIN] → Shape mismatch, regenerando…
-[SHAPE INVALID][TEST]  → Shape mismatch, regenerando…
-[CACHE SAVE][TRAIN]    → Features guardados en caché (45.2s)
-[CACHE SAVE][TEST]     → Features de test guardados en caché (5.1s)
-[CACHE SAVE ERROR]     → No se guardó caché (pero continuando…)
+# Ejemplo:
+# Data/feature_cache/simple_a3f2c8d1_train_X.npy
+# Data/feature_cache/simple_a3f2c8d1_train_Y.npy
 ```
 
 ---
 
-## Invalidación de caché
+## Tamaño del Caché en Disco
 
-### **Cuándo se invalida**
-
-```
-Razón                               Acción
-─────────────────────────────────────────────────────────
-CNN arch cambió (simple → resnet)   Hash diferente → new cache dir
-CNN weights actualizados            Hash diferente → new cache dir
-X_raw shape cambió                  Shape validation falla → re-extract
-Y_raw cambió                        [No validado] → confusión potencial
-split cambió (train ↔ test)         Clave diferente → separate files
-```
-
-### **Invariantes**
+### CIFAR-10 Features (PRECOMPUTED mode)
 
 ```
-✓ Si hash(CNN_weights[t1]) == hash(CNN_weights[t2])
-  Entonces features[t1] == features[t2]
-  (determinístico, reproducible)
+X_train: (50000, 512) float32
+  Bytes: 50000 × 512 × 4 = 102,400,000 bytes ≈ 100 MB
+  
+Y_train: (50000,) int32
+  Bytes: 50000 × 4 = 200,000 bytes ≈ 200 KB
 
-✓ Si hash != hash'
-  Entonces features ≠ features'
-  (o muy improbable, p < 10^-8)
+Total: 100.2 MB
 
-✓ Una vez guardado, no se modifica
-  (append-only de facto)
+CNN weights (simple): ~20 MB
+CNN weights (resnet18): ~50 MB
+
+Total per session:
+  - SimpleCNN + features: 120 MB
+  - ResNet18 + features: 150 MB
 ```
+
+### Crecimiento en Disk
+
+```
+5 arquitecturas × 3 seeds × 2 splits (train/test) × 100 MB ≈ 3 GB
+
+Típicamente, el disco es suficiente. Pero después de
+100 experimentos, puede llegar a 3-10 GB.
+```
+
+**Limpieza**: Borrar `Data/feature_cache/` es seguro (se recrea automáticamente).
 
 ---
 
-## Optimizaciones futuras
+## Comparación: Con Caché vs Sin Caché
 
-### **1. Incremental caching**
+### PRECOMPUTED Mode (SimpleCNN)
+
+```
+CON CACHÉ:
+  Sesión 1, Época 0: 60s (extract + save)
+  Sesión 1, Épocas 1-9: 2s × 9 = 18s
+  Sesión 2, Época 0: 0.3s (load)
+  Sesión 2, Épocas 1-9: 2s × 9 = 18s
+  Total 20 epochs (2 sesiones): 60 + 18 + 0.3 + 18 = 96.3s
+
+SIN CACHÉ:
+  Sesión 1, Épocas 0-9: 60s × 10 = 600s
+  Sesión 2, Épocas 0-9: 60s × 10 = 600s
+  Total 20 epochs: 1200s
+
+SPEEDUP: 1200 / 96.3 ≈ 12.5x
+```
+
+### END-TO-END Mode (ResNet18)
+
+```
+CON CACHÉ:
+  Época 0: 30s (extract con CNN₀)
+  Época 1: 30s (extract con CNN₁, nueva clave, miss)
+  ...
+  Época 9: 30s (extract con CNN₉)
+  Total: 30 × 10 = 300s
+
+SIN CACHÉ (hipotético):
+  Mismo: 300s
+
+SPEEDUP: No existe (never reuses).
+```
+
+**Conclusión**: Caché beneficia PRECOMPUTED (12x) pero es neutral en END-TO-END (0x).
+
+---
+
+## Monitoreo de Caché
 
 ```python
-# En lugar de guardar 50000 imganes de golpe,
-# guardar por batches:
+import os
 
-batch_size = 5000
-for batch_idx in range(0, 50000, batch_size):
-    X_batch_feat = extract_batch(batch_idx, batch_idx + batch_size)
-    np.save(f"{cache_key}_batch_{batch_idx}.npy", X_batch_feat)
+cache_dir = "Data/feature_cache"
+files = os.listdir(cache_dir)
 
-# Ventaja: si falla mid-extract, reutilizar lo guardado
-# Desventaja: más archivos, I/O más granular
+print(f"Cache files: {len(files)}")
+total_size = sum(os.path.getsize(f) for f in files)
+print(f"Total size: {total_size / 1e9:.2f} GB")
+
+# Ejemplos de archivos:
+for f in sorted(files)[:5]:
+    print(f"  - {f}")
 ```
 
-### **2. Compresión con .npz**
-
-```python
-# .npz = zip de múltiples .npy
-
-# Actual:
-np.save("train_X.npy", X_feat)  # 200 MB
-np.save("train_Y.npy", Y)       # 0.2 MB
-
-# Optimizado:
-np.savez("train.npz", X=X_feat, Y=Y)  # 200 MB (sin compresión)
-np.savez_compressed("train.npz", X=X_feat, Y=Y)  # 50 MB (con zlib)
+Resultado típico:
 ```
-
-### **3. Caché distribuido**
-
-```
-En lugar de caché local de cada Worker,
-usar caché compartido (NFS, S3):
-
-   Workers (GPU farms)
-        ↓
-    read/write → Shared Storage (NFS)
-                        ↓
-                  cached features
-
-Ventaja: un Worker extrae, otros reutilizan inmediatamente
-Desventaja: latencia red, colisiones de I/O
+Cache files: 8
+Total size: 0.41 GB
+  - resnet18_a3f2c8d1_test_X.npy
+  - resnet18_a3f2c8d1_test_Y.npy
+  - simple_7f9a4e2c_train_X.npy
+  - simple_7f9a4e2c_train_Y.npy
+  - simple_a3f2c8d1_train_X.npy
+  - simple_a3f2c8d1_train_Y.npy
+  - resnet18_a3f2c8d1_train_X.npy
+  - resnet18_a3f2c8d1_train_Y.npy
 ```
 
 ---
 
-## Cuándo deshabilitar caché
+## Performance Tuning del Caché
+
+### Batch Size en Extracción
+
+Para reducir memoria:
 
 ```python
-# En modo E2E, quizá NOT guarde caché después de cada época
-# porque los pesos cambian:
+batch_size_extract = 512  # vs default 2048
 
-if training_mode == "end_to_end":
-    # CNN pesos varían en cada época
-    # Caché sería inútil (nunca se reutiliza)
-    save_to_cache = False
-else:
-    # Precomputed: CNN fija
-    # Caché amortiza el costo inicial
-    save_to_cache = True
+# En extraction loop
+for batch_start in range(0, len(X), batch_size_extract):
+    batch_end = min(batch_start + batch_size_extract, len(X))
+    X_batch_features = cnn.extract(X[batch_start:batch_end])
 ```
 
----
+**Trade-off**:
+- batch_size=512: Memory light, pero más iteraciones (lento)
+- batch_size=4096: Memory heavy, menos iteraciones (rápido)
 
-**Documento**: `docs/07_caching_system.md`  
-**Última actualización**: 2026-03-27  
-**Nivel**: Avanzado
+### Usar I/O Faster (SSD vs HDD)
+
+Si `Data/` está en HDD:
+- Load ~100 MB: 3-5 segundos
+- En SSD: 0.5 segundos
+
+**Solución**: Mover `Data/feature_cache/` a SSD si disponible.
+
+```bash
+# Linux/Mac
+ln -s /path/to/ssd/cache Data/feature_cache
+```
+

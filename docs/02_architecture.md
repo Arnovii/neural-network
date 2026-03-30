@@ -1,344 +1,505 @@
-# 2. ARQUITECTURA DEL SISTEMA
+# 02. Arquitectura del Sistema
 
-## Componentes principales
+## Componentes de Alto Nivel
+
+El sistema se compone de **cuatro capas funcionales** que interactúan de manera precisa:
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                                                                             │
-│                    ┌──────────────────────────────┐                         │
-│                    │   PARAMETER SERVER (PS)      │                         │
-│                    ├──────────────────────────────┤                         │
-│                    │ • CNNExtractor (PyTorch)     │                         │
-│                    │ • MLP params (NumPy)         │                         │
-│                    │ • Sincronización             │                         │
-│                    │ • Promedio de gradientes     │                         │
-│                    │ • Caché de features (E2E)    │                         │
-│                    └──────────────────────────────┘                         │
-│                              ▲                                              │
-│                              │                                              │
-│         ┌────────────────────┼────────────────────┐                         │
-│         │                    │                    │                         │
-│         ▼                    ▼                    ▼                         │
-│    ┌─────────┐          ┌─────────┐         ┌─────────┐                     │
-│    │WORKER 0 │          │WORKER 1 │         │WORKER N │                     │
-│    ├─────────┤          ├─────────┤         ├─────────┤                     │
-│    │ Datos   │          │ Datos   │         │ Datos   │                     │
-│    │(50K)    │          │(50K)    │         │(50K)    │                     │
-│    │         │          │         │         │         │                     │
-│    │ CNN ──► Features    │ CNN ──► Features  │ CNN ──► Features             │
-│    │ MLP ──► ∇L          │ MLP ──► ∇L        │ MLP ──► ∇L                   │
-│    └─────────┘          └─────────┘         └─────────┘                     │
-│         TCP                  TCP                 TCP                        │
-│                                                                             │
-└─────────────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│  CAPA DE APLICACIÓN                                         │
+│  ├─ ps_terminal.py (CLI)  / ps_gui.py (GUI)                 │
+│  └─ worker.py (Worker launcher)                             │
+├─────────────────────────────────────────────────────────────┤
+│  CAPA DE COORDINACIÓN DISTRIBUIDA                           │
+│  ├─ Parameter Server (distribuida/parameter_server.py)      │
+│  ├─ Worker Node (distribuida/worker_node.py)                │
+│  └─ Protocol (distribuida/protocol.py)                      │
+├─────────────────────────────────────────────────────────────┤
+│  CAPA DE MODELOS                                            │
+│  ├─ CNN Extractor (Model/cnn_extractor.py)                  │
+│  └─ MLP Classifier (Model/mlp.py)                           │
+├─────────────────────────────────────────────────────────────┤
+│  CAPA DE DATOS E INFRAESTRUCTURA                            │
+│  ├─ Data Loading (Utils/cifar_loader.py)                    │
+│  ├─ Caching (Model/cnn_extractor.py + Data/feature_cache)   │
+│  └─ Results Export (Utils/results_exporter.py)              │
+└─────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 🔧 Responsabilidades de cada componente
+## Capa de Aplicación
 
-### **Parameter Server (PS)**
+### ps_terminal.py
 
-**Rol**: Orquestador central de la sesión de entrenamiento
+Punto de entrada **sin interfaz gráfica** para entrenar distribuido.
 
 **Responsabilidades**:
-- ✅ Aceptar conexiones de Workers (asignación de IDs)
-- ✅ Preentrenar/validar la CNN localmente
-- ✅ Distribuir pesos CNN a todos los Workers via `CNN_WEIGHTS`
-- ✅ Esperar a que todos confirmen `CNN_READY` (barrera)
-- ✅ Generar `epoch_seed` aleatorio cada época
-- ✅ Enviar PARAMS (MLP + seed + opcionalmente CNN) a cada Worker
-- ✅ Recibir GRADIENTS de todos los Workers
-- ✅ Promediar gradientes: ∇̄ = (1/N) * Σ∇
-- ✅ Actualizar pesos: W ← W − lr * ∇̄
-- ✅ Evaluar en datos de prueba (si se proporcionan)
-- ✅ Repetir por cada época
+- Parsear argumentos CLI (host, port, workers, epochs, lr, etc.)
+- Inicializar CNN (SimpleCNN o ResNet18)
+- Crear ParameterServer
+- Esperar hasta que se conecten N Workers
+- Lanzar sesión de entrenamiento
+- Imprimir progreso por época
+- Exportar resultados
 
-**Qué NO hace**:
-- ❌ Ver datos de entrenamiento locales de Workers
-- ❌ Calcular gradientes de cifrar-10 (Workers lo hacen)
-- ❌ Almacenar features en disco (Workers lo hacen)
+**No tiene UI**, solo texto. Útil para:
+- Experimentos automatizados
+- Ejecución en cluster
+- Reproducibilidad
 
-**Archivos**:
-- `Distributed/parameter_server.py` — Implementación
-- `ps_gui.py` — Interfaz gráfica (Tkinter)
-- `ps_terminal.py` — Interfaz por terminal
+**Flujo típico**:
+```
+$ python ps_terminal.py --epochs 10 --workers 3
+[PS] Inicializando CNN (simple)...
+[PS] Listening en 0.0.0.0:9999
+[PS] Esperando 3 Workers...
+(espera 2-5 min mientras se connectan workers)
+[PS] READY. Iniciando entrenamiento.
+Epoch 1: [████████░░] 87% loss=0.234 accuracy=94.3%
+...
+```
+
+### ps_gui.py
+
+Punto de entrada **con interfaz gráfica Tkinter** (GUI).
+
+**Responsabilidades**:
+- Crear UI en Tkinter con dos paneles (control + visualización)
+- Permitir seleccionar modo (PRECOMPUTED vs END-TO-END)
+- Permitir seleccionar arquitectura CNN (simple vs resnet18)
+- Mostrar conexiones de Workers en tiempo real
+- Mostrar gráficos de loss y accuracy (Matplotlib embebido)
+- Controlar inicio/parada del servidor
+- Exportar resultados a JSON
+
+**Ventajas vs terminal**:
+- Visual, fácil para presentaciones
+- Ajustar parámetros antes de entrenar
+- Ver curvas de convergencia en vivo
+
+**Nota**: ps_gui.py usa threads porque Tkinter no es thread-safe. Toda comunicación con ParameterServer se hace via un Queue para evitar race conditions.
+
+### worker.py
+
+Punto de entrada que inicializa un Worker Node.
+
+**Responsabilidades**:
+- Parsear argumentos CLI (server-host, server-port, data-dir, etc.)
+- Cargar CIFAR-10 completo en RAM
+- Crear WorkerNode
+- Conectar al ParameterServer
+- Entrar en bucle persistente de recibir instrucciones
+
+**Particularidad**: Se inicia con `--server-host <IP_DEL_PS>`. El resto (ID, CNN weights, etc.) se recibe del PS durante la conexión.
 
 ---
 
-### **Worker Node**
+## Capa de Coordinación Distribuida
 
-**Rol**: Cálculo local en paralelo
+### ParameterServer (parameter_server.py)
 
-**Responsabilidades**:
-- ✅ Conectar al PS enviando `READY`
-- ✅ Recibir `WORKER_ID` asignado
-- ✅ Cargar CIFAR-10 (50K imágenes) en RAM
-- ✅ Recibir y cargar pesos CNN via `CNN_WEIGHTS`
-- ✅ Extraer features (precomputed) O habilitar CNN (E2E)
-- ✅ Confirmar `CNN_READY` cuando listo
-- ✅ Esperar sesión de entrenamiento (`TRAIN_START`)
-- ✅ Por cada época:
-  - Recibir `PARAMS` + seed
-  - Reconstruir índices localmente (stratified sampling)
-  - Calcular forward CNN (si E2E) + MLP
-  - Calcular backward MLP (+ CNN si E2E)
-  - Enviar `GRADIENTS` al PS
-- ✅ Persistente: no se desconecta entre épocas/sesiones
+Núcleo del sistema distribuido. Mantiene el estado global del entrenamiento.
 
-**Qué NO hace**:
-- ❌ Ver datos de otros Workers
-- ❌ Comunicarse con otros Workers (solo con PS)
-- ❌ Decidir qué modelo entrenar (PS decide)
+**Responsabilidades principales**:
 
-**Archivos**:
-- `Distributed/worker_node.py` — Implementación
-- `worker.py` — Entry point (script a ejecutar)
+#### 1. Aceptación de Conexiones (Hilo de Background)
+```
+listen() → _accept_thread
+    ├─ Abre socket TCP en host:port
+    ├─ Accept indefinidamente
+    ├─ Asigna IDs secuenciales (0, 1, 2, ...)
+    └─ Guarda socket para cada Worker
+```
+
+**Invariante**: El PS NUNCA desconecta Workers. Permanecen en el `_worker_sockets` dict incluso entre sesiones de entrenamiento.
+
+#### 2. Sincronización de CNN (Barrera CNN_READY)
+```
+TRAIN_START → PS envía CNN_WEIGHTS a todos
+    ↓
+Cada Worker extrae features, envía CNN_READY
+    ↓
+PS cuenta CNN_READY. Cuando count == n_workers, desbloquea
+    ↓
+Procede a enviar PARAMS para época 1
+```
+
+**Crítico**: Si un Worker no envía CNN_READY, el PS espera indefinidamente (timeout no implementado).
+
+#### 3. Coordinación de Épocas
+
+Por cada época:
+```
+PS → All Workers: PARAMS (pesos MLP + semilla aleatoria)
+Workers (en paralelo, no sincronizado):
+    ├─ Extraen features con seed
+    ├─ Forward/backward MLP
+    └─ Envían GRADIENTS
+
+PS recibe gradientes de Worker 0, 1, 2, ... (en el orden que lleguen)
+    ├─ Guarda cada uno
+    ├─ Cuando recibe de TODOS los workers o timeout:
+    │  ├─ Promedia: grad_avg[k] = sum(grad[i][k] para i=0..n-1) / n
+    │  ├─ Actualiza: w[k] -= lr * grad_avg[k]
+    │  ├─ Evalúa en test si disponible
+    │  └─ Callback on_epoch_end()
+    └─ Repite con siguiente época
+```
+
+#### 4. Estado de Entrenamiento
+```
+_training_mode: "precomputed" o "end_to_end"
+    ├─ PRECOMPUTED: CNN congelada, features cacheados
+    └─ END-TO-END: CNN entrenable, features por época
+
+_cnn: CNNExtractor (compartida, pesos distribuidos a Workers)
+_active_training_workers: List[int] - IDs que participan en sesión actual
+_epoch_gradients: Dict[worker_id, Dict[param_name, ndarray]] - buffer por época
+_epoch_metrics: Dict[worker_id, (loss, accuracy)]
+```
+
+#### 5. Callbacks para Notificación Asincrona
+- `on_worker_connected(worker_id, addr)`: Worker nuevo se registró
+- `on_worker_disconnected(worker_id)`: Worker perdió conexión
+- `on_gradients_received(worker_id, epoch, loss, accuracy)`: Gradientes recibidos
+- `on_epoch_end(epoch, n_epochs, train_acc, train_loss, test_acc, test_loss)`: Época completada
+- `on_worker_joined_late(worker_id, addr)`: Worker intentó conectarse durante entrenamiento
+
+**ps_gui.py consume estos callbacks para actualizar la UI**.
 
 ---
 
-### **CNN Extractor (PyTorch)**
+### WorkerNode (worker_node.py)
 
-**Rol**: Extracción de characteristics convolucionales
+Executor local de cálculos. Sincroniza con ParameterServer.
 
-**Arquitecturas soportadas**:
-1. **"simple"** (custom):
-   - 3 bloques Conv → BN → ReLU → MaxPool
-   - Optimizada para CIFAR-10 (32×32)
-   - feature_dim = 512
-   - Requiere preentrenamiento local (1-2 min)
+**Responsabilidades principales**:
 
-2. **"resnet18"** (torchvision):
-   - ResNet-18 estándar
-   - Con `pretrained=True`: pesos ImageNet
-   - Upscale 32×32 → 224×224
-   - feature_dim = 512
-   - Listo para usar (sin preentrenamiento local)
+#### 1. Conexión Inicial (Handshake)
+```
+Worker:  → READY (payload vacío)
+PS:      → WORKER_ID (e.g., {"worker_id": 2})
 
-**Responsabilidades**:
-- ✅ Forward pass: (N, 3, 32, 32) → (N, 512)
-- ✅ Serializar pesos (torch.save → bytes)
-- ✅ Cargar pesos (bytes → model)
-- ✅ Congelar/habilitar gradientes (set_trainable)
-- ✅ Calcular hash MD5 de pesos (para caché)
-- ✅ Caché de features con validación
+Resultado: Worker conoce su ID, PS lo registra
+```
 
-**Hecho en PyTorch porque**:
-- Operaciones convolucionales eficientes
-- Pesos preentrenados (ResNet) disponibles
-- CUDA/GPU aceleración automática
+#### 2. Ciclo Persistente de Espera
+```
+while True:
+    msg = receive_message(socket)
+    
+    if msg.type == READY:
+        # Solo PS la envía al arrancar, no Workers
+        
+    if msg.type == CNN_WEIGHTS:
+        _handle_cnn_weights(msg)
+        # Load CNN, extract features, send CNN_READY
+        
+    if msg.type == REQUEST_TEST_FEATURES:
+        _handle_request_test_features()
+        # Enviar features test al PS
+        
+    if msg.type == TRAIN_SAMPLE:
+        _handle_train_sample(msg)
+        # Enviar muestra de train raw (para preentrenamiento CNN)
+        
+    if msg.type == TRAIN_START:
+        _run_training_session(epochs, n_train, n_workers, rank)
+        # Entrar en bucle de entrenamiento
+        
+    if msg.type == STOP:
+        break
+```
 
-**Archivos**:
-- `Model/cnn_extractor.py` — Implementación
+#### 3. Sesión de Entrenamiento
+```
+For each epoch in range(n_epochs):
+    msg = receive_message()  # Esperar PARAMS + seed
+    
+    # Reconstruir índices (distribuidos, determinista)
+    indices = _reconstruct_indices(n_train, n_workers, rank, seed)
+    X_batch = X_features[indices]
+    Y_batch = Y_raw[indices]
+    
+    # Forward + Backward (NumPy)
+    grads, loss, accuracy = mlp.forward_and_gradients(params, X_batch, Y_batch)
+    
+    # Enviar respuesta
+    send_message(GRADIENTS, {"worker_id": my_id, "epoch": e, 
+                             "gradients": grads, "loss": loss, "accuracy": acc})
+```
+
+**Crítica**: El bucle es **bloqueante**. Si un Worker se queda en `receive_message()` esperando PARAMS, no puede procesar nada más.
+
+#### 4. Partición Determinista de Datos
+```
+# En el PS: random.seed(epoch_seed); shuffle(range(n_train))
+shuffled = np.arange(n_train)
+rng = RandomState(epoch_seed)
+rng.shuffle(shuffled)
+
+# Dividir round-robin
+my_indices = []
+for i in range(n_train):
+    if i % n_workers == my_rank:
+        my_indices.append(shuffled[i])
+```
+
+**Invariante**: Con el mismo seed, el Worker 0 siempre obtiene el mismo batch cada época.
 
 ---
 
-### **MLP Classifier (NumPy)**
+### Protocol (protocol.py)
 
-**Rol**: Clasificador lineal distribuido
+Define cómo se comunican PS y Workers.
+
+**Formato de Mensaje**:
+```
+┌─────────────┬──────────────────────┐
+│  4 bytes    │  N bytes             │
+│  len(data)  │  pickle.dumps(dict)  │
+│  (big-end)  │                      │
+└─────────────┴──────────────────────┘
+
+Ejemplo (WORKER_ID message):
+  big-endian(4): 0x00 0x00 0x00 0x18  (24 bytes)
+  pickle: {"type": "WORKER_ID", "payload": {"worker_id": 2}}
+```
+
+**Tipos de Mensaje**:
+
+| Tipo | Sentido | Descripción |
+|------|---------|---|
+| READY | Worker→PS | Worker declara que está listo |
+| WORKER_ID | PS→Worker | Asignación de ID |
+| CNN_WEIGHTS | PS→Worker | Pesos CNN para usar |
+| CNN_READY | Worker→PS | Confirmó extracción de features |
+| REQUEST_TEST_FEATURES | PS→Worker | Me envías features de test |
+| TEST_FEATURES | Worker→PS | Respuesta con features test |
+| TRAIN_SAMPLE | PS→Worker | Envíame muestra de train |
+| TRAIN_SAMPLE_DATA | Worker→PS | Respuesta con muestra |
+| TRAIN_START | PS→Worker | Inicia sesión de entrenamiento |
+| PARAMS | PS→Worker | Pesos MLP nuevos + seed |
+| GRADIENTS | Worker→PS | Gradientes calculados |
+| STOP | PS→Worker | Finalizando servidor |
+
+**Decisión de Diseño**: Pickle permite serializar `np.ndarray` sin perder tipos. JSON requeriría convertir a lista (3-5x más grande en red y más lento en parsing).
+
+---
+
+## Capa de Modelos
+
+### CNN Extractor (Model/cnn_extractor.py)
+
+**Opciones de Arquitectura**:
+
+#### SimpleCNN (diseñado desde cero)
+```
+Conv(3→64, 3×3) → BN → ReLU → MaxPool(2×2)     → 64@16×16
+Conv(64→128, 3×3) → BN → ReLU → MaxPool(2×2)  → 128@8×8
+Conv(128→256, 3×3) → BN → ReLU → MaxPool(2×2) → 256@4×4
+AdaptiveAvgPool() → 256@1×1
+FC(256→512) → 512
+```
+
+- **Ventajas**: Ligera, rápida en CPU
+- **Preentrenamiento**: Necesita datos para entrenar (o usa pesos aleatorios)
+- **Feature dim**: 512
+
+#### ResNet18 (torchvision)
+```
+ImageNet → 18 capas → 512 features
+```
+
+- **Ventajas**: Pretrained en ImageNet (pesos transferibles)
+- **Desventajas**: Más lenta (18 capas vs 3)
+- **Feature dim**: 512
+
+**Responsabilidades de CNNExtractor**:
+1. Cargar arquitectura (SimpleCNN o ResNet)
+2. Manejar inicialización de pesos (seed o pretrained)
+3. Extraer features en batch (forward, no backward)
+4. Cachear features con MD5 hash
+5. Serializar/deserializar state_dict para transmisión
+
+**Métodos públicos**:
+- `extract(X_batch)`: Forward pass, devuelve features (N, 512)
+- `extract_with_cache(X, Y, split, device)`: Extract + cachea automáticamente
+- `set_trainable(bool)`: Congela/descongela CNN (PRECOMPUTED vs E2E)
+
+---
+
+### MLP Classifier (Model/mlp.py)
 
 **Arquitectura**:
 ```
-features (N, feature_dim=512)
+Entrada (512)
+  ↓ W1 (512×256) + b1 (256,)
+  ↓ ReLU
+Hidden1 (256)
+  ↓ W2 (256×128) + b2 (128,)
+  ↓ ReLU
+Hidden2 (128)
+  ↓ W3 (128×10) + b3 (10,)
+  ↓ Softmax
+Salida (10)
+```
+
+**Funciones públicas**:
+
+#### init_params(...)
+- He initialization: $w \sim \mathcal{N}(0, \sqrt{2/fan\_in})$
+- Rationale: ReLU satura si W es muy grande; He compensa que mitad de neuronas ≈ 0
+- Output: Dict[W1, b1, W2, b2, W3, b3] (todos float32)
+
+#### forward_and_gradients(params, X, Y)
+- Forward pass: compute Z1, A1, Z2, A2, A3
+- Backward pass: compute δ3, δ2, δ1 (regla cadena)
+- Output: (gradients_dict, mean_loss, accuracy_pct)
+
+#### evaluate(params, X, Y)
+- Solo forward pass (sin gradientes)
+- Output: (accuracy_pct, mean_loss)
+
+#### apply_gradients(params, gradients, lr)
+- In-place update: params[k] -= lr * gradients[k]
+- Usado por PS después de promediar
+
+**Por qué NumPy y no PyTorch**:
+1. Transparencia: cada línea de backward es legible
+2. Serialización: PyTorch tensors + graph = 10x más grande que np.ndarray
+3. Velocidad: NumPy con BLAS es suficiente para MLP
+
+---
+
+## Capa de Datos e Infraestructura
+
+### Data Loading (Utils/cifar_loader.py)
+
+**Formato Output**:
+- X: (N, 3, 32, 32) float32 NCHW normalizado
+- Y: (N,) int32 en [0, 9]
+
+**Normalización**:
+- μ=[0.4914, 0.4822, 0.4465] (RGB)
+- σ=[0.2470, 0.2435, 0.2616]
+- Applied per-channel: `X = (X - μ) / σ`
+
+**Cacheado en .npz**: La primera vez carga de torchvision, luego .npz en Data/
+
+### Caching System
+
+**Ubicación**: `Data/feature_cache/`
+
+**Cache key**:
+```
+{arch}_{weights_md5_first_8_chars}_{split}_X.npy
+{arch}_{weights_md5_first_8_chars}_{split}_Y.npy
+
+Ejemplo:
+simple_a3f2c8d1_train_X.npy  ← 6667×512 array = ~34 MB
+simple_a3f2c8d1_train_Y.npy  ← 6667 array = ~26 KB
+```
+
+**Invalidación automática**: Si CNN weights cambian (hash distinto), automáticamente extrae features nuevos (no reutiliza viejo caché).
+
+---
+
+## Flujo de Datos: Estado y Transiciones
+
+### Estado Inicial
+- PS escucha, Workers desconectados
+- Ningún entrenamiento activo
+
+### Fase 1: Conexión Workers
+- Workers envían READY
+- PS asigna WORKER_ID
+- Workers quedan en `waitinig`
+
+### Fase 2: Sincronización CNN
+- PS envía CNN_WEIGHTS
+- Workers extraen features (first epoch ~60s, después caché)
+- Workers envían CNN_READY
+- PS espera barrera (todo N Workers)
+
+### Fase 3: Entrenamiento
+- Epochs 1 a N
+- Each epoch: PS→PARAMS, Workers→GRADIENTS, PS average+update
+
+### Fase 4: Shutdown
+- PS envía STOP
+- Workers cierran socket
+- PS cierra TCP server
+
+---
+
+## Threading Model
+
+### PS Threads
+- **Main thread**: ps_terminal.py / ps_gui.py, llama a ps.train()
+- **Accept thread**: Accept conexiones Worker (bloqueante en socket.accept())
+- **Hilo GUI** (solo ps_gui.py): Tkinter event loop
+
+**Sincronización**: 
+- Mutex `_lock` protege `_worker_sockets`, `_next_id`
+- Events para barreras (`_cnn_ready_event`)
+
+### Worker Thread
+- **Main thread**: worker.py, bucle bloqueante en `receive_message()`
+- **No hay threads adicionales**
+
+### ps_gui.py Threading
+- **Main (Tkinter)**: UI loop
+- **Comunicación PS**: Via queue para evitar race conditions con Tkinter
+
+---
+
+## Cadena de Responsabilidades
+
+```
+ps_terminal.py
     ↓
-[Linear] W1 (512 × 256) + b1
+ParameterServer.train()
+    ├─ Inicializar CNN
+    ├─ Enviar CNN_WEIGHTS a Workers
+    ├─ Esperarrera CNN_READY
+    ├─ For each epoch:
+    │   ├─ Enviar PARAMS a todos
+    │   ├─ Recibir GRADIENTS (bloqueante)
+    │   ├─ Promediar
+    │   ├─ Actualizar pesos
+    │   └─ on_epoch_end()
+
+worker.py
     ↓
-ReLU (hidden1 = 256)
-    ↓
-[Linear] W2 (256 × 128) + b2
-    ↓
-ReLU (hidden2 = 128)
-    ↓
-[Linear] W3 (128 × 10) + b3
-    ↓
-Softmax → logits → cross-entropy loss
-```
-
-**Responsabilidades**:
-- ✅ Forward pass: (N, feature_dim) → (N, 10) logits
-- ✅ Backward pass: gradientes de W1, b1, W2, b2, W3, b3
-- ✅ Serializar gradientes con Pickle
-- ✅ Aplicar actualización SGD: W ← W − lr * ∇
-
-**Hecho en NumPy porque**:
-- Serialización Pickle es eficiente (arrays binarios)
-- Gradientes pequeños (feature_dim × hidden1 ≈ 128 KB)
-- Control total sobre forward/backward (pedagogía)
-
-**Archivos**:
-- `Model/mlp.py` — Implementación
-
----
-
-### **Protocolo de comunicación**
-
-**Rol**: Mensajería confiable entre PS y Workers
-
-**Formato de cada mensaje**:
-```
-┌──────────────┬────────────────────────────┐
-│  4 bytes     │  N bytes                   │
-│ Longitud N   │ pickle.dumps(mensaje)      │
-│ (big-endian) │                            │
-└──────────────┴────────────────────────────┘
-```
-
-**Tipos de mensajes**:
-
-| Tipo | Dirección | Payload | Propósito |
-|------|-----------|---------|-----------|
-| `READY` | Worker → PS | {} | Worker solicita conexión |
-| `WORKER_ID` | PS → Worker | {worker_id: int} | PS asigna ID |
-| `CNN_WEIGHTS` | PS → Worker | {arch, weights_bytes} | PS distribuye CNN |
-| `CNN_READY` | Worker → PS | {worker_id} | Worker confirmó CNN |
-| `TRAIN_START` | PS → Worker | {epochs, n_train, n_workers, training_mode} | Inicia sesión |
-| `PARAMS` | PS → Worker | {epoch, params: MLPWeights, seed, cnn_params?} | Parámetros de época |
-| `GRADIENTS` | Worker → PS | {gradients: MLPGrads, cnn_gradients?} | Gradientes calculados |
-| `STOP` | PS → Worker | {} | Finalizar Worker |
-| `REQUEST_TEST_FEATURES` | PS → Worker | {} | PS pide features test |
-| `TEST_FEATURES` | Worker → PS | {X_features, Y_test} | Features de test |
-
-**Flujo de un Worker típico**:
-```
-READY ──────►  ◄──── WORKER_ID
-                        ↓
-              ◄──── CNN_WEIGHTS
-                        ↓
-              CNN_READY ────►
-                        ↓
-         Esperando TRAIN_START...
-                        ↓
-              ◄──── TRAIN_START
-                        ↓
-    ┌──► PARAMS ──►  [calcula gradientes]
-    │              ◄──── GRADIENTS
-    └────┴────── (repeat N veces por N épocas)
-                        ↓
-              ◄──── STOP
-```
-
-**Archivos**:
-- `Distributed/protocol.py` — Implementación
-
----
-
-### **Utilities**
-
-**`cifar_loader.py`**:
-- Descarga CIFAR-10 (torchvision)
-- Normalización por canal (mean/std estándar)
-- Convierte a float32 NCHW
-- Caché en .npz para evitar descargas repetidas
-
-**`logging_util.py`**:
-- Logger unificado con colores
-- Fases: LOAD, PREP, TRAIN, EVAL, INFO
-- Evita mensajes inconsistentes
-
-**`results_exporter.py`**:
-- Exporta métricas a JSON (`Exports/resultado_*.json`)
-- Historial de accuracy/loss por época
-- Metadatos de sesión (arch, workers, epochs, etc.)
-
----
-
-## 🔌 Qué viaja por TCP
-
-| Concepto | Tamaño | Dirección |
-|----------|--------|-----------|
-| **WORKER_ID** | < 1 KB | PS → Worker (una sola vez) |
-| **CNN_WEIGHTS** | 5-50 MB | PS → Worker (inicio sesión) |
-| **PARAMS (MLP)** | ~60 KB | PS → Worker (cada época) |
-| **PARAMS (CNN)** | ~50 MB | PS → Worker (cada época en E2E) |
-| **GRADIENTS (MLP)** | ~60 KB | Worker → PS (cada época) |
-| **GRADIENTS (CNN)** | ~50 MB | Worker → PS (cada época en E2E) |
-| **TEST_FEATURES** | ~40 MB | Worker (0) → PS (una sola vez) |
-
-**Observación**: En modo E2E, cada época envía ~100 MB de cada Worker — costoso si workers están en máquinas diferentes.
-
----
-
-## 🔀 Qué NO viaja por TCP
-
-| Concepto | Razón | Ubicación |
-|----------|-------|-----------|
-| **Imágenes CIFAR-10** | Cada Worker las carga localmente | RAM del Worker |
-| **Features (precomputed)** | Se cachean localmente | Disco del Worker |
-| **Features (E2E)** | Se calculan on-the-fly | RAM del Worker |
-| **Raw MLP features** | Solo se usan localmente | RAM del Worker |
-
----
-
-## 🏛️ Arquitectura de sincronización
-
-```
-┌─────────────────────────────────────────────────────────┐
-│                    PS listening()                        │
-│          (hilo de aceptación en background)              │
-└────────────────────┬────────────────────────────────────┘
-                     │
-        [Workers se conectan w/ READY]
-                     │
-        ┌────────────┴───────────┬─────────────┐
-        │                        │             │
-        ▼                        ▼             ▼
-    ┌─────────┐             ┌─────────┐  ┌─────────┐
-    │Worker 0 │             │Worker 1 │  │Worker N │
-    └─────────┘             └─────────┘  └─────────┘
-        │                        │             │
-        ├────────CNN_WEIGHTS─────┼─────────────┤
-        │                        │             │
-        ├─────────CNN_READY──────┼─────────────┤
-        │ (barrera: espera a todos)
-        │
-        ├─────────TRAIN_START────┼─────────────┤
-        │
-        [EPOCH LOOP]
-        │ ├─────────PARAMS───────┼─────────────┤
-        │ │ (Workers calculan)
-        │ ├────────GRADIENTS─────┼─────────────┤
-        │ │ (PS promedia)
-        │ └─ (repeat N épocas)
-        │
-        ├──────────STOP──────────┼─────────────┤
-        ▼                        ▼             ▼
-    [desconexión]          [desconexión]  [desconexión]
+WorkerNode.run()
+    ├─ _connect() → send READY, receive WORKER_ID
+    ├─ _main_loop() → bucle bloqueante recibiendo mensajes
+    │   ├─ CNN_WEIGHTS → extract features
+    │   ├─ TRAIN_START → _run_training_session()
+    │   │   ├─ Receive PARAMS
+    │   │   ├─ forward_and_gradients()
+    │   │   └─ Send GRADIENTS
+    │   └─ STOP → exit
+    └─ _disconnect()
 ```
 
 ---
 
-## Invariantes arquitectónicos
+## Puntos de Sincronización Crítica
 
-**I1**: Todos los Workers tienen **exactamente los mismos pesos CNN y MLP** en el inicio de cada época.
-
-**I2**: Cada Worker procesa un **chunk disjunto de datos** (definido por epoch_seed).
-
-**I3**: Los gradientes que Worker[i] envía son gradientes de la **pérdida en su chunk**, no del dataset completo.
-
-**I4**: El PS **promedia** los gradientes recibidos, no los suma.
-
-**I5**: En modo PRECOMPUTED, la CNN es **inmutable** — sus pesos nunca cambian.
-
-**I6**: En modo END-TO-END, la CNN es **entrenable** — se actualiza como el MLP.
+1. **CNN_READY Barrier**: Ningún PARAMS se envía hasta que TODOS los Workers confirmen extracción
+2. **GRADIENTS Collection**: Cada epoch, PS espera recibir UN GRADIENTS de cada Worker antes de actualizar
+3. **Seed Sequencing**: Semillas distintas por época evitan patterns repetitivos
 
 ---
 
-## Componentes secundarios
+## Invariantes de Correctness
 
-### **Data Loader (cifar_loader.py)**
-- Interfaz única para cargar CIFAR-10
-- Garantiza formato consistente (NCHW float32)
+- ✓ Todos los Workers usan la misma CNN (distribuida por PS)
+- ✓ Todos los Workers convergen al mismo modelo global (mismos pesos después de cada update)
+- ✓ El entrenamiento es determinista (dado seed fijo)
+- ✓ Partición de datos es reproducible round-robin estratificada
+- ✓ Gradient averaging = Batch SGD sobre dataset completo
 
-### **Feature Cache (cnn_extractor.py)**
-- Almacena features con hash de pesos
-- Evita recalcular si los pesos no cambian
-
-### **Results Exporter (results_exporter.py)**
-- Exporta métricas a JSON para análisis posterior
-- Permite reproducir experimentos
-
----
-
-**Documento**: `docs/02_architecture.md`  
-**Última actualización**: 2026-03-27  
-**Nivel**: Intermedio
