@@ -1164,7 +1164,7 @@ class ParameterServer:
         return history
 
     # ================================================================
-    # FLUJO 2: END-TO-END (CNN + MLP) — FIXES APLICADOS
+    # FLUJO 2: END-TO-END (CNN + MLP) — CORRECCIONES APLICADAS
     # ================================================================
 
     def _train_end_to_end(
@@ -1179,6 +1179,31 @@ class ParameterServer:
         seed: Optional[int],
         worker_ids: List[int],
     ) -> Dict[str, List[float]]:
+        """
+        Entrenamiento END-TO-END: CNN + MLP distribuido con FedAvg y Adam.
+
+        CORRECCIONES aplicadas respecto a la versión anterior:
+
+        [C1] LR sin división por n_batches en el Worker.
+             El PS ya no envía learning_rate con la intención de que el
+             Worker lo divida. El Worker usa Adam con el LR base directamente.
+
+        [C2] LRs diferenciados CNN/MLP en el Worker.
+             El PS envía un único learning_rate base; el Worker aplica los
+             factores _E2E_CNN_LR_FACTOR y _E2E_MLP_LR_FACTOR internamente.
+
+        [C3] Optimizador Adam con momentos en el Worker.
+             Se usa Adam en lugar de SGD manual, que es más robusto ante
+             gradientes ruidosos del entrenamiento distribuido.
+
+        [C4] Limitación de pasos locales en el Worker (_E2E_MAX_LOCAL_STEPS).
+             Reduce el client drift sin sacrificar cómputo útil.
+
+        [C5] Batch size mínimo 64 para BatchNorm estable en el Worker.
+             Evita alta varianza en running_mean/var con batches pequeños.
+
+        El PS conserva su lógica de FedAvg (promedio de pesos) sin cambios.
+        """
         _logger.ps("[END-TO-END] Iniciando flujo de entrenamiento")
         self._active_training_workers = worker_ids
 
@@ -1258,7 +1283,7 @@ class ParameterServer:
         }
 
         print("=" * 70)
-        print("END-TO-END — ENTRENAMIENTO CNN + MLP DISTRIBUIDO (FedAvg)")
+        print("END-TO-END — ENTRENAMIENTO CNN + MLP DISTRIBUIDO (FedAvg + Adam)")
         print("=" * 70)
         print(f"  Workers activos : {worker_ids}")
         print(f"  Épocas          : {epochs}")
@@ -1362,7 +1387,11 @@ class ParameterServer:
                         "params": params,
                         "seed": epoch_seed,
                         "cnn_params": cnn_state,
-                        "learning_rate": learning_rate,  # [P3] El Worker calcula lr_efectivo
+                        # [C1][C2] El Worker usará este LR como base y aplicará
+                        # internamente los factores CNN/MLP via Adam.
+                        # El PS ya no divide por n_batches — esa lógica fue eliminada
+                        # del Worker porque destruía la señal de gradiente.
+                        "learning_rate": learning_rate,
                         "training_mode": "end_to_end",
                     }
                     send_message(self._worker_sockets[wid], MsgType.PARAMS, send_dict)

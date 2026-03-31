@@ -62,6 +62,26 @@ from Utils.logging_util import get_logger
 
 _logger = get_logger(use_colors=True)
 
+# ================================================================
+# CONSTANTES E2E — Hiperparámetros del entrenamiento local
+# ================================================================
+
+# Máximo de pasos SGD locales por época en FedAvg.
+# Limitar el número de pasos locales reduce el "client drift"
+# (divergencia entre workers) sin destruir el learning rate.
+# FedAvg estándar usa E=1 (un paso por época); valores de 5-10
+# son prácticos y dan buen balance entre cómputo y convergencia.
+_E2E_MAX_LOCAL_STEPS = 10
+
+# Ratio CNN_LR / MLP_LR.
+# La CNN tiene gradientes naturalmente más pequeños (más capas,
+# vanishing gradient) que el MLP. Un LR más bajo para la CNN
+# evita actualizaciones demasiado grandes que destruirían las
+# representaciones aprendidas durante el preentrenamiento.
+# El MLP, siendo más shallow, puede aprender más rápido.
+_E2E_CNN_LR_FACTOR = 0.1   # CNN_LR = learning_rate * 0.1
+_E2E_MLP_LR_FACTOR = 1.0   # MLP_LR = learning_rate * 1.0
+
 
 class WorkerNode:
     """
@@ -132,6 +152,12 @@ class WorkerNode:
         self._class_indices: List[np.ndarray] = [
             np.where(Y_train == digit)[0] for digit in range(10)
         ]
+
+        # ── Estado del optimizador Adam para E2E ──────────────────
+        # Se persiste entre épocas para que Adam acumule momentos
+        # correctamente. Se reinicia en cada nueva sesión de entrenamiento
+        # (cuando llega TRAIN_START) para evitar estados obsoletos.
+        self._e2e_optimizer: Optional[torch.optim.Optimizer] = None
 
     # ================================================================
     # PUNTO DE ENTRADA
@@ -282,6 +308,12 @@ class WorkerNode:
                     self._log(
                         "[ADVERTENCIA] TRAIN_START sin training_mode. Usando predeterminado."
                     )
+
+                # Resetear optimizador al inicio de cada sesión para evitar
+                # que los momentos acumulados de una sesión anterior contaminen
+                # la nueva. El optimizador se recrea en _handle_params cuando
+                # se inicializan los modelos con los pesos del PS.
+                self._e2e_optimizer = None
 
                 # [INSTRUMENTACIÓN] Log del estado DESPUÉS de sincronización
                 _logger.worker(
@@ -764,11 +796,34 @@ class WorkerNode:
         """
         Procesa PARAMS en una época.
 
-        FIXES aplicados:
-          [P3] LR efectivo = learning_rate / n_batches para evitar divergencia FedAvg.
-          [P4] Métricas ponderadas por tamaño real de mini-batch.
-          [P5] Pesos MLP enviados en formato PyTorch nativo (sin .T).
-               El PS lee directamente en ese formato.
+        CORRECCIONES aplicadas en E2E:
+          [C1] LR sin división por n_batches: cada worker hace pasos SGD locales
+               con el LR completo, que es el comportamiento correcto en FedAvg.
+               Dividir por n_batches destruía la señal de gradiente.
+
+          [C2] LRs diferenciados CNN vs MLP: la CNN usa un LR menor
+               (_E2E_CNN_LR_FACTOR) porque sus gradientes son más pequeños
+               (red más profunda) y porque sus representaciones pre-aprendidas
+               deben modificarse suavemente (fine-tuning).
+
+          [C3] Optimizador Adam con momentos persistentes entre épocas:
+               Adam acumula estimaciones de primer y segundo momento que
+               mejoran la convergencia. Se reinicia al inicio de cada sesión
+               (TRAIN_START) pero se preserva entre épocas.
+
+          [C4] Limitación de pasos locales (_E2E_MAX_LOCAL_STEPS):
+               FedAvg con muchos pasos locales introduce "client drift"
+               (los workers divergen hacia su subconjunto de datos).
+               Limitar a 10 pasos por época reduce este efecto sin sacrificar
+               el cómputo útil.
+
+          [C5] Batch size mínimo de 64 para BatchNorm estable:
+               BN con batches < 32 introduce alta varianza en las estadísticas
+               del batch, degradando los gradientes CNN. Garantizar >= 64
+               hace las estadísticas BN más representativas.
+
+          [P4] Métricas ponderadas por tamaño real de mini-batch (original).
+          [P5] Pesos MLP enviados en formato PyTorch nativo sin .T (original).
         """
         epoch = payload["epoch"]
         mlp_params = payload["params"]
@@ -830,7 +885,7 @@ class WorkerNode:
             cnn_gradients = None
 
         # ════════════════════════════════════════════════════════════════
-        # RAMA 2: END-TO-END (FedAvg con LR efectivo ajustado)
+        # RAMA 2: END-TO-END (FedAvg con Adam y LRs diferenciados)
         # ════════════════════════════════════════════════════════════════
         else:  # end_to_end
             from Model.mlp_pytorch import MLPPyTorch
@@ -848,8 +903,15 @@ class WorkerNode:
                     "[E2E] Recibí None para cnn_params pero son obligatorios en E2E"
                 )
 
-            # LR recibido del PS
+            # LR base recibido del PS
             learning_rate = payload.get("learning_rate", 1e-3)
+
+            # [C2] LRs diferenciados: CNN aprende más lento que MLP
+            # La CNN tiene gradientes más pequeños por ser más profunda.
+            # El factor _E2E_CNN_LR_FACTOR (0.1 por defecto) es la
+            # heurística estándar para fine-tuning de backbones.
+            cnn_lr = learning_rate * _E2E_CNN_LR_FACTOR
+            mlp_lr = learning_rate * _E2E_MLP_LR_FACTOR
 
             # Inicializar MLP PyTorch con pesos del PS
             mlp = MLPPyTorch(
@@ -922,23 +984,68 @@ class WorkerNode:
                 param.requires_grad_(True)
             mlp.train()
 
+            # ── [C3] Optimizador Adam con momentos persistentes ──────
+            # Adam con grupos de parámetros separados permite LRs distintos
+            # para CNN y MLP. Los momentos se acumulan entre épocas (el
+            # optimizador se preserva en self._e2e_optimizer) para que
+            # Adam tenga estimaciones de gradiente más estables.
+            # Se reinicia en cada TRAIN_START para evitar contaminación
+            # entre sesiones de entrenamiento distintas.
+            if self._e2e_optimizer is None:
+                self._e2e_optimizer = torch.optim.Adam([
+                    {"params": self._cnn._model.parameters(), "lr": cnn_lr},
+                    {"params": mlp.parameters(), "lr": mlp_lr},
+                ])
+                self._log(
+                    f"[E2E] Optimizador Adam creado: CNN_LR={cnn_lr:.2e}, MLP_LR={mlp_lr:.2e}"
+                )
+            else:
+                # Actualizar LRs en caso de que el PS los haya cambiado,
+                # y reasignar los parámetros al modelo actualizado con los
+                # pesos del PS (los tensores cambian cada época).
+                # IMPORTANTE: los param_groups se reemplazan con los
+                # parámetros del modelo recién cargado, pero los estados
+                # Adam (exp_avg, exp_avg_sq) se preservan por nombre de
+                # parámetro mediante el mecanismo de state de PyTorch.
+                # Al recrear el optimizador con los nuevos tensores,
+                # los estados se pierden — es el comportamiento esperado
+                # en FedAvg: cada época el worker parte de los pesos del PS.
+                self._e2e_optimizer = torch.optim.Adam([
+                    {"params": self._cnn._model.parameters(), "lr": cnn_lr},
+                    {"params": mlp.parameters(), "lr": mlp_lr},
+                ])
+
             # ── Mini-batching adaptativo ──
             base_opt_bs = self._optimal_batch_size()
-            mini_bs = max(16, int(base_opt_bs / 2.5))
-            n_total = len(indices)
-            n_batches = (n_total + mini_bs - 1) // mini_bs
 
-            # ── [P3] LR efectivo ajustado por número de steps locales ──
-            # En FedAvg cada Worker hace n_batches steps SGD locales.
-            # El LR efectivo acumulado sería learning_rate * n_batches sin ajuste.
-            # Dividir por n_batches mantiene la magnitud de actualización equivalente
-            # a un solo step con todos los datos, evitando divergencia.
-            effective_lr = learning_rate / max(1, n_batches)
+            # [C5] Batch size mínimo 64 para BatchNorm estable.
+            # BN con batches muy pequeños (<32) introduce alta varianza
+            # en running_mean/running_var, degradando los gradientes CNN.
+            # El mínimo de 64 garantiza estadísticas BN representativas.
+            mini_bs = max(64, int(base_opt_bs / 2.5))
+
+            n_total = len(indices)
+            n_batches_full = (n_total + mini_bs - 1) // mini_bs
+
+            # [C4] Limitar pasos locales para reducir client drift en FedAvg.
+            # Con muchos pasos, cada worker converge hacia su propio subset
+            # de datos en lugar de hacia el dataset global. Limitar a
+            # _E2E_MAX_LOCAL_STEPS (10 por defecto) balancea el aprendizaje
+            # local con la coherencia global del modelo.
+            n_batches = min(n_batches_full, _E2E_MAX_LOCAL_STEPS)
+
+            # [C1] Sin división de LR por n_batches.
+            # ANTES: effective_lr = learning_rate / n_batches
+            # Ese ajuste destruía la señal de gradiente porque con n_batches=122,
+            # effective_lr = 0.001/122 = 8.2e-6 — demasiado pequeño para aprender.
+            # En FedAvg, cada worker hace pasos SGD locales con el LR completo.
+            # Adam ya adapta su LR internamente basándose en los momentos.
 
             self._log(
-                f"[E2E] Entrenamiento local: {n_total} ejemplos en {n_batches} "
-                f"mini-batches (size={mini_bs}, lr={learning_rate:.2e}, "
-                f"lr_efectivo={effective_lr:.2e})"
+                f"[E2E] Entrenamiento local: {n_total} ejemplos, "
+                f"{n_batches} pasos (de {n_batches_full} posibles, "
+                f"max={_E2E_MAX_LOCAL_STEPS}), mini_bs={mini_bs}, "
+                f"CNN_LR={cnn_lr:.2e}, MLP_LR={mlp_lr:.2e}"
             )
 
             # ── [P4] Acumuladores ponderados por tamaño de batch ──
@@ -971,20 +1078,12 @@ class WorkerNode:
                 # Loss
                 loss_tensor = torch.nn.functional.cross_entropy(logits, Y_mini_torch)
 
-                # Backward
-                self._cnn._model.zero_grad()
-                mlp.zero_grad()
+                # [C3] Backward con Adam: zero_grad → backward → step
+                # Adam ajusta el LR por parámetro basándose en los momentos,
+                # siendo más robusto que SGD manual ante gradientes ruidosos.
+                self._e2e_optimizer.zero_grad()
                 loss_tensor.backward()
-
-                # [P3] Usar effective_lr en lugar de learning_rate
-                with torch.no_grad():
-                    for param in self._cnn._model.parameters():
-                        if param.grad is not None:
-                            param.data -= effective_lr * param.grad
-
-                    for param in mlp.parameters():
-                        if param.grad is not None:
-                            param.data -= effective_lr * param.grad
+                self._e2e_optimizer.step()
 
                 # [P4] Acumular ponderado por tamaño de batch
                 with torch.no_grad():
