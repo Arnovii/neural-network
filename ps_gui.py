@@ -626,18 +626,20 @@ class DistributedPSApp:
         ).pack(anchor=tk.W, pady=(0, 2))
         arch_frame = ttk.Frame(self._frm_train_cnn)
         arch_frame.pack(fill=tk.X)
-        ttk.Radiobutton(
+        self._rb_simple = ttk.Radiobutton(
             arch_frame,
             text="Simple  (~60%)",
             variable=self._v_cnn_arch,
             value="simple",
-        ).pack(anchor=tk.W)
-        ttk.Radiobutton(
+        )
+        self._rb_simple.pack(anchor=tk.W)
+        self._rb_resnet18 = ttk.Radiobutton(
             arch_frame,
             text="Resnet18 - Pesos ImageNet  (~75-80%)",
             variable=self._v_cnn_arch,
             value="resnet18",
-        ).pack(anchor=tk.W)
+        )
+        self._rb_resnet18.pack(anchor=tk.W)
 
         self._wdg_cnn_epochs_label = ttk.Label(
             self._frm_train_cnn, text="Épocas CNN (1–50):"
@@ -1303,6 +1305,21 @@ class DistributedPSApp:
             self._wdg_n_train_global_entry.config(
                 state=tk.NORMAL if e2e_samples_active else tk.DISABLED
             )
+
+        # ── Arquitectura CNN (desactivar ResNet-18 en E2E) ─────────
+        # En end_to_end, solo permitir "simple" (forzar y desactivar ResNet-18)
+        if system_mode == "end_to_end":
+            self._v_cnn_arch.set("simple")
+            if hasattr(self, "_rb_resnet18"):
+                self._rb_resnet18.config(state=tk.DISABLED)
+            if hasattr(self, "_rb_simple"):
+                self._rb_simple.config(state=tk.NORMAL)
+        else:
+            # En precomputed, ambos radiobuttons están habitables
+            if hasattr(self, "_rb_resnet18"):
+                self._rb_resnet18.config(state=tk.NORMAL)
+            if hasattr(self, "_rb_simple"):
+                self._rb_simple.config(state=tk.NORMAL)
 
         # ── Semilla y otros parámetros globales (siempre activos) ───
         for widget in [
