@@ -41,11 +41,11 @@ apply_gradients : function
 Uso rápido
 ----------
     from Model import CNNExtractor, init_params, forward_and_gradients
-    
+
     # Cargar/entrenar CNN
     cnn = CNNExtractor(arch="resnet18", device="cuda")
     features = cnn.extract_batched(images_batch)  # (N, feature_dim)
-    
+
     # Entrenar MLP
     params = init_params(feature_dim=512, hidden1=128, hidden2=64, n_classes=10)
     logits, loss, grads = forward_and_gradients(X_features, Y_labels, params)

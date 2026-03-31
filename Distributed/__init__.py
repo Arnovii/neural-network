@@ -6,7 +6,7 @@ Implementa un sistema de entrenamiento distribuido donde:
 - **Parameter Server (PS)**: Coordinador central que mantiene pesos globales,
   coordina gradientes de múltiples Workers y realiza actualizaciones vía SGD.
   Soporta dos flujos mutuamente excluyentes:
-  
+
   * PRECOMPUTED: CNN fija, solo MLP distribuido (~2 sec/epoch)
   * END-TO-END: CNN + MLP entrenan juntos (~12.5 sec/epoch)
 
@@ -54,13 +54,13 @@ receive_message : function
 Uso rápido
 ----------
     from Distributed import ParameterServer, WorkerNode
-    
+
     # Servidor
     ps = ParameterServer(host="localhost", port=5000, training_mode="precomputed")
     ps.set_cnn(cnn_model)
     ps.listen()  # Espera Workers
     history = ps.train(epochs=5, initial_params=params, learning_rate=0.01)
-    
+
     # Worker
     worker = WorkerNode(server_host="localhost", server_port=5000)
     worker.run()  # Conecta y comienza bucle de recepción de batch
