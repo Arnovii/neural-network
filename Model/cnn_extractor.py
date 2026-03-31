@@ -107,6 +107,7 @@ class _SimpleCNN(nn.Module):
         super().__init__()
 
         def _block(in_ch: int, out_ch: int) -> nn.Sequential:
+            # Sequential significa que se ejecuta en orden
             return nn.Sequential(
                 nn.Conv2d(in_ch, out_ch, kernel_size=3, padding=1, bias=False),
                 nn.BatchNorm2d(out_ch),
@@ -114,23 +115,20 @@ class _SimpleCNN(nn.Module):
                 nn.MaxPool2d(2),
             )
 
-        # 5 bloques para ImageNet 224x224. AdaptiveAvgPool hace
-        # que funcione con cualquier tamaño de entrada.
         self.features = nn.Sequential(
-            _block(3, 64),  # 224->112 | 32->16
-            _block(64, 128),  # 112->56  | 16->8
-            _block(128, 256),  # 56->28   | 8->4
-            _block(256, 512),  # 28->14   (solo ImageNet)
-            _block(512, 512),  # 14->7    (solo ImageNet)
-            nn.AdaptiveAvgPool2d((1, 1)),  # (512,1,1) cualquier input
+            _block(3, 64),  # (3,32,32) → (64,16,16)
+            _block(64, 128),  # (64,16,16) → (128,8,8)
+            _block(128, 256),  # (128,8,8) → (256,4,4)
+            nn.AdaptiveAvgPool2d(
+                (1, 1)
+            ),  # → (256,1,1) — robusto ante cambios de input size
         )
 
-        # Proyeccion a FEATURE_DIM=512 — misma interfaz que ResNet-18
+        # Proyección a FEATURE_DIM para unificar la interfaz
         self.fc = nn.Sequential(
-            nn.Flatten(),
-            nn.Linear(512, FEATURE_DIM),
+            nn.Flatten(),  # (256,1,1) → (256,)
+            nn.Linear(256, FEATURE_DIM),
             nn.ReLU(inplace=True),
-            nn.Dropout(0.3),
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -179,7 +177,6 @@ class CNNExtractor:
         device: str = "cpu",
         seed: int | None = 42,
         cache_dir: str | None = None,
-        input_size: int = 224,
     ) -> None:
         if arch not in self.ARCHITECTURES:
             raise ValueError(
@@ -194,7 +191,6 @@ class CNNExtractor:
         self.device = torch.device(device)
 
         self._cache_dir = cache_dir or self._default_cache_dir()
-        self._input_size = input_size
         os.makedirs(self._cache_dir, exist_ok=True)
 
         # Semilla antes de construir la red para reproducibilidad
@@ -207,11 +203,7 @@ class CNNExtractor:
         # imágenes de 32×32. Envolver la red con un upscale automático
         # permite aprovechar los pesos ImageNet correctamente.
         if arch == "resnet18":
-            # input_size=224: ImageNet nativo, sin upscale
-            # input_size=32:  CIFAR-10 legacy, activa upscale
-            self._model = self._make_resnet_wrapper(
-                base, input_size=self._input_size
-            ).to(self.device)
+            self._model = self._make_resnet_wrapper(base).to(self.device)
         else:
             self._model = base.to(self.device)
 
@@ -257,24 +249,40 @@ class CNNExtractor:
         model.fc = nn.Identity()  # type: ignore  — expone el vector de 512 features
         return model
 
-    def _make_resnet_wrapper(self, base: nn.Module, input_size: int = 224) -> nn.Module:
+    def _make_resnet_wrapper(self, base: nn.Module) -> nn.Module:
         """
-        Envuelve ResNet-18 con upscale solo si las imágenes son más pequeñas
-        que 224×224. Para ImageNet (224×224 nativo) devuelve el modelo sin
-        modificar — el upscale sería un no-op costoso.
-        """
-        if input_size >= 224:
-            return base  # ImageNet: imágenes ya son 224×224, sin upscale
+        Envuelve ResNet-18 con un upscale 32→224 para CIFAR-10.
 
-        # CIFAR-10 legacy: imágenes 32×32, necesita upscale
+        ResNet-18 fue diseñado para imágenes ImageNet de 224×224.
+        Su primera capa es Conv2d(kernel=7, stride=2) seguida de
+        MaxPool(3,2), lo que reduce 224→56→28 px antes del primer bloque.
+        Con imágenes de 32×32, esa reducción produce mapas de 8×8,
+        demasiado pequeños para que los pesos ImageNet sean efectivos.
+
+        Redimensionar a 224×224 antes del forward permite que la red
+        procese las imágenes en la escala para la que fue entrenada,
+        obteniendo features de mayor calidad y pasando de ~60% a ~75-80%.
+
+        :param base: Modelo ResNet-18 base.
+        :type base: nn.Module.
+
+        :return: ResNet-18 envuelto con interpolación automática.
+        :rtype: nn.Module (_ResNetWrapper).
+        """
+
         class _ResNetWrapper(nn.Module):
             def __init__(self, model: nn.Module) -> None:
                 super().__init__()
                 self.model = model
 
             def forward(self, x: torch.Tensor) -> torch.Tensor:
+                # Upscale de 32×32 a 224×224 con interpolación bilineal.
+                # antialias=True evita artefactos de aliasing al ampliar.
                 x = torch.nn.functional.interpolate(
-                    x, size=(224, 224), mode="bilinear", align_corners=False
+                    x,
+                    size=(224, 224),
+                    mode="bilinear",
+                    align_corners=False,
                 )
                 return self.model(x)
 
@@ -295,14 +303,30 @@ class CNNExtractor:
 
     def _weights_hash(self) -> str:
         """
-        Calcula el MD5 (8 hex primeros) de los pesos CNN actuales.
+        Calcula el MD5 (truncado a 8 hex) de los pesos CNN actuales.
 
-        Se usa como parte de la clave de caché de features para garantizar
-        que features extraídos con distintos pesos (aleatorios vs preentrenados)
-        nunca se mezclen. Calcular el hash de ~2 MB tarda < 5 ms.
+        PROPÓSITO: garantizar que features extraídos con distintos pesos
+        CNN nunca se mezclen en el caché. El hash se usa como parte del
+        nombre del archivo: {arch}_{hash8}_{split}_X.npy
 
-        :return: Hash MD5 truncado a 8 caracteres hexadecimales de los pesos.
-        :rtype: str.
+        ALGORITMO:
+        1. Itera sobre todos los parámetros del modelo.
+        2. Convierte cada tensor PyTorch a NumPy.
+        3. Serializa NumPy array a bytes.
+        4. Actualiza hash MD-5 acumulativo.
+        5. Retorna primeros 8 caracteres hexadecimales.
+
+        RENDIMIENTO: Calcular hash de ~44 MB (ResNet18) tarda ~5-10 ms
+        en CPU. Se ejecuta una sola vez por llamada a prepare().
+
+        EJEMPLO:
+        ───────
+        Mismos pesos → mismo hash → busca features en caché.
+        Pesos cambian (ej. preentrenado ImageNet vs random init)
+        → hash diferente → busca features con nuevo hash.
+
+        :return: Hash MD5 truncado a 8 caracteres hexadecimales.
+        :rtype: str, ej. "a3f7b8c2".
         """
         h = hashlib.md5()
         for tensor in self._model.state_dict().values():
@@ -372,11 +396,7 @@ class CNNExtractor:
         import io as _io
 
         buf = _io.BytesIO()
-        # Serializar siempre el modelo BASE sin el _ResNetWrapper.
-        # Esto garantiza que PS y Worker intercambian el mismo
-        # state_dict independientemente de si usan wrapper o no.
-        base = getattr(self._model, "model", self._model)
-        torch.save(base.state_dict(), buf)
+        torch.save(self._model.state_dict(), buf)
         return buf.getvalue()
 
     def load_weights_from_bytes(self, weights_bytes: bytes) -> None:
@@ -386,10 +406,6 @@ class CNNExtractor:
         El Worker llama este método al recibir CNN_WEIGHTS del PS.
         Garantiza que PS y Worker usan exactamente la misma CNN sin
         necesitar filesystem compartido entre máquinas.
-
-        Por defecto, congela los parámetros (requires_grad=False).
-        Para entrenar la CNN localmente, es necesario cambiar esto
-        explícitamente con requires_grad_(True) después de cargar.
 
         :param weights_bytes: Bytes generados por _get_weights_bytes().
         :type weights_bytes: bytes.
@@ -401,14 +417,8 @@ class CNNExtractor:
 
         buf = _io.BytesIO(weights_bytes)
         state = torch.load(buf, map_location=self.device, weights_only=True)
-        # Cargar en el modelo BASE sin el wrapper.
-        base = getattr(self._model, "model", self._model)
-        base.load_state_dict(state)
+        self._model.load_state_dict(state)
         self._model.eval()
-
-        # Congelar parámetros por defecto (se descongelan solo si se entrena localmente)
-        for param in self._model.parameters():
-            param.requires_grad_(False)
 
     def _metadata_path(self) -> str:
         """
@@ -536,14 +546,19 @@ class CNNExtractor:
         import torch
 
         state = torch.load(weights_path, map_location=self.device, weights_only=True)
-        base = getattr(self._model, "model", self._model)
-        base.load_state_dict(state)
+        self._model.load_state_dict(state)
         self._model.eval()
 
     def _load_weights_if_cached(self) -> bool:
         """
         Carga los pesos del modelo más reciente con el mismo arch.
-        Busca {arch}_*_weights.pt en el directorio de caché.
+
+        Busca archivos matching el patrón ``{arch}_*_weights.pt`` en el
+        directorio de caché. Si encuentra múltiples candidatos, elige el
+        más recient por modificación (mtime). Luego establece modelo en eval().
+
+        :return: True si se cargó exitosamente un modelo cached, False si no hay candidatos.
+        :rtype: bool
         """
         import glob
 
@@ -608,7 +623,6 @@ class CNNExtractor:
         batch_size: int = 256,
         verbose: bool = True,
         on_epoch: "Callable[[int, int, float, float], None] | None" = None,
-        n_classes: int = 1000,
     ) -> None:
         """
         Preentrenamiento supervisado de la CNN simple en CIFAR-10.
@@ -655,7 +669,7 @@ class CNNExtractor:
         self._model.train()
 
         # Crea un clasificador temporal
-        classifier = nn.Linear(FEATURE_DIM, n_classes).to(self.device)
+        classifier = nn.Linear(FEATURE_DIM, 10).to(self.device)
 
         # El algoritmo Adam es un optimizador variante de SGD con
         # momentum y learning rate adaptativo.
@@ -843,76 +857,6 @@ class CNNExtractor:
     def feature_dim(self) -> int:
         return FEATURE_DIM
 
-    # ── Sistema de shards ──────────────────────────────────────────
-
-    def shard_path(self, shard_idx: int, split: str) -> "tuple[str, str]":
-        """
-        Rutas (X.npy, Y.npy) de un shard de features en caché.
-
-        Un shard contiene SHARD_SIZE features extraídos de imágenes
-        consecutivas. El nombre incluye el hash de los pesos CNN para
-        que distintos modelos no compartan caché.
-
-        :param shard_idx: Índice del shard (0, 1, 2, ...).
-        :param split: "train" o "val".
-        :return: (ruta_X, ruta_Y).
-        """
-        wh = self._weights_hash()
-        key = f"{self.arch}_{wh}_{split}_shard{shard_idx:04d}"
-        return (
-            os.path.join(self._cache_dir, f"{key}_X.npy"),
-            os.path.join(self._cache_dir, f"{key}_Y.npy"),
-        )
-
-    def shard_exists(self, shard_idx: int, split: str) -> bool:
-        """True si el shard ya está en caché."""
-        px, py = self.shard_path(shard_idx, split)
-        return os.path.exists(px) and os.path.exists(py)
-
-    def save_shard(
-        self,
-        shard_idx: int,
-        split: str,
-        X_feat: np.ndarray,
-        Y: np.ndarray,
-    ) -> None:
-        """
-        Guarda un shard de features en disco.
-
-        :param shard_idx: Índice del shard.
-        :param split: "train" o "val".
-        :param X_feat: Features, shape (N, feature_dim) float32.
-        :param Y: Etiquetas, shape (N,) int32.
-        """
-        os.makedirs(self._cache_dir, exist_ok=True)
-        px, py = self.shard_path(shard_idx, split)
-        np.save(px, X_feat)
-        np.save(py, Y)
-
-    def load_shard(
-        self, shard_idx: int, split: str
-    ) -> "tuple[np.ndarray, np.ndarray] | None":
-        """
-        Carga un shard de features desde disco.
-
-        :return: (X_feat, Y) o None si no existe.
-        """
-        if not self.shard_exists(shard_idx, split):
-            return None
-        px, py = self.shard_path(shard_idx, split)
-        return np.load(px), np.load(py)
-
-    def count_cached_shards(self, split: str) -> int:
-        """
-        Cuenta cuántos shards consecutivos están en caché.
-
-        Para determinar desde qué shard reanudar la extracción.
-        """
-        i = 0
-        while self.shard_exists(i, split):
-            i += 1
-        return i
-
     def extract(self, X: np.ndarray) -> np.ndarray:
         """
         Realiza forward pass sin gradientes sobre un batch de imágenes.
@@ -926,6 +870,28 @@ class CNNExtractor:
         with torch.inference_mode():
             t = torch.from_numpy(X).to(self.device)
             return self._model(t).cpu().numpy()
+
+    def set_trainable(self, trainable: bool = True) -> None:
+        """
+        Habilita o deshabilita el entrenamiento de la CNN.
+
+        Usado en modo End-to-End para permitir que la CNN compute gradientes.
+        En modo precomputado, la CNN siempre tiene requires_grad=False.
+
+        :param trainable: Si True, habilita gradientes (requires_grad=True, mode train).
+                         Si False, congela parámetros (requires_grad=False, mode eval).
+        :type trainable: bool.
+
+        :return: None
+        :rtype: NoneType.
+        """
+        for param in self._model.parameters():
+            param.requires_grad_(trainable)
+
+        if trainable:
+            self._model.train()  # Activa BatchNorm training, Dropout, etc.
+        else:
+            self._model.eval()  # Desactiva componentes estocásticos
 
     def extract_batched(
         self,

@@ -1,12 +1,8 @@
 """
 ps_gui.py
 
-Interfaz grafica del Parameter Server para el algoritmo de Diego
+Interfaz gráfica del Parameter Server para el algoritmo de Diego
 distribuido con Data-Oriented Parallelism.
-
-Modos de datos detectados automaticamente:
-  LOCAL  : data_dir contiene train/ y val/ -> disco (offline)
-  STREAM : sin dataset local -> HuggingFace streaming (requiere token)
 
 ──────────────────────────────────────────────────────────────────
 USO
@@ -76,12 +72,7 @@ except ImportError as e:
 from Distributed.parameter_server import ParameterServer
 from Model.cnn_extractor import CNNExtractor, FEATURE_DIM
 from Model.mlp import init_params
-from Utils.imagenet_loader import (
-    NUM_CLASSES,
-    detect_data_source,
-    load_imagenet_labels,
-    load_imagenet_labels_stream,
-)
+from Utils.cifar_loader import NUM_CLASSES, load_cifar10_test
 from Utils.results_exporter import export_results
 
 
@@ -170,8 +161,9 @@ class DistributedPSApp:
     _S_LISTENING = "LISTENING"
     _S_TRAINING = "TRAINING"
 
-    def __init__(self, root: tk.Tk) -> None:
+    def __init__(self, root: tk.Tk, debug: bool = False) -> None:
         self.root = root
+        self.debug = debug  # Flag para modo debug
         self.root.title("Parameter Server — Algoritmo de Diego Distribuido")
         self.root.state("zoomed")
         self.root.columnconfigure(0, weight=0, minsize=310)
@@ -198,42 +190,68 @@ class DistributedPSApp:
         self._train_config: dict = {}
         self._cnn: CNNExtractor | None = None
 
-        # Variables Tkinter -- TODAS declaradas aqui para Pylance
-        self._v_host: tk.StringVar = tk.StringVar(value="0.0.0.0")
-        self._v_port: tk.IntVar = tk.IntVar(value=9999)
-        self._v_data_dir: tk.StringVar = tk.StringVar(value="Data/ImageNet")
-        self._v_cache_dir: tk.StringVar = tk.StringVar(value="Data/feature_cache")
-        self._v_hf_token: tk.StringVar = tk.StringVar(value="")
-        self._v_cnn_arch: tk.StringVar = tk.StringVar(value="resnet18")
-        self._v_cnn_epochs: tk.IntVar = tk.IntVar(value=5)
-        self._v_cnn_lr: tk.StringVar = tk.StringVar(value="0.001")
+        # Variables Tkinter del panel CNN — se inicializan aquí y se
+        # sobreescriben con valores reales en _build_left_panel().
         self._v_cnn_mode: tk.StringVar = tk.StringVar(value="load")
         self._v_cnn_model_sel: tk.StringVar = tk.StringVar(value="")
-        self._v_epochs: tk.IntVar = tk.IntVar(value=100)
-        self._v_hidden1: tk.IntVar = tk.IntVar(value=1024)
-        self._v_hidden2: tk.IntVar = tk.IntVar(value=512)
-        self._v_lr: tk.StringVar = tk.StringVar(value="0.01")
-        self._v_momentum: tk.StringVar = tk.StringVar(value="0.9")
-        self._v_n_train: tk.StringVar = tk.StringVar(value="50000")
-        self._v_seed: tk.StringVar = tk.StringVar(value="")
-
+        self._v_cnn_epochs: tk.IntVar = tk.IntVar(value=10)
+        self._v_cnn_lr: tk.StringVar = tk.StringVar(value="1e-3")
+        self._v_cnn_seed: tk.StringVar = tk.StringVar(value="42")
         self._saved_models: list = []
+
+        # Modo de operación del sistema: "precomputed" (CNN fija) o "end_to_end" (CNN+MLP)
+        # Por ahora solo soportamos "precomputed". "end_to_end" es para futuro.
+        self._v_system_mode: tk.StringVar = tk.StringVar(value="precomputed")
+        # Widgets del panel CNN (se crean en _build_left_panel)
         self._rb_load: ttk.Radiobutton | None = None
         self._rb_train: ttk.Radiobutton | None = None
         self._cnn_dropdown: ttk.Combobox | None = None
         self._frm_load: ttk.Frame | None = None
         self._frm_train_cnn: ttk.Frame | None = None
-        self._frm_cnn_container: ttk.Frame | None = None
-        self._frm_simple_info: ttk.LabelFrame | None = None
-        self._frm_resnet_info: ttk.LabelFrame | None = None
         self._lbl_info_arch: ttk.Label | None = None
         self._lbl_info_acc: ttk.Label | None = None
         self._lbl_info_loss: ttk.Label | None = None
         self._lbl_info_epochs: ttk.Label | None = None
-        self._lbl_info_seed: ttk.Label | None = None
-        self._lbl_info_n_sample: ttk.Label | None = None
         self._lbl_info_time: ttk.Label | None = None
         self._lbl_info_date: ttk.Label | None = None
+        self._lbl_info_seed: ttk.Label | None = None
+        self._lbl_info_n_sample: ttk.Label | None = None
+
+        # Referencias a widgets que se deshabilitarán según el modo de operación
+        # (en lugar de usar pack_forget/pack)
+        self._wdg_mlp_epochs_scale: ttk.Scale | None = None
+        self._wdg_mlp_epochs_entry: ttk.Entry | None = None
+        self._wdg_mlp_epochs_label: ttk.Label | None = None
+        self._wdg_e2e_epochs_scale: ttk.Scale | None = None
+        self._wdg_e2e_epochs_entry: ttk.Entry | None = None
+        self._wdg_e2e_epochs_label: ttk.Label | None = None
+
+        # Referencias a widgets de CNN (para deshabilitar en e2e)
+        self._wdg_cnn_epochs_label: ttk.Label | None = None
+        self._wdg_cnn_epochs_scale: ttk.Scale | None = None
+        self._wdg_cnn_epochs_entry: ttk.Entry | None = None
+
+        # Referencias a widgets de parámetros MLP (LR, Momentum)
+        self._wdg_mlp_lr_label: ttk.Label | None = None
+        self._wdg_mlp_lr_entry: ttk.Entry | None = None
+        self._wdg_mlp_momentum_label: ttk.Label | None = None
+        self._wdg_mlp_momentum_entry: ttk.Entry | None = None
+
+        # Referencias a frames de N_train (campo de ejemplos de entrenamiento)
+        # En precomputed: n_train_mlp está activo
+        # En end_to_end: n_train_global está activo
+        self._wdg_n_train_mlp_label: ttk.Label | None = None
+        self._wdg_n_train_mlp_entry: ttk.Entry | None = None
+        self._wdg_n_train_global_label: ttk.Label | None = None
+        self._wdg_n_train_global_entry: ttk.Entry | None = None
+
+        # Referencias a widgets de Muestras CNN y Semilla MLP
+        # Muestras CNN: solo activa cuando CNN en modo entrenamiento
+        self._wdg_cnn_samples_label: ttk.Label | None = None
+        self._wdg_cnn_samples_entry: ttk.Entry | None = None
+        # Semilla MLP: se agrupa en Clasificador MLP
+        self._wdg_mlp_seed_label: ttk.Label | None = None
+        self._wdg_mlp_seed_entry: ttk.Entry | None = None
 
         self._build_ui()
         self._refresh_buttons()
@@ -246,6 +264,9 @@ class DistributedPSApp:
         self._build_left_panel()
         self._build_right_panel()
         self._build_status_bar()
+        # Inicializar visibilidad de controles según modo actual
+        # (después de que todas las widgets estén construidas)
+        self._on_system_mode_change()
 
     # ── Panel izquierdo ──────────────────────────────────────────
 
@@ -261,10 +282,11 @@ class DistributedPSApp:
 
             return (parent.register(_validate), "%P")
 
-        def _add_slider(parent, label, var, lo, hi):
+        def _add_slider(parent, label, var, lo, hi, return_widgets=False):
             max_digits = len(str(hi))
-            ttk.Label(parent, text=label).pack(anchor=tk.W, pady=(6, 0))
-            ttk.Scale(
+            label_widget = ttk.Label(parent, text=label)
+            label_widget.pack(anchor=tk.W, pady=(6, 0))
+            scale_widget = ttk.Scale(
                 parent,
                 from_=lo,
                 to=hi,
@@ -272,7 +294,8 @@ class DistributedPSApp:
                 variable=var,
                 length=200,
                 command=_snap_int(var),
-            ).pack(fill=tk.X, pady=5)
+            )
+            scale_widget.pack(fill=tk.X, pady=5)
             vcmd = _make_int_validator(parent, max_digits)
             entry = ttk.Entry(
                 parent,
@@ -294,8 +317,17 @@ class DistributedPSApp:
             entry.bind("<Return>", _commit)
             entry.bind("<FocusOut>", _commit)
 
-        def _add_float_input(parent, label, var, lo, hi, max_chars=8):
-            ttk.Label(parent, text=label).pack(anchor=tk.W, pady=(6, 0))
+            # Siempre retornar una tupla para mantener consistencia
+            # de tipos (tipos no retornan None cuando return_widgets=False)
+            if return_widgets:
+                return label_widget, scale_widget, entry
+            return (None, None, None)
+
+        def _add_float_input(
+            parent, label, var, lo, hi, max_chars=8, return_widgets=False
+        ):
+            label_widget = ttk.Label(parent, text=label)
+            label_widget.pack(anchor=tk.W, pady=(6, 0))
 
             def _validate(new_value):
                 return new_value == "" or (
@@ -325,8 +357,15 @@ class DistributedPSApp:
             entry.bind("<Return>", _commit)
             entry.bind("<FocusOut>", _commit)
 
-        def _add_integer_input(parent, label, var, lo, hi, max_digits=7):
-            ttk.Label(parent, text=label).pack(anchor=tk.W, pady=(6, 0))
+            if return_widgets:
+                return label_widget, entry
+            return (None, None)
+
+        def _add_integer_input(
+            parent, label, var, lo, hi, max_digits=6, return_widgets=False
+        ):
+            label_widget = ttk.Label(parent, text=label)
+            label_widget.pack(anchor=tk.W, pady=(6, 0))
             vcmd = _make_int_validator(parent, max_digits)
             entry = ttk.Entry(
                 parent,
@@ -348,11 +387,19 @@ class DistributedPSApp:
             entry.bind("<Return>", _commit)
             entry.bind("<FocusOut>", _commit)
 
-        def _add_text_input(parent, label, var, max_chars=20):
-            ttk.Label(parent, text=label).pack(anchor=tk.W, pady=(6, 0))
-            ttk.Entry(parent, textvariable=var, width=max_chars).pack(
-                pady=(0, 6), fill=tk.X
-            )
+            if return_widgets:
+                return label_widget, entry
+            return (None, None)
+
+        def _add_text_input(parent, label, var, max_chars=20, return_widgets=False):
+            label_widget = ttk.Label(parent, text=label)
+            label_widget.pack(anchor=tk.W, pady=(6, 0))
+            entry_widget = ttk.Entry(parent, textvariable=var, width=max_chars)
+            entry_widget.pack(pady=(0, 6), fill=tk.X)
+
+            if return_widgets:
+                return label_widget, entry_widget
+            return (None, None)
 
         # ── Contenedor scrollable ─────────────────────────────────
         container = ttk.Frame(self.root, width=300)
@@ -382,9 +429,13 @@ class DistributedPSApp:
             lambda e: canvas.configure(scrollregion=canvas.bbox("all")),
         )
         canvas_window = canvas.create_window((0, 0), window=frame, anchor="nw")
-        canvas.bind(
-            "<Configure>", lambda e: canvas.itemconfig(canvas_window, width=e.width)
-        )
+
+        def _resize_frame(event):
+            canvas.itemconfig(canvas_window, width=event.width)
+
+        canvas.bind("<Configure>", _resize_frame)
+
+        canvas.configure(yscrollcommand=scrollbar.set)
         canvas.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
 
@@ -392,32 +443,104 @@ class DistributedPSApp:
             pady=6
         )
 
-        # Conexion TCP
-        ttk.Label(frame, text="Conexion TCP", font=("Helvetica", 11, "bold")).pack(
+        # ── Variables ─────────────────────────────────────────────
+        self._v_host = tk.StringVar(value="0.0.0.0")
+        self._v_port = tk.IntVar(value=9999)
+        self._v_epochs = tk.IntVar(value=100)
+        self._v_e2e_epochs = tk.IntVar(value=200)  # Épocas para End-to-End
+        self._v_hidden1 = tk.IntVar(value=256)
+        self._v_hidden2 = tk.IntVar(value=128)
+        self._v_lr = tk.StringVar(value="0.01")
+        self._v_n_train = tk.StringVar(value="50000")
+        self._v_seed = tk.StringVar(value="")
+        self._v_cnn_arch = tk.StringVar(value="simple")
+        self._v_momentum = tk.StringVar(value="0.9")
+        self._v_cnn_pretrain_samples = tk.StringVar(value="10000")
+
+        # ── Sección: Conexión TCP ─────────────────────────────────
+        ttk.Label(frame, text="Conexión TCP", font=("Helvetica", 11, "bold")).pack(
             anchor=tk.W, pady=(8, 0)
         )
         ttk.Separator(frame, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=2)
+
         _add_text_input(frame, "Host (IP de escucha):", self._v_host)
         _add_integer_input(frame, "Puerto:", self._v_port, 1024, 65535, max_digits=5)
 
-        # CNN Extractor
+        # ── Sección: Configuración del Sistema ────────────────────
+        ttk.Label(
+            frame, text="Configuración del Sistema", font=("Helvetica", 11, "bold")
+        ).pack(anchor=tk.W, pady=(18, 0))
+        ttk.Separator(frame, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=2)
+
+        # ── Selector de modo de operación ──────────────────────────
+        ttk.Label(
+            frame, text="Modo de operación:", font=("Helvetica", 10, "bold")
+        ).pack(anchor=tk.W, pady=(10, 4))
+
+        mode_desc_frame = ttk.Frame(frame)
+        mode_desc_frame.pack(fill=tk.X, pady=(0, 6))
+
+        rb_precomputed = ttk.Radiobutton(
+            mode_desc_frame,
+            text="🔒 Precomputación (CNN fija + MLP distribuido)",
+            variable=self._v_system_mode,
+            value="precomputed",
+            command=self._on_system_mode_change,
+        )
+        rb_precomputed.pack(anchor=tk.W, pady=(0, 2))
+
+        rb_end_to_end = ttk.Radiobutton(
+            mode_desc_frame,
+            text="⚙️  End-to-End (CNN + MLP se entrenan juntos)",
+            variable=self._v_system_mode,
+            value="end_to_end",
+            command=self._on_system_mode_change,
+        )
+        rb_end_to_end.pack(anchor=tk.W)
+
+        ToolTip(
+            rb_precomputed,
+            "CNN preentrenada y congelada.\n"
+            "MLP distribuido entre Workers.\n"
+            "Más eficiente, menor transferencia de datos.",
+        )
+
+        ToolTip(
+            rb_end_to_end,
+            "CNN y MLP se entrenan conjuntamente.\n"
+            "Mayor costo computacional y de red.\n"
+            "Permite adaptar la CNN a los datos.",
+        )
+
+        ttk.Label(
+            frame,
+            text="ℹ End-to-End: Mayor ancho de banda, CNN se adapta a los datos",
+            font=("Helvetica", 8, "italic"),
+            foreground="#1976D2",
+        ).pack(anchor=tk.W, pady=(0, 8))
+
+        # ── Separator ──────────────────────────────────────────────
+        ttk.Separator(frame, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=2)
+
+        # ── CNN Extractor ─────────────────────────────────────
         ttk.Label(frame, text="CNN Extractor:", font=("Helvetica", 10, "bold")).pack(
-            anchor=tk.W, pady=(18, 0)
+            anchor=tk.W, pady=(14, 0)
         )
         ttk.Separator(frame, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=2)
 
+        # Botones de modo (excluyentes)
         mode_frame = ttk.Frame(frame)
         mode_frame.pack(fill=tk.X, pady=(0, 4))
         self._rb_load = ttk.Radiobutton(
             mode_frame,
-            text="Cargar modelo guardado",
+            text="Cargar modelo",
             variable=self._v_cnn_mode,
             value="load",
             command=self._on_cnn_mode_change,
         )
         self._rb_train = ttk.Radiobutton(
             mode_frame,
-            text="Usar pesos ImageNet",
+            text="Entrenar modelo",
             variable=self._v_cnn_mode,
             value="train",
             command=self._on_cnn_mode_change,
@@ -435,8 +558,9 @@ class DistributedPSApp:
         self._frm_cnn_container.rowconfigure(0, weight=1)
         self._frm_cnn_container.columnconfigure(0, weight=1)
         self._frm_cnn_container.pack(fill=tk.BOTH, expand=True)
+        self._frm_cnn_container.columnconfigure(0, weight=1)
 
-        # Sub-panel CARGAR
+        # ── Sección CARGAR ────────────────────────────────────────
         self._frm_load = ttk.Frame(self._frm_cnn_container)
         self._frm_load.grid(row=0, column=0, sticky="nsew")
 
@@ -455,32 +579,31 @@ class DistributedPSApp:
 
         # Tarjeta de información del modelo seleccionado
         self._frm_model_info = ttk.LabelFrame(
-            self._frm_load, text="Informacion del modelo", padding=6
+            self._frm_load, text="Información del modelo", padding=6
         )
         self._frm_model_info.pack(fill=tk.X, pady=(0, 4))
-        self._lbl_info_arch = ttk.Label(
-            self._frm_model_info, text="Arquitectura   : --"
-        )
+
+        self._lbl_info_arch = ttk.Label(self._frm_model_info, text="Arquitectura   : —")
         self._lbl_info_acc = ttk.Label(
-            self._frm_model_info, text="Precision         : --"
+            self._frm_model_info, text="Precisión         : —"
         )
         self._lbl_info_loss = ttk.Label(
-            self._frm_model_info, text="Perdida            : --"
+            self._frm_model_info, text="Pérdida            : —"
         )
         self._lbl_info_epochs = ttk.Label(
-            self._frm_model_info, text="Epocas             : --"
+            self._frm_model_info, text="Épocas             : —"
         )
         self._lbl_info_seed = ttk.Label(
-            self._frm_model_info, text="Semilla             : --"
+            self._frm_model_info, text="Semilla             : —"
         )
         self._lbl_info_n_sample = ttk.Label(
-            self._frm_model_info, text="Muestras         : --"
+            self._frm_model_info, text="Muestras         : —"
         )
         self._lbl_info_time = ttk.Label(
-            self._frm_model_info, text="Tiempo            : --"
+            self._frm_model_info, text="Tiempo            : —"
         )
         self._lbl_info_date = ttk.Label(
-            self._frm_model_info, text="Creado en       : --"
+            self._frm_model_info, text="Creado en       : —"
         )
         for lbl in (
             self._lbl_info_arch,
@@ -494,179 +617,243 @@ class DistributedPSApp:
         ):
             lbl.pack(anchor=tk.W)
 
-        # Sub-panel NUEVA CNN (simple o resnet18)
+        # ── Sección ENTRENAR ──────────────────────────────────────
         self._frm_train_cnn = ttk.Frame(self._frm_cnn_container)
         self._frm_train_cnn.grid(row=0, column=0, sticky="nsew")
 
         ttk.Label(
             self._frm_train_cnn, text="Arquitectura:", font=("Helvetica", 9, "bold")
-        ).pack(anchor=tk.W, pady=(4, 2))
+        ).pack(anchor=tk.W, pady=(0, 2))
+        arch_frame = ttk.Frame(self._frm_train_cnn)
+        arch_frame.pack(fill=tk.X)
         ttk.Radiobutton(
-            self._frm_train_cnn,
-            text="Simple — CNN propia 5 bloques (~entrenada desde cero)",
+            arch_frame,
+            text="Simple  (~60%)",
             variable=self._v_cnn_arch,
             value="simple",
-            command=self._on_cnn_arch_change,
         ).pack(anchor=tk.W)
         ttk.Radiobutton(
-            self._frm_train_cnn,
-            text="ResNet-18 — pesos ImageNet preentrenados (~75-80%)",
+            arch_frame,
+            text="Resnet18 - Pesos ImageNet  (~75-80%)",
             variable=self._v_cnn_arch,
             value="resnet18",
-            command=self._on_cnn_arch_change,
-        ).pack(anchor=tk.W, pady=(0, 6))
-
-        # Info CNN simple
-        self._frm_simple_info = ttk.LabelFrame(
-            self._frm_train_cnn, text="Preentrenamiento CNN simple", padding=4
-        )
-        self._frm_simple_info.pack(fill=tk.X, pady=(0, 4))
-        ttk.Label(
-            self._frm_simple_info,
-            text="Epocas pretrain (0 = sin pretrain):",
         ).pack(anchor=tk.W)
-        ttk.Scale(
-            self._frm_simple_info,
-            from_=0,
-            to=30,
+
+        self._wdg_cnn_epochs_label = ttk.Label(
+            self._frm_train_cnn, text="Épocas CNN (1–50):"
+        )
+        self._wdg_cnn_epochs_label.pack(anchor=tk.W, pady=(6, 0))
+        self._wdg_cnn_epochs_scale = ttk.Scale(
+            self._frm_train_cnn,
+            from_=1,
+            to=50,
             orient=tk.HORIZONTAL,
             variable=self._v_cnn_epochs,
-            command=lambda v: self._v_cnn_epochs.set(max(0, int(round(float(v))))),
-        ).pack(fill=tk.X)
-        ttk.Entry(
-            self._frm_simple_info,
+            length=200,
+            command=lambda v: self._v_cnn_epochs.set(max(1, int(round(float(v))))),
+        )
+        self._wdg_cnn_epochs_scale.pack(fill=tk.X, pady=2)
+        self._wdg_cnn_epochs_entry = ttk.Entry(
+            self._frm_train_cnn,
             textvariable=self._v_cnn_epochs,
-            width=4,
+            width=5,
             justify="center",
-        ).pack(pady=(0, 4))
-        ttk.Label(self._frm_simple_info, text="LR pretrain (0.0001-0.1):").pack(
-            anchor=tk.W
+        )
+        self._wdg_cnn_epochs_entry.pack(pady=(0, 4))
+
+        ttk.Label(self._frm_train_cnn, text="LR CNN (0.0001–0.1):").pack(
+            anchor=tk.W, pady=(4, 0)
         )
         ttk.Entry(
-            self._frm_simple_info,
+            self._frm_train_cnn,
             textvariable=self._v_cnn_lr,
             width=10,
             justify="center",
-        ).pack(pady=(0, 4))
+        ).pack(pady=(0, 6))
 
-        # Info ResNet-18
-        self._frm_resnet_info = ttk.LabelFrame(
-            self._frm_train_cnn, text="ResNet-18 ImageNet", padding=4
+        self._wdg_cnn_samples_label = ttk.Label(
+            self._frm_train_cnn, text="Muestras CNN (100–50000):"
         )
-        self._frm_resnet_info.pack(fill=tk.X, pady=(0, 4))
+        self._wdg_cnn_samples_label.pack(anchor=tk.W, pady=(4, 0))
+        self._wdg_cnn_samples_entry = ttk.Entry(
+            self._frm_train_cnn,
+            textvariable=self._v_cnn_pretrain_samples,
+            width=10,
+            justify="center",
+        )
+        self._wdg_cnn_samples_entry.pack(pady=(0, 6))
+
+        ttk.Label(self._frm_train_cnn, text="Semilla CNN (vacío = aleatoria):").pack(
+            anchor=tk.W, pady=(4, 0)
+        )
+        ttk.Entry(
+            self._frm_train_cnn,
+            textvariable=self._v_cnn_seed,
+            width=10,
+            justify="center",
+        ).pack(pady=(0, 6))
+
         ttk.Label(
-            self._frm_resnet_info,
-            text="Pesos preentrenados de torchvision."
-            + chr(10)
-            + "Descarga ~44 MB la primera vez.",
+            self._frm_train_cnn,
+            text="ℹ Solo aplica para Simple. Resnet18 usa\n"
+            "  pesos ImageNet (sin preentrenar).",
             font=("Helvetica", 8),
-            foreground="#1B5E20",
-        ).pack(anchor=tk.W)
+            foreground="#1565C0",
+            justify=tk.LEFT,
+        ).pack(anchor=tk.W, pady=(0, 4))
 
         ttk.Label(
             frame,
-            text="1a sesion: extraccion larga (horas CPU / min GPU)."
-            + chr(10)
-            + "  Siguientes: carga de cache en segundos.",
+            text="ℹ El PS distribuye la CNN al Worker automáticamente.\n"
+            "  La extracción de features ocurre en el Worker.",
             font=("Helvetica", 8),
             foreground="#2E7D32",
             justify=tk.LEFT,
         ).pack(anchor=tk.W, pady=(4, 6))
 
+        # Inicializar estado del panel
         self._refresh_saved_models()
-        self._on_cnn_arch_change()  # mostrar/ocultar panel segun arch inicial
 
-        # Dataset ImageNet
-        ttk.Label(frame, text="Dataset ImageNet", font=("Helvetica", 10, "bold")).pack(
-            anchor=tk.W, pady=(18, 0)
-        )
-        ttk.Separator(frame, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=2)
-        ttk.Label(frame, text="Directorio raiz (train/ y val/):").pack(anchor=tk.W)
-        dir_frame = ttk.Frame(frame)
-        dir_frame.pack(fill=tk.X, pady=(2, 0))
-        ttk.Entry(dir_frame, textvariable=self._v_data_dir, width=24).pack(
-            side=tk.LEFT, fill=tk.X, expand=True
-        )
-        ttk.Button(dir_frame, text="...", width=4, command=self._browse_data_dir).pack(
-            side=tk.LEFT, padx=(4, 0)
-        )
-        ttk.Label(frame, text="Cache de features (shards):").pack(
-            anchor=tk.W, pady=(6, 0)
-        )
-        cache_frame = ttk.Frame(frame)
-        cache_frame.pack(fill=tk.X, pady=(2, 0))
-        ttk.Entry(cache_frame, textvariable=self._v_cache_dir, width=24).pack(
-            side=tk.LEFT, fill=tk.X, expand=True
-        )
-        ttk.Button(
-            cache_frame, text="...", width=4, command=self._browse_cache_dir
-        ).pack(side=tk.LEFT, padx=(4, 0))
-        ttk.Label(frame, text="Token HuggingFace (modo stream):").pack(
-            anchor=tk.W, pady=(6, 0)
-        )
-        ttk.Entry(frame, textvariable=self._v_hf_token, width=28, show="*").pack(
-            fill=tk.X, pady=(2, 0)
-        )
-        ttk.Label(
-            frame,
-            text="Con train/ y val/ en disco -> modo local (offline)."
-            + chr(10)
-            + "  Sin dataset -> modo stream HF (token necesario)."
-            + chr(10)
-            + "  Tambien acepta variable de entorno HF_TOKEN.",
-            font=("Helvetica", 8),
-            foreground="#6A1B9A",
-            justify=tk.LEFT,
-        ).pack(anchor=tk.W, pady=(4, 6))
-
-        # Clasificador MLP
         ttk.Label(frame, text="Clasificador MLP:", font=("Helvetica", 10, "bold")).pack(
             anchor=tk.W, pady=(14, 0)
         )
         ttk.Separator(frame, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=2)
-        _add_slider(frame, "Epocas (50 - 1000):", self._v_epochs, 50, 1000)
-        _add_slider(frame, "Neuronas ocultas 1 (32 - 2048):", self._v_hidden1, 32, 2048)
-        _add_slider(frame, "Neuronas ocultas 2 (32 - 1024):", self._v_hidden2, 32, 1024)
-        _add_float_input(
-            frame, "Tasa de aprendizaje (0.0001 - 10):", self._v_lr, 0.0001, 10.0
-        )
-        _add_float_input(
-            frame, "Momentum SGD (0.0 = desactivado):", self._v_momentum, 0.0, 0.99
-        )
-        _add_integer_input(
-            frame,
-            "Ejemplos de entrenamiento (1000 - 1281167):",
-            self._v_n_train,
-            1000,
-            1281167,
-            max_digits=7,
-        )
-        _add_text_input(frame, "Semilla (vacio = aleatoria):", self._v_seed)
+        _add_slider(frame, "Neuronas ocultas 1 (32 – 1024):", self._v_hidden1, 32, 1024)
+        _add_slider(frame, "Neuronas ocultas 2 (32 – 512):", self._v_hidden2, 32, 512)
 
-        # Botones
+        # ── Tasa de aprendizaje (pertenece al MLP) ─────────────────
+        self._wdg_mlp_lr_label, self._wdg_mlp_lr_entry = _add_float_input(
+            frame,
+            "Tasa de aprendizaje (0.0001 - 10):",
+            self._v_lr,
+            0.0001,
+            10.0,
+            return_widgets=True,
+        )
+
+        # ── Momentum SGD (pertenece al MLP) ───────────────────────
+        self._wdg_mlp_momentum_label, self._wdg_mlp_momentum_entry = _add_float_input(
+            frame,
+            "Momentum SGD (0.0 = desactivado):",
+            self._v_momentum,
+            0.0,
+            0.99,
+            return_widgets=True,
+        )
+
+        # ── Ejemplos de entrenamiento MLP (modo precomputed) ───────
+        self._wdg_n_train_mlp_label, self._wdg_n_train_mlp_entry = _add_integer_input(
+            frame,
+            "Ejemplos de entrenamiento MLP (100 - 50000):",
+            self._v_n_train,
+            100,
+            50000,
+            return_widgets=True,
+        )
+
+        # ── Semilla MLP (vacío = aleatoria) ──────────────────────
+        self._wdg_mlp_seed_label, self._wdg_mlp_seed_entry = _add_text_input(
+            frame, "Semilla MLP (vacío = aleatoria):", self._v_seed, return_widgets=True
+        )
+
+        # ── Épocas MLP (solo activo en modo precomputed) ──────────
+        self._frame_mlp_epochs = ttk.Frame(frame)
+        self._frame_mlp_epochs.pack(fill=tk.X, pady=(4, 0))
+        (
+            self._wdg_mlp_epochs_label,
+            self._wdg_mlp_epochs_scale,
+            self._wdg_mlp_epochs_entry,
+        ) = _add_slider(
+            self._frame_mlp_epochs,
+            "Épocas MLP (50 – 1000):",
+            self._v_epochs,
+            50,
+            1000,
+            return_widgets=True,
+        )
+
+        # ── Entrenamiento Distribuido ──────────────────────────────
+        ttk.Label(
+            frame, text="Entrenamiento Distribuido:", font=("Helvetica", 10, "bold")
+        ).pack(anchor=tk.W, pady=(14, 4))
+        ttk.Separator(frame, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=2)
+
+        # ── Épocas E2E (solo activo en modo end_to_end) ──────────
+        self._frame_e2e_epochs = ttk.Frame(frame)
+        self._frame_e2e_epochs.pack(fill=tk.X, pady=(4, 0))
+        (
+            self._wdg_e2e_epochs_label,
+            self._wdg_e2e_epochs_scale,
+            self._wdg_e2e_epochs_entry,
+        ) = _add_slider(
+            self._frame_e2e_epochs,
+            "Épocas E2E (50 – 1000):",
+            self._v_e2e_epochs,
+            10,
+            1000,
+            return_widgets=True,
+        )
+
+        # ── Ejemplos de entrenamiento global (modo end_to_end) ─────
+        self._wdg_n_train_global_label, self._wdg_n_train_global_entry = (
+            _add_integer_input(
+                frame,
+                "Ejemplos de entrenamiento global (100 - 50000):",
+                self._v_n_train,
+                100,
+                50000,
+                return_widgets=True,
+            )
+        )
+
+        # ── Botones ───────────────────────────────────────────────
         ttk.Separator(frame, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=(18, 8))
+
         self._btn_listen = ttk.Button(
-            frame, text="Encender servidor", command=self._cmd_listen
+            frame,
+            text="Encender servidor",
+            command=self._cmd_listen,
         )
         self._btn_listen.pack(fill=tk.X, pady=4)
-        ToolTip(self._btn_listen, "Abre el socket TCP y empieza a aceptar Workers.")
+        ToolTip(
+            self._btn_listen,
+            "Abre el socket TCP y empieza a aceptar Workers.\n"
+            "Los Workers pueden conectarse en cualquier momento.",
+        )
+
         self._btn_train = ttk.Button(
-            frame, text="Iniciar entrenamiento", command=self._cmd_train
+            frame,
+            text="▶  Iniciar entrenamiento",
+            command=self._cmd_train,
         )
         self._btn_train.pack(fill=tk.X, pady=4)
-        ToolTip(self._btn_train, "Lanza entrenamiento con los Workers conectados.")
+        ToolTip(
+            self._btn_train,
+            "Lanza una sesión de entrenamiento con los Workers\n"
+            "actualmente conectados. Requiere al menos 1 Worker.",
+        )
+
         self._btn_shutdown = ttk.Button(
-            frame, text="Apagar servidor", command=self._cmd_shutdown
+            frame,
+            text="■  Apagar servidor",
+            command=self._cmd_shutdown,
         )
         self._btn_shutdown.pack(fill=tk.X, pady=4)
-        ToolTip(self._btn_shutdown, "Envia STOP a Workers y cierra el socket.")
+        ToolTip(
+            self._btn_shutdown,
+            "Envía STOP a todos los Workers y cierra el socket.\n"
+            "Los Workers terminarán limpiamente al recibir la señal.",
+        )
+
         ttk.Separator(frame, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=(8, 4))
+
         btn_clear = ttk.Button(
-            frame, text="Limpiar graficas", command=self._clear_plots
+            frame, text="Limpiar gráficas", command=self._clear_plots
         )
         btn_clear.pack(fill=tk.X, pady=4)
-        ToolTip(btn_clear, "Borra todas las graficas actuales")
+        ToolTip(btn_clear, "Borra todas las gráficas actuales")
 
+    # ── Panel derecho ─────────────────────────────────────────────
     def _build_right_panel(self) -> None:
         right = ttk.Frame(self.root)
         right.grid(row=0, column=1, sticky="nsew", padx=5, pady=5)
@@ -792,6 +979,11 @@ class DistributedPSApp:
         LISTENING → "Encender" deshabilitado, "Entrenar" habilitado
                     solo si hay Workers conectados, "Apagar" habilitado
         TRAINING  → todos deshabilitados excepto ninguno
+
+        También actualiza la pastilla de estado con color según state.
+
+        :return: None (modifica estado de botones en la UI).
+        :rtype: NoneType.
         """
         has_workers = bool(self._worker_status)
 
@@ -891,7 +1083,21 @@ class DistributedPSApp:
             )
 
     def _update_session_column(self, worker_id: int, in_session: bool) -> None:
-        """Actualiza solo la columna 'Sesión actual' de un Worker."""
+        """
+        Actualiza solo la columna 'Sesión actual' de un Worker en el árbol.
+
+        Modifica el estado visual del Worker (``✓ Activo``, ``No``, ``—``)
+        dependiendo del flag in_session y el estado del sistema.
+
+        :param worker_id: ID del Worker a actualizar.
+        :type worker_id: int
+
+        :param in_session: True si el Worker participa en sesión actual.
+        :type in_session: bool
+
+        :return: None (modifica vista de árbol en UI).
+        :rtype: NoneType.
+        """
         tag = f"w{worker_id}"
         if self._wk_tree.exists(tag):
             current = self._wk_tree.item(tag, "values")
@@ -970,33 +1176,16 @@ class DistributedPSApp:
     # GESTIÓN DE MODELOS CNN
     # ================================================================
 
-    def _browse_data_dir(self) -> None:
-        """Dialogo para seleccionar directorio raiz de ImageNet."""
-        from tkinter import filedialog
-
-        d = filedialog.askdirectory(
-            title="Selecciona el directorio raiz de ImageNet (train/ y val/)",
-            initialdir=self._v_data_dir.get() or ".",
-        )
-        if d:
-            self._v_data_dir.set(d)
-
-    def _browse_cache_dir(self) -> None:
-        """Dialogo para seleccionar directorio de cache de shards."""
-        from tkinter import filedialog
-
-        d = filedialog.askdirectory(
-            title="Selecciona el directorio de cache de shards",
-            initialdir=self._v_cache_dir.get() or ".",
-        )
-        if d:
-            self._v_cache_dir.set(d)
-
     def _refresh_saved_models(self) -> None:
         """
-        Escanea el directorio de caché y actualiza la lista de modelos.
+        Escanea el directorio de caché y actualiza la lista de modelos CNN disponibles.
+
         Activa/desactiva el modo carga según haya modelos disponibles.
-        Llamado al iniciar y tras cada preentrenamiento completado.
+        Se invoca al iniciar la aplicación y tras cada preentrenamiento completado.
+        Pobla el dropdown de modelos ordenado por precisión (mejor primero).
+
+        :return: None (modifica dropdown y botones de UI).
+        :rtype: NoneType.
         """
         from Model.cnn_extractor import CNNExtractor
 
@@ -1027,13 +1216,132 @@ class DistributedPSApp:
         date = meta.get("created_at", "")[:10]  # solo la fecha
         return f"{arch}  |  {acc:.2f}%  |  {date}"
 
+    def _update_widget_states(self) -> None:
+        """
+        Actualiza el estado (NORMAL/DISABLED) de todos los widgets dependientes
+        del modo del sistema (precomputed vs end_to_end) y del modo de CNN
+        (load vs train).
+
+        Esta función centraliza toda la lógica de habilitación/deshabilitación
+        para garantizar consistencia total entre los modos.
+
+        **Lógica:**
+
+        ÉPOCAS CNN y MUESTRAS CNN:
+        - ENABLED si: (precomputed AND cnn_mode=="train")
+        - DISABLED si: (precomputed AND cnn_mode=="load") OR (end_to_end)
+
+        OTROS WIDGETS DE ÉPOCAS y PARÁMETROS:
+        - Dependen solo del modo del sistema
+        """
+        system_mode = self._v_system_mode.get()
+        cnn_mode = self._v_cnn_mode.get() if hasattr(self, "_v_cnn_mode") else "load"
+
+        # Determinar si épocas y muestras CNN deben estar activas
+        # Solo en precomputed + CNN en modo "train"
+        cnn_active = system_mode == "precomputed" and cnn_mode == "train"
+
+        # ── Épocas CNN y Muestras CNN ──────────────────────────────
+        for widget in [
+            self._wdg_cnn_epochs_label,
+            self._wdg_cnn_epochs_scale,
+            self._wdg_cnn_epochs_entry,
+            self._wdg_cnn_samples_label,
+            self._wdg_cnn_samples_entry,
+        ]:
+            if widget:
+                widget.config(state=tk.NORMAL if cnn_active else tk.DISABLED)
+
+        # ── Épocas MLP ─────────────────────────────────────────────
+        mlp_epochs_active = system_mode == "precomputed"
+        for widget in [
+            self._wdg_mlp_epochs_label,
+            self._wdg_mlp_epochs_scale,
+            self._wdg_mlp_epochs_entry,
+        ]:
+            if widget:
+                widget.config(state=tk.NORMAL if mlp_epochs_active else tk.DISABLED)
+
+        # ── Épocas E2E ─────────────────────────────────────────────
+        e2e_epochs_active = system_mode == "end_to_end"
+        for widget in [
+            self._wdg_e2e_epochs_label,
+            self._wdg_e2e_epochs_scale,
+            self._wdg_e2e_epochs_entry,
+        ]:
+            if widget:
+                widget.config(state=tk.NORMAL if e2e_epochs_active else tk.DISABLED)
+
+        # ── LR y Momentum (siempre activos, para MLP en ambos modos) ─
+        for widget in [
+            self._wdg_mlp_lr_label,
+            self._wdg_mlp_lr_entry,
+            self._wdg_mlp_momentum_label,
+            self._wdg_mlp_momentum_entry,
+        ]:
+            if widget:
+                widget.config(state=tk.NORMAL)
+
+        # ── Ejemplos de entrenamiento ──────────────────────────────
+        mlp_samples_active = system_mode == "precomputed"
+        e2e_samples_active = system_mode == "end_to_end"
+
+        if self._wdg_n_train_mlp_label:
+            self._wdg_n_train_mlp_label.config(
+                state=tk.NORMAL if mlp_samples_active else tk.DISABLED
+            )
+        if self._wdg_n_train_mlp_entry:
+            self._wdg_n_train_mlp_entry.config(
+                state=tk.NORMAL if mlp_samples_active else tk.DISABLED
+            )
+
+        if self._wdg_n_train_global_label:
+            self._wdg_n_train_global_label.config(
+                state=tk.NORMAL if e2e_samples_active else tk.DISABLED
+            )
+        if self._wdg_n_train_global_entry:
+            self._wdg_n_train_global_entry.config(
+                state=tk.NORMAL if e2e_samples_active else tk.DISABLED
+            )
+
+        # ── Semilla y otros parámetros globales (siempre activos) ───
+        for widget in [
+            self._wdg_mlp_seed_label,
+            self._wdg_mlp_seed_entry,
+        ]:
+            if widget:
+                widget.config(state=tk.NORMAL)
+
+    def _on_system_mode_change(self) -> None:
+        """
+        Maneja el cambio del modo de operación del sistema.
+
+        Actualiza estados de widgets según mode="precomputed" o mode="end_to_end".
+        Registra el cambio en log para trazabilidad.
+
+        :return: None (modifica UI y log).
+        :rtype: NoneType.
+        """
+        mode = self._v_system_mode.get()
+        self._update_widget_states()
+
+        if mode == "precomputed":
+            self._log("[INFO] Modo: Precomputación (CNN fija → MLP distribuido)")
+        else:  # end_to_end
+            self._log("[INFO] Modo: End-to-End (CNN+MLP entrenan juntos)")
+
     def _on_cnn_mode_change(self) -> None:
         """
-        Alterna entre las secciones Cargar / Entrenar.
+        Alterna entre las secciones Cargar / Entrenar en la interfaz.
 
         Usa tkraise() en lugar de pack/pack_forget para que el frame
         visible suba al frente sin cambiar la posición en el layout.
         Ambos frames ocupan el mismo espacio en el contenedor.
+
+        También actualiza los estados de controles dependientes del modo CNN.
+
+        :return: None (modifica frame visible y estado de UI).
+        :rtype: NoneType.
         """
         mode = self._v_cnn_mode.get()
         if mode == "load":
@@ -1041,11 +1349,24 @@ class DistributedPSApp:
         else:
             self._frm_train_cnn.tkraise()  # type: ignore
         # Actualizar altura del contenedor al frame visible
-        if self._frm_cnn_container is not None:
-            self._frm_cnn_container.update_idletasks()
+        self._frm_cnn_container.update_idletasks()
+
+        # Actualizar estados de widgets que dependen del modo CNN
+        self._update_widget_states()
 
     def _on_cnn_model_selected(self, event=None) -> None:
-        """Actualiza la tarjeta de información al seleccionar un modelo."""
+        """
+        Actualiza la tarjeta de información al seleccionar un modelo en el dropdown.
+
+        Extrae metadatos del modelo seleccionado (arch, accuracy, loss, epochs, etc)
+        y actualiza las etiquetas de la UI. Si no hay selección válida, limpia info.
+
+        :param event: Evento Tkinter (ignorado, solo para binding).
+        :type event: Any
+
+        :return: None (modifica etiquetas de información en UI).
+        :rtype: NoneType.
+        """
         idx = self._cnn_dropdown.current()  # type: ignore
         if idx < 0 or idx >= len(self._saved_models):
             self._clear_model_info()
@@ -1073,7 +1394,15 @@ class DistributedPSApp:
         self._lbl_info_date.configure(text=f"Creado en       : {date}")  # type: ignore
 
     def _clear_model_info(self) -> None:
-        """Limpia la información del modelo (resetea etiquetas a —)."""
+        """
+        Limpia la información del modelo en la tarjeta.
+
+        Resetea todas las etiquetas de información a "—" (guion).
+        Se invoca cuando no hay modelo seleccionado o al inicializar.
+
+        :return: None (resotea etiquetas en UI).
+        :rtype: NoneType.
+        """
         for lbl, text in [
             (self._lbl_info_arch, "Arquitectura   : —"),
             (self._lbl_info_acc, "Precisión         : —"),
@@ -1086,39 +1415,30 @@ class DistributedPSApp:
         ]:
             lbl.configure(text=text)  # type: ignore
 
-    def _on_cnn_arch_change(self) -> None:
-        """Muestra u oculta el panel de pretrain segun la arquitectura elegida."""
-        arch = self._v_cnn_arch.get()
-        if self._frm_simple_info is not None:
-            if arch == "simple":
-                self._frm_simple_info.pack(fill=tk.X, pady=(0, 4))
-            else:
-                self._frm_simple_info.pack_forget()
-        if self._frm_resnet_info is not None:
-            if arch == "resnet18":
-                self._frm_resnet_info.pack(fill=tk.X, pady=(0, 4))
-            else:
-                self._frm_resnet_info.pack_forget()
-
     def _get_cnn_for_training(self) -> "CNNExtractor | None":
-        """Carga el modelo CNN seleccionado (modo cargar)."""
-        if self._v_cnn_mode.get() != "load":
-            return None
-        idx = self._cnn_dropdown.current()  # type: ignore
-        if idx < 0 or idx >= len(self._saved_models):
-            return None
-        meta = self._saved_models[idx]
-        cache_dir = self._v_cache_dir.get().strip() or None
-        cnn = CNNExtractor(
-            arch=meta["arch"],
-            pretrained=(meta["arch"] == "resnet18"),
-            device="cpu",
-            seed=None,
-            cache_dir=cache_dir,
-            input_size=224,  # ImageNet nativo
-        )
-        cnn.load_from_path(meta["weights_path"])
-        return cnn
+        """
+        Devuelve la CNN lista para usar según el modo seleccionado.
+
+        Modo 'load': carga el modelo seleccionado en el dropdown.
+        Modo 'train': devuelve None (la CNN se construirá en _train_thread).
+        """
+        from Model.cnn_extractor import CNNExtractor
+
+        if self._v_cnn_mode.get() == "load":
+            idx = self._cnn_dropdown.current()  # type: ignore
+            if idx < 0 or idx >= len(self._saved_models):
+                return None
+            meta = self._saved_models[idx]
+            arch = meta["arch"]
+            cnn = CNNExtractor(
+                arch=arch,
+                pretrained=(arch == "resnet18"),
+                device="cpu",
+                seed=42,
+            )
+            cnn.load_from_path(meta["weights_path"])
+            return cnn
+        return None  # modo 'train': se construye en el hilo de fondo
 
     def _cmd_listen(self) -> None:
         try:
@@ -1133,6 +1453,8 @@ class DistributedPSApp:
         self._server = ParameterServer(
             host=host,
             port=port,
+            training_mode=self._v_system_mode.get(),
+            debug=self.debug,  # Pasar el flag debug
             on_worker_connected=lambda wid, addr: q.put(
                 ("worker_connected", {"id": wid, "addr": addr})
             ),
@@ -1183,7 +1505,16 @@ class DistributedPSApp:
         self.root.after(100, self._poll_queue)
 
     def _cmd_train(self) -> None:
-        """Lanza una sesion de entrenamiento con los Workers conectados."""
+        """
+        Lanza una sesión de entrenamiento distribuida con los Workers conectados.
+
+        Valida estado del servidor, recopila parámetros de UI, configura la CNN
+        si es necesario, y lanza el entrenamiento en un hilo daemon. Actualiza UI
+        durante el entrenamiento enviando eventos a la cola.
+
+        :return: None (lanza hilo de entrenamiento y retorna inmediatamente).
+        :rtype: NoneType.
+        """
         if self._state != self._S_LISTENING:
             return
         if not self._worker_status:
@@ -1192,8 +1523,21 @@ class DistributedPSApp:
             )
             return
 
+        # Recoger parámetros de entrenamiento
         try:
-            epochs = int(self._v_epochs.get())
+            # Seleccionar épocas según el modo de operación
+            training_mode = self._v_system_mode.get()
+            if training_mode == "precomputed":
+                epochs = int(self._v_epochs.get())
+                self._log(
+                    f"[INFO] Modo Precomputación: usando {epochs} épocas para MLP"
+                )
+            else:  # end_to_end
+                epochs = int(self._v_e2e_epochs.get())
+                self._log(
+                    f"[INFO] Modo End-to-End: usando {epochs} épocas para CNN+MLP"
+                )
+
             hidden1 = int(self._v_hidden1.get())
             hidden2 = int(self._v_hidden2.get())
             lr = float(self._v_lr.get())
@@ -1202,9 +1546,20 @@ class DistributedPSApp:
             seed = int(seed_str) if seed_str else None
             momentum = float(self._v_momentum.get())
         except ValueError as exc:
-            messagebox.showerror("Parametro invalido", str(exc))
+            messagebox.showerror("Parámetro inválido", str(exc))
             return
 
+        cnn_arch = self._v_cnn_arch.get()
+        # resnet18 siempre usa pesos ImageNet — es la única configuración útil.
+        # simple siempre preentrenada localmente, sin dependencias externas.
+        cnn_pretrained = cnn_arch == "resnet18"
+
+        # El MLP siempre tiene feature_dim=512 (salida de cualquier CNNExtractor).
+        # Inicializamos los pesos aquí, en el hilo principal, sin necesitar la CNN.
+        # La CNN se construye en _train_thread para no bloquear la GUI
+        # (con resnet18+ImageNet la descarga ocurre al construir CNNExtractor).
+        _cnn_seed_str = (self._v_cnn_seed.get() or "").strip()  # type: ignore
+        cnn_seed = int(_cnn_seed_str) if _cnn_seed_str.isdigit() else None
         initial_params = init_params(FEATURE_DIM, hidden1, hidden2, NUM_CLASSES, seed)
 
         self._acc_history.clear()
@@ -1230,7 +1585,7 @@ class DistributedPSApp:
         self._train_start_time = time.perf_counter()
         self._train_config = {
             "epochs": epochs,
-            "cnn_arch": "resnet18",
+            "cnn_arch": cnn_arch,
             "hidden1": hidden1,
             "hidden2": hidden2,
             "learning_rate": lr,
@@ -1242,14 +1597,17 @@ class DistributedPSApp:
 
         n_workers = len(self._session_workers)
         self._log(
-            f"[PS] Iniciando -- {n_workers} worker(s) "
-            f"epocas={epochs} lr={lr} n_train={n_train}"
+            f"[PS] Iniciando entrenamiento — "
+            f"{n_workers} worker(s)  épocas={epochs}  "
+            f"lr={lr}  ejemplos={n_train}"
         )
         self._status_var.set(
-            f"Entrenando -- {n_workers} worker(s) | {epochs} epocas | lr={lr}"
+            f"Entrenando — {n_workers} worker(s)  |  {epochs} épocas  |  lr={lr}"
         )
 
-        q, server = self._q, self._server
+        q = self._q
+        server = self._server
+
         if server is None:
             messagebox.showerror("Error", "Servidor no disponible")
             self._state = self._S_LISTENING
@@ -1263,122 +1621,185 @@ class DistributedPSApp:
                 def _gui_log(msg: str) -> None:
                     q.put(("log", msg))
 
-                # Cargar etiquetas val. Detecta automáticamente si usar
-                # disco local o HuggingFace streaming.
-                data_dir_val = self._v_data_dir.get().strip() or None
-                hf_token_val = (self._v_hf_token.get() or "").strip() or os.environ.get(
-                    "HF_TOKEN", ""
-                )
-                source_val = detect_data_source(data_dir_val)
-                Y_test = None
+                _gui_log("[PS] Cargando etiquetas de prueba CIFAR-10...")
+                _, Y_test = load_cifar10_test(verbose=False)
+                _gui_log(f"[PS] {len(Y_test)} etiquetas de prueba cargadas.")
 
-                if source_val == "local" and data_dir_val:
-                    try:
-                        _gui_log("[PS] Cargando etiquetas val de ImageNet local...")
-                        Y_test = load_imagenet_labels(
-                            split="val", data_dir=data_dir_val
+                _gui_log("[PS] Cargando datos de prueba CIFAR-10...")
+                X_test_raw, Y_test = load_cifar10_test(verbose=False)
+                _gui_log(f"[PS] {len(Y_test)} imágenes de prueba cargadas.")
+
+                # ──────────────────────────────────────────────────────────────
+                # SEPARACIÓN POR training_mode: PRECOMPUTED vs END-TO-END
+                # ──────────────────────────────────────────────────────────────
+
+                if training_mode == "precomputed":
+                    # ════════════════════════════════════════════════════════
+                    # RAMA PRECOMPUTED: CNN fija + MLP distribuido
+                    # ════════════════════════════════════════════════════════
+                    _gui_log("[PS] MODO PRECOMPUTED — CNN fija, MLP distribuido")
+
+                    cnn_mode = self._v_cnn_mode.get()
+
+                    if cnn_mode == "load":
+                        # Cargar modelo seleccionado en el dropdown
+                        cnn = self._get_cnn_for_training()
+                        if cnn is None:
+                            raise ValueError("No hay modelo CNN seleccionado.")
+                        _gui_log(
+                            f"[PS] Modelo cargado: {cnn.arch} (hash={cnn._weights_hash()})"
                         )
-                        _gui_log(f"[PS] {len(Y_test):,} etiquetas val cargadas.")
-                    except Exception as _e:
-                        _gui_log(f"[PS] Sin etiquetas val: {_e}")
-                elif hf_token_val:
-                    try:
-                        _gui_log("[PS] Cargando etiquetas val desde HuggingFace...")
-                        Y_test = load_imagenet_labels_stream(
-                            split="val", token=hf_token_val
-                        )
-                        _gui_log(f"[PS] {len(Y_test):,} etiquetas val cargadas.")
-                    except Exception as _e:
-                        _gui_log(f"[PS] HuggingFace error: {_e}")
-                else:
-                    _gui_log("[PS] Sin data-dir ni token -- sin evaluacion de test.")
+                        self._cnn = cnn
 
-                cnn_mode = self._v_cnn_mode.get()
-                if cnn_mode == "load":
-                    cnn = self._get_cnn_for_training()
-                    if cnn is None:
-                        raise ValueError("No hay modelo CNN seleccionado.")
-                    _gui_log(f"[PS] CNN: {cnn.arch} (hash={cnn._weights_hash()})")
-                    self._cnn = cnn
-                else:
-                    arch_sel = self._v_cnn_arch.get()
-                    cache_dir_v = self._v_cache_dir.get().strip() or None
-                    pretrained = arch_sel == "resnet18"
+                    else:  # cnn_mode == "train"
+                        # Preentrenamiento SOLO EN PRECOMPUTED
+                        arch_new = self._v_cnn_arch.get()
+                        cnn_pretrained_new = arch_new == "resnet18"
+                        cnn_epochs_new = int(self._v_cnn_epochs.get())
+                        try:
+                            cnn_lr_new = float(self._v_cnn_lr.get())
+                        except ValueError:
+                            cnn_lr_new = 0.001
 
-                    cnn_ep = int(self._v_cnn_epochs.get())
-                    try:
-                        cnn_lr_v = float(self._v_cnn_lr.get())
-                    except ValueError:
-                        cnn_lr_v = 0.001
-                    if arch_sel == "resnet18":
-                        _gui_log("[PS] Cargando ResNet-18 con pesos ImageNet...")
-                        _gui_log("  (descarga ~44 MB la 1a vez, luego cache local)")
-                    else:
-                        _gui_log("[PS] Construyendo CNN simple (5 bloques)...")
-                        _gui_log("[PS] Construyendo CNN simple (5 bloques)...")
-
-                    self._cnn = CNNExtractor(
-                        arch=arch_sel,
-                        pretrained=pretrained,
-                        device="cpu",
-                        seed=None,
-                        cache_dir=cache_dir_v,
-                        input_size=224,
-                    )
-                    cnn = self._cnn
-
-                    # Preentrenar CNN simple si se solicitaron épocas > 0
-                    if arch_sel == "simple" and cnn_ep > 0:
-                        _gui_log("[PS] Solicitando muestra de train al Worker...")
-                        train_sample = server.request_train_sample(
-                            n_samples=min(10000, int(self._v_n_train.get()))
-                        )
-                        if train_sample is not None:
-                            X_pre, Y_pre = train_sample
+                        if arch_new == "resnet18":
                             _gui_log(
-                                f"[PS] {len(X_pre)} imgs recibidas. "
-                                f"Preentrenando {cnn_ep} epocas (lr={cnn_lr_v})..."
+                                "[PS] Descargando pesos ImageNet (~44 MB, 1ª vez)..."
+                            )
+                        else:
+                            _gui_log(
+                                f"[PS] Preentrenando CNN simple "
+                                f"({cnn_epochs_new} épocas)..."
                             )
 
-                            def _log_epoch(ep, tot, loss, acc):
-                                bar = chr(9608) * int(acc / 5)
+                        # Siempre crear CNN nueva — nunca reutilizar la anterior.
+                        self._cnn = CNNExtractor(
+                            arch=arch_new,
+                            pretrained=cnn_pretrained_new,
+                            device="cpu",
+                            seed=cnn_seed,
+                        )
+                        cnn = self._cnn
+
+                        if arch_new == "simple":
+
+                            def _on_pretrain_epoch_check(
+                                epoch: int, total: int, loss: float, acc: float
+                            ) -> None:
+                                if epoch == 0:
+                                    _gui_log(
+                                        f"[CNN] Preentrenando  0/{total} — Iniciando..."
+                                    )
+                                else:
+                                    bar = "█" * int(acc / 5)
+                                    _gui_log(
+                                        f"[CNN] Preentrenando {epoch:2d}/{total} — "
+                                        f"loss={loss:.4f}  acc={acc:.1f}%  {bar}"
+                                    )
+
+                            # Pedir muestra de train al Worker para preentrenar
+                            # sin usar datos de prueba → elimina el sesgo.
+                            _gui_log(
+                                "[PS] Solicitando muestra de imágenes de train "
+                                "al Worker (sin sesgo en evaluación)..."
+                            )
+                            train_sample = server.request_train_sample(
+                                n_samples=int(self._v_cnn_pretrain_samples.get())
+                            )
+
+                            if train_sample is not None:
+                                X_pretrain, Y_pretrain = train_sample
                                 _gui_log(
-                                    f"  CNN {ep:2d}/{tot} loss={loss:.4f} "
-                                    f"acc={acc:.1f}% {bar}"
+                                    f"[PS] Muestra recibida: {len(X_pretrain)} imgs "
+                                    f"de train — preentrenando CNN sin sesgo."
+                                )
+                            else:
+                                # Fallback: sin Workers disponibles, usar X_test
+                                X_pretrain, Y_pretrain = X_test_raw, Y_test
+                                _gui_log(
+                                    "[PS] ⚠ Sin Workers disponibles — "
+                                    "usando datos de prueba para pretrain (sesgo)."
                                 )
 
                             cnn.pretrain(
-                                X_pre,
-                                Y_pre,
-                                epochs=cnn_ep,
-                                lr=cnn_lr_v,
+                                X_pretrain,
+                                Y_pretrain,
+                                epochs=cnn_epochs_new,
+                                lr=cnn_lr_new,
                                 verbose=False,
-                                on_epoch=_log_epoch,
-                                n_classes=NUM_CLASSES,
+                                on_epoch=_on_pretrain_epoch_check,
                             )
-                            _gui_log("[PS] Pretrain CNN simple completado.")
-                        else:
-                            _gui_log(
-                                "[PS] Aviso: sin Workers para pretrain. "
-                                "CNN simple con pesos aleatorios."
+                            # Verificar duplicados: si ya existe un modelo con
+                            # el mismo hash, no guardar y avisar al usuario.
+                            new_hash = cnn._weights_hash()
+                            existing = CNNExtractor.list_saved_models()
+                            duplicate = next(
+                                (
+                                    m
+                                    for m in existing
+                                    if m.get("weights_hash") == new_hash
+                                    and m.get("metadata_path") != cnn._metadata_path()
+                                ),
+                                None,
                             )
-                    elif arch_sel == "simple":
-                        _gui_log("[PS] CNN simple con pesos aleatorios (sin pretrain).")
-                    else:
-                        _gui_log(f"[PS] ResNet-18 lista (hash={cnn._weights_hash()}).")
+                            if duplicate:
+                                _gui_log(
+                                    "⚠ El modelo entrenado es idéntico a uno "
+                                    f"ya guardado ({duplicate['created_at'][:10]}). "
+                                    "No se guardará una copia adicional."
+                                )
 
+                        # Al terminar, actualizar la lista de modelos y
+                        # activar el modo carga si es el primero que se guardó.
+                        q.put(("refresh_cnn_models", None))
+
+                else:
+                    # ════════════════════════════════════════════════════════
+                    # RAMA END-TO-END: CNN + MLP entrenan juntos distribuido
+                    # ════════════════════════════════════════════════════════
+                    _gui_log("[PS] MODO END-TO-END — CNN + MLP entrenan juntos")
+                    _gui_log(
+                        "[PS] ⚠ Sin preentrenamiento de CNN (se entrena desde el inicio)"
+                    )
+
+                    arch_new = self._v_cnn_arch.get()
+
+                    # En E2E nunca hay preentrenamiento
+                    # CNN comienza con pesos random o ImageNet
+                    if arch_new == "resnet18":
+                        _gui_log(
+                            "[PS] Descargando pesos ImageNet base (~44 MB, 1ª vez)..."
+                        )
+                    else:
+                        _gui_log("[PS] Inicializando CNN simple con pesos random...")
+
+                    # Crear CNN sin preentrenamiento (pretrained solo si es resnet18)
+                    self._cnn = CNNExtractor(
+                        arch=arch_new,
+                        pretrained=(
+                            arch_new == "resnet18"
+                        ),  # Solo ImageNet para resnet18
+                        device="cpu",
+                        seed=cnn_seed,
+                    )
+                    cnn = self._cnn
+                    _gui_log(
+                        "[PS] CNN lista (no preentrenada). CNN se entrenará distribuida."
+                    )
                     q.put(("refresh_cnn_models", None))
 
-                _gui_log("[PS] Distribuyendo CNN a Workers...")
+                _gui_log(
+                    f"[PS] CNN lista (hash={cnn._weights_hash()}). Distribuyendo a Workers..."
+                )
                 server.set_cnn(cnn)
                 history = server.train(
                     epochs=epochs,
                     initial_params=initial_params,
                     learning_rate=lr,
                     n_train=n_train,
+                    X_test=X_test_raw,
                     Y_test=Y_test,
                     momentum=momentum,
-                    seed=seed,
+                    training_mode=training_mode,  # ← CRÍTICO: Pasar el modo actual explícitamente
                 )
                 q.put(("training_done", history))
             except Exception as exc:
@@ -1387,7 +1808,16 @@ class DistributedPSApp:
         threading.Thread(target=_train_thread, daemon=True).start()
 
     def _cmd_shutdown(self) -> None:
-        """Apaga el servidor enviando STOP a todos los Workers."""
+        """
+        Apaga el servidor enviando STOP a todos los Workers.
+
+        Valida que el servidor no esté entrenando actualmente, pide confirmación
+        al usuario, luego lanza shutdown() en un hilo daemon. Limpia estado interno
+        y actualiza UI.
+
+        :return: None (lanza shutdown asincrónicamente).
+        :rtype: NoneType.
+        """
         if self._server is None or self._state == self._S_OFFLINE:
             return
         if self._state == self._S_TRAINING:
@@ -1425,7 +1855,17 @@ class DistributedPSApp:
     # ================================================================
 
     def _poll_queue(self) -> None:
-        """Lee mensajes de la cola y actualiza la UI. Se reprograma cada 100 ms."""
+        """
+        Lee mensajes de la cola de eventos y actualiza la UI.
+
+        Se reprograma cada 100 ms para mantener la UI responsiva.
+        Procesa eventos como conexiones de Workers, actualizaciones de estado,
+        y finalización de entrenamientos. Cada evento modifica el estado
+        interno y/o actualiza vistas (árbol de workers, gráficos, etc).
+
+        :return: None (actualiza UI y re-programa siguiente poll).
+        :rtype: NoneType.
+        """
         try:
             while True:
                 msg_type, payload = self._q.get_nowait()
@@ -1646,8 +2086,19 @@ class DistributedPSApp:
 
 
 def main() -> None:
+    # Parsear argumentos de línea de comandos
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Parameter Server GUI")
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Activar modo debug (mostrar mensajes de debug)",
+    )
+    args = parser.parse_args()
+
     root = tk.Tk()
-    app = DistributedPSApp(root)
+    app = DistributedPSApp(root, debug=args.debug)
 
     def on_close():
         if app._state == app._S_TRAINING:

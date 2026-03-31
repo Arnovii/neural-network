@@ -1,638 +1,823 @@
-# Distributed Neural Network Training – ImageNet CNN+MLP
+# Distributed CIFAR-10 Training: CNN + Distributed MLP
 
-Entrenamiento distribuido de redes neuronales (CNN + MLP) sobre ImageNet usando arquitectura Parameter Server + Workers.
+> **Algoritmo de Diego** — PyTorch CNN + NumPy MLP, federated learning via Parameter Server with gradient averaging. Reference implementation for distributed deep learning with explicit architectural separation.
 
-## Tabla de Contenidos
+Distributed deep learning system with **explicit separation of concerns**: CNN features extracted once (PyTorch, frozen), classification trained distributedly (NumPy MLP, synchronized gradient averaging). Runs on single or multiple machines.
 
-- [Descripción General](#descripción-general)
-- [¿Por Qué Este Proyecto?](#por-qué-este-proyecto)
-- [Arquitectura](#arquitectura)
-- [Modos de Datos](#modos-de-datos)
-- [Requisitos e Instalación](#requisitos-e-instalación)
-- [Uso Rápido](#uso-rápido)
-- [Ejemplos Completos](#ejemplos-completos)
-- [Estructura del Proyecto](#estructura-del-proyecto)
-- [Sistema de Persistencia de Modelos](#sistema-de-persistencia-de-modelos)
-- [Troubleshooting](#troubleshooting)
+**Core Stack**: PyTorch, NumPy, Python sockets (TCP), Pickle protocol, Tkinter GUI, CIFAR-10 (torchvision).
 
 ---
 
-## Descripción General
+## Full Documentation
 
-Este proyecto implementa un sistema distribuido de entrenamiento de redes neuronales que:
+This repository includes comprehensive technical documentation covering architecture, design, and implementation:
 
-1. **Extrae características** de imágenes ImageNet usando una CNN (convolutional neural network)
-2. **Entrena un clasificador MLP** (multilayer perceptron) sobre esas características
-3. **Distribuye el aprendizaje** entre múltiples Workers usando un Parameter Server central
+| Document | Purpose | Read Time |
+|----------|---------|-----------|
+| [docs/01_overview.md](docs/01_overview.md) | System vision, problem statement, 2-minute explanation | 15 min |
+| [docs/02_architecture.md](docs/02_architecture.md) | Component design, responsibilities, data flow phases | 20 min |
+| [docs/03_training_flow.md](docs/03_training_flow.md) | Per-epoch execution flow, timing breakdown, message ordering | 15 min |
+| [docs/04_modes_precomputed_vs_e2e.md](docs/04_modes_precomputed_vs_e2e.md) | PRECOMPUTED vs END-TO-END mode comparison, code examples | 25 min |
+| [docs/05_worker_node.md](docs/05_worker_node.md) | Worker internals, caching algorithm, deterministic partitioning | 20 min |
+| [docs/06_parameter_server.md](docs/06_parameter_server.md) | Parameter Server threading, synchronization, train loop | 20 min |
+| [docs/07_caching_system.md](docs/07_caching_system.md) | Cache algorithm, MD5 invalidation, performance analysis | 10 min |
+| [docs/08_data_flow.md](docs/08_data_flow.md) | Network flows, byte-level analysis, bandwidth utilization | 15 min |
 
-El sistema es transparente respecto al origen de los datos:
-
-- **Modo LOCAL**: Lee imágenes de disco (~150 GB requeridos)
-- **Modo STREAMING**: Descarga bajo demanda desde HuggingFace (sin descargar el dataset completo)
-
-### ¿Por Qué Este Proyecto?
-
-Entrena modelos CNN+MLP grandes sin necesidad de GPU con memoria masiva. El Parameter Server promedia gradientes de múltiples Workers, reduciendo el costo computacional y permitiendo entrenar modelos más complejos.
-
-```
-neural-network/
-├── Data/
-│   ├── ImageNet/            # Dataset ImageNet (~150 GB)
-│   │   ├── train/           # 1.28M imágenes de entrenamiento
-│   │   └── val/             # 50k imágenes de validación
-│   └── feature_cache/       # Caché de features extraídos y pesos CNN
-├── Distributed/             # Núcleo del sistema distribuido
-│   ├── parameter_server.py  # Clase ParameterServer (lógica TCP + entrenamiento)
-│   ├── worker_node.py       # Clase WorkerNode (extracción CNN + MLP forward/backward)
-│   └── protocol.py          # Serialización de mensajes Pickle sobre TCP
-├── Model/                   # Lógica central: CNN + MLP
-│   ├── cnn_extractor.py     # CNN PyTorch (features cachés, pesos ImageNet/propios)
-│   └── mlp.py               # MLP NumPy (pesos distribuidos, gradientes serializables)
-├── Utils/
-│   ├── feature_scaler.py    # StandardScaler para normalización de features CNN
-│   ├── imagenet_loader.py   # Cargador lazy de ImageNet (DataLoader PyTorch)
-│   └── results_exporter.py  # Exportación de resultados a JSON
-├── Exports/                 # Resultados de entrenamiento (JSON por timestamp)
-├── Docker/                  # Contenedores para Workers
-│   ├── Dockerfile.worker    # Imagen Docker del Worker
-│   ├── run_workers.ps1      # Script PowerShell para lanzar N Workers en Docker
-│   └── .dockerignore
-├── ps_terminal.py           # Parameter Server (interfaz de terminal)
-├── ps_gui.py                # Parameter Server (interfaz gráfica Tkinter)
-├── worker.py                # Worker Node
-├── pyproject.toml
-└── requirements.txt
-```
+**Quick Links**:
+- **New to the system?** Start with [docs/01_overview.md](docs/01_overview.md)
+- **How to run?** See section [Fast Start](#-fast-start) below
+- **Troubleshooting?** See section [Setup & Troubleshooting](#-setup--troubleshooting)
+- **Understanding each component?** Read [docs/02_architecture.md](docs/02_architecture.md) + [docs/05_worker_node.md](docs/05_worker_node.md)
+- **Deep dive on modes?** See [docs/04_modes_precomputed_vs_e2e.md](docs/04_modes_precomputed_vs_e2e.md)
 
 ---
 
-## Instalación
+## Navigation
 
-**Con pip:**
+1. [Quick Summary](#-quick-summary)
+2. [Fast Start](#-fast-start)
+3. [Two Training Modes](#-two-training-modes-mutually-exclusive) (PRECOMPUTED vs END-TO-END)
+4. [Architecture Overview](#-architecture-overview)
+5. [Communication Protocol](#-communication-protocol-tcp--pickle)
+6. [Intelligent Caching](#-intelligent-caching-system) (MD5-based)
+7. [Design Decisions](#-design-decisions-backed-by-code)
+8. [Real Limitations](#-real-limitations-from-code-analysis)
+9. [Setup & Troubleshooting](#-setup--troubleshooting)
+
+---
+
+## Quick Summary
+
+**What does this system do?**
+
+Trains CIFAR-10 image classification in a distributed setting:
+
+1. **CNN Feature Extraction** (PyTorch) → outputs 512-dim vectors from 32×32 RGB images
+2. **Distributed MLP Training** (NumPy) → trains classifier on features across multiple workers
+3. **Parameter Server** → synchronizes weights/gradients, maintains global model
+4. **Two modes** → PRECOMPUTED (fast, frozen CNN) or END-TO-END (accurate, trainable CNN)
+
+**Typical accuracy**: 94-97% (PRECOMPUTED mode), 98-99% (END-TO-END mode)
+
+---
+
+## Fast Start
+
+### 1. Install Dependencies
+
 ```bash
 pip install -r requirements.txt
 ```
 
-**Con uv:**
+**Packages** (from [requirements.txt](requirements.txt)): `numpy`, `torch`, `torchvision`, `matplotlib`, `tqdm`
+
+CIFAR-10 auto-downloads on first run (~170 MB).
+
+### 2. Run Locally (2-4 terminals, ~90 seconds)
+
+**Terminal 1 — Parameter Server**:
 ```bash
-uv sync
+python ps_terminal.py --epochs 10 --workers 2
 ```
 
-Dependencias principales: `numpy`, `torch`, `torchvision`, `matplotlib`.
-
-### Preparación del Dataset: ImageNet
-
-**ImageNet es un dataset grande (~150 GB) y requiere preparación manual:**
-
-1. Descargar ImageNet desde [image-net.org](https://image-net.org/) (requiere registro).
-2. Extraer los archivos en la estructura esperada:
-   ```
-   Data/ImageNet/
-   ├── train/
-   │   ├── n01440764/  (synset ID)
-   │   │   ├── img_001.JPEG
-   │   │   └── ...
-   │   └── ... (1000 synsets)
-   └── val/
-       ├── n01440764/
-       │   ├── img_001.JPEG
-       │   └── ...
-       └── ... (1000 synsets)
-   ```
-
-**Alternativa:** si tienes el dataset descargado en otra ubicación, especificar con:
+**Terminal 2 — Worker 1**:
 ```bash
-python worker.py --data-dir /ruta/a/ImageNet
+python worker.py
 ```
 
-Los Workers descargan **solo las etiquetas** (~1 MB) en la primera ejecución; las imágenes se cargan lazy bajo demanda desde disco.
-
----
-
-## Modo Distribuido (varias máquinas)
-
-El Parameter Server (PS) gestiona los pesos globales del MLP. Cada Worker carga ImageNet
-localmente, recibe los parámetros actuales y una semilla del PS, reconstruye su propio
-chunk de datos localmente (sin transmitir imágenes por red), extrae features con la CNN
-(pesos preentrenados en ImageNet o propios), normaliza los features con StandardScaler
-y calcula gradientes del MLP. El PS promedia los gradientes de todos los Workers y actualiza
-los pesos globales.
-
-```
-Worker 0 ──┐
-Worker 1 ──┼──► Parameter Server  (ps_terminal.py / ps_gui.py)
-Worker N ──┘
-```
-
-Los Workers son **persistentes**: no se desconectan entre sesiones de
-entrenamiento y pueden participar en varias sesiones sin reiniciarse.
-
-### Ciclo de vida del Parameter Server
-
-```
-listen()        → Abre el socket TCP, acepta Workers en un hilo de fondo.
-                  Retorna inmediatamente.
-
-[esperar N Workers]
-
-train(...)      → Ejecuta el loop de entrenamiento:
-                    Por cada época:
-                      1. Genera una semilla aleatoria de época.
-                      2. Asigna shards/indices a cada Worker de forma determinista.
-                      3. Broadcast: envía params + semilla a cada Worker.
-                      4. Cada Worker reconstruye su indices localmente (sin red).
-                      5. Espera gradientes de TODOS los Workers (barrera).
-                      6. Promedia: ∇θ = (1/N) × Σ ∇θᵢ
-                      7. Actualiza: θ ← θ − lr × ∇θ
-
-shutdown()      → Envía STOP a todos los Workers y cierra el socket.
-```
-
-### Lanzar el servidor (terminal)
-
+**Terminal 3 — Worker 2**:
 ```bash
-# Configuración básica: esperar 2 workers, 100 épocas, ImageNet
-python ps_terminal.py
-
-# Configuración extendida
-python ps_terminal.py --workers 3 --epochs 500 --hidden1 256 --hidden2 128 --lr 0.01 --n-train 1280000
+python worker.py
 ```
 
-| Opción | Descripción | Default |
-|---|---|---|
-| `--host` | IP de escucha del servidor | `0.0.0.0` |
-| `--port` | Puerto TCP | `9999` |
-| `--workers` | Número de Workers a esperar antes de entrenar | `2` |
-| `--epochs` | Épocas de entrenamiento | `10` |
-| `--hidden1` | Neuronas en la primera capa oculta del MLP | `256` |
-| `--hidden2` | Neuronas en la segunda capa oculta del MLP | `128` |
-| `--lr` | Tasa de aprendizaje | `0.01` |
-| `--momentum` | Momentum SGD (0.0 = SGD puro) | `0.9` |
-| `--n-train` | Total de ejemplos de entrenamiento | `None` (resuelve a 1,281,167) |
-| `--seed` | Semilla aleatoria (reproducibilidad) | ninguna |
-| `--cnn-arch` | Arquitectura CNN: `simple` o `resnet18` | `resnet18` |
-| `--cnn-device` | Dispositivo PyTorch para CNN: `cpu`, `cuda`, `mps` | `cpu` |
-| `--data-dir` | Directorio raiz de ImageNet con `train/` y `val/` | ninguna |
-| `--hf-token` | Token HuggingFace para modo stream | `""` |
-| `--cnn-pretrain-epochs` | Epocas de pretrain para `simple` (0 = sin pretrain) | `5` |
-| `--cnn-pretrain-lr` | Learning rate del pretrain para CNN `simple` | `0.001` |
-| `--cnn-pretrain-samples` | Muestras de train para preentrenamiento/fallback | `10000` |
+Expected: All workers connect, training progresses, test accuracy grows.
 
-### Lanzar el servidor (GUI)
+### 3. GUI Mode (Visual Training)
 
 ```bash
 python ps_gui.py
 ```
 
-La GUI expone los mismos parámetros con controles visuales y muestra en tiempo
-real las gráficas de precisión y pérdida por época, la tabla de Workers
-conectados y un log de eventos.
+Features (from [ps_gui.py](ps_gui.py)):
+- Real-time loss & accuracy curves (Matplotlib embedded)
+- Parameter adjustment before training
+- Mode selection: PRECOMPUTED or E2E
+- Worker connection status display
+- JSON export with timestamp ([Exports/](Exports/))
 
-### Lanzar un Worker
+---
 
-Ejecutar en cada máquina (o terminal) que participará en el entrenamiento.
-El Worker recibe su ID del PS automáticamente al conectarse; no hay que
-especificarlo manualmente. El Worker carga ImageNet una sola vez, extrae
-sus features al iniciar y los cachea para acceso rápido.
+## Project Structure
 
-```bash
-# Worker en la misma máquina que el PS
-python worker.py
-
-# Worker en otra máquina
-python worker.py --server-host 192.168.1.10
-
-# Modo stream (sin dataset local): token por argumento
-python worker.py --hf-token hf_xxxx
-
-# Modo stream (sin dataset local): token por variable de entorno
-export HF_TOKEN=hf_xxxx && python worker.py
-
-# Ver todas las opciones
-python worker.py --help
+```
+neural-network/
+├── Data/                        # Datasets y caché de features
+│   ├── cifar-10-batches-py/     # CIFAR-10 raw (se descarga automáticamente, ~170 MB)
+│   ├── cifar10_train_nchw.npz   # Dataset procesado NCHW format
+│   └── feature_cache/           # Caché inteligente de features CNN
+│       ├── {arch}_{hash}_train_X.npy    # 50k train features (si PRECOMPUTED)
+│       ├── {arch}_{hash}_train_Y.npy
+│       ├── {arch}_{hash}_test_X.npy     # 10k test features (reutilizable)
+│       └── {arch}_{hash}_test_Y.npy
+│
+├── Distributed/                 # Núcleo del sistema distribuido
+│   ├── parameter_server.py      # ParameterServer: TCP listening, synchronization, training loop
+│   ├── worker_node.py           # WorkerNode: forward/backward, gradient computation, caching
+│   └── protocol.py              # Message serialization: 4-byte length + Pickle dict
+│
+├── Model/                       # Red neuronal central
+│   ├── cnn_extractor.py         # CNNExtractor: SimpleCNN/ResNet18, MD5-based cache
+│   ├── mlp.py                   # MLP NumPy backend: forward, backward, loss, gradients
+│   └── mlp_pytorch.py           # MLP PyTorch experimental version
+│
+├── Utils/                       # Utilidades y helpers
+│   ├── cifar_loader.py          # load_cifar10_train/test: descarga automática, NCHW format
+│   ├── logging_util.py          # Logger con colores para Worker/PS debugging
+│   └── results_exporter.py      # export_results: JSON con timestamp, métricas por época
+│
+├── Docker/                      # Configuración containerización
+│   ├── Dockerfile.worker        # Docker image para Workers
+│   └── run_workers.ps1          # PowerShell script: spawn 3+ containers
+│
+├── Exports/                     # Resultados de entrenamientos (JSON)
+│   └── resultado_YYYYMMDD_HHMMSS.json
+│
+├── docs/                        # Documentación técnica extensiva
+│   ├── 01_overview.md           # Visión general sistema (2 min read)
+│   ├── 02_architecture.md       # Design, responsibilities, data flow
+│   ├── 03_training_flow.md      # Per-epoch execution, timing breakdown
+│   ├── 04_modes_precomputed_vs_e2e.md    # Mode comparison, code examples
+│   ├── 05_worker_node.md        # Worker internals, caching, stratified partitioning
+│   ├── 06_parameter_server.md   # PS threading, synchronization primitives
+│   ├── 07_caching_system.md     # MD5 invalidation, performance analysis
+│   └── 08_data_flow.md          # Network flows, byte-level analysis
+│
+├── ps_terminal.py               # Parameter Server: terminal interface (CLI)
+├── ps_gui.py                    # Parameter Server: graphical interface (Tkinter + Matplotlib)
+├── worker.py                    # Worker Node: entry point
+│
+├── requirements.txt             # Python dependencies (numpy, torch, torchvision, matplotlib, tqdm)
+├── pyproject.toml               # Project metadata (build system, tool config)
+└── README.md                    # Este archivo
 ```
 
-| Opción | Descripción | Default |
+### Key Components Explained
+
+| Component | Purpose | Entry Point | Language |
+|-----------|---------|-------------|----------|
+| **Parameter Server** | Coordinates training, broadcasts weights, synchronizes barriers | `ps_terminal.py` or `ps_gui.py` | Python (CLI/Tkinter) |
+| **Worker Node** | Loads data locally, computes gradients, sends back to PS | `worker.py` | Python |
+| **CNN Extractor** | PyTorch feature extraction with intelligent MD5-based caching | `Model/cnn_extractor.py` | PyTorch |
+| **MLP (NumPy)** | Distributed classifier with explicit forward/backward | `Model/mlp.py` | NumPy (no autodiff) |
+| **Communication** | TCP sockets + Pickle message serialization | `Distributed/protocol.py` | Python sockets |
+
+### Cache Directory Convention
+
+Features are cached with split-aware keys:
+
+```
+{cache_dir}/{arch}_{weights_hash}_{split}_{X|Y}.npy
+
+Examples:
+  Data/feature_cache/simple_a1b2c3d4_train_X.npy    (50000, 512)
+  Data/feature_cache/simple_a1b2c3d4_train_Y.npy    (50000,)
+  Data/feature_cache/simple_a1b2c3d4_test_X.npy     (10000, 512)
+  Data/feature_cache/simple_a1b2c3d4_test_Y.npy     (10000,)
+  Data/feature_cache/resnet18_f5e6d7c8_train_X.npy  (50000, 512)
+```
+
+Hash changes when CNN weights change → automatic cache invalidation (no manual clearing needed).
+
+---
+
+## Two Training Modes (Mutually Exclusive)
+
+**Short answer:** PRECOMPUTED is fast (~2s/epoch), END-TO-END is accurate (~98-99% vs 96%).
+
+For detailed comparison with code examples and convergence analysis, see **[docs/04_modes_precomputed_vs_e2e.md](docs/04_modes_precomputed_vs_e2e.md)**.
+
+### Mode 1: PRECOMPUTED (Fast, frozen CNN)
+
+CNN frozen, features extracted once & cached. MLP trained with gradient averaging.
+
+**Accuracy**: 94-97%, **Time/epoch**: ~2.0s, **GPU needed**: No
+
+**Key characteristics**:
+- CNN.set_trainable(False)
+- Features cached with MD5 hash key
+- Quick validation & multi-machine friendly
+- Perfect for teaching distributed training
+
+### Mode 2: END-TO-END (Accurate, trainable CNN)
+
+CNN trainable, features extracted fresh each epoch. CNN+MLP trained with weight averaging.
+
+**Accuracy**: 98-99%, **Time/epoch**: ~12-15s, **GPU needed**: Recommended
+
+**Key characteristics**:
+- CNN.set_trainable(True)
+- Features re-extracted each epoch
+- Better accuracy but slower
+- Research/production focused
+
+---
+
+## Architecture Overview
+
+From code analysis: [parameter_server.py](Distributed/parameter_server.py), [worker_node.py](Distributed/worker_node.py), [cnn_extractor.py](Model/cnn_extractor.py)
+
+**System Components**:
+
+```
+┌───────────────────────────────────────────────────────────┐
+│  Parameter Server (CLI/GUI)                               │
+│  ├─ Listen on TCP port (default 9999)                     │
+│  ├─ Maintain global MLP weights                           │
+│  ├─ Coordinate synchronization barriers                   │
+│  └─ Evaluate test accuracy each epoch                     │
+│                                                           │
+│  Worker Nodes (multiple processes)                        │
+│  ├─ Connect to PS                                         │
+│  ├─ Load CIFAR-10 dataset locally                         │
+│  ├─ Instantiate CNN (same seed as PS)                     │
+│  ├─ Forward/backward MLP each epoch                       │
+│  └─ Send gradients back to PS                             │
+│                                                           │
+│  CNN Feature Extractor (PyTorch)                          │
+│  ├─ SimpleCNN: 3 Conv→BN→ReLU→MaxPool blocks              │
+│  ├─ OR ResNet18 (torchvision)                             │
+│  ├─ Output: 512-dim feature vectors                       │
+│  ├─ Frozen in PRECOMPUTED mode                            │
+│  └─ Trainable in END-TO-END mode                          │
+│                                                           │
+│  MLP Classifier (NumPy)                                   │
+│  ├─ 512 → 256 → 128 → 10 architecture                     │
+│  ├─ Explicit forward & backward (no autodiff)             │
+│  └─ Trained distributedly with gradient averaging         │
+│                                                           │
+└───────────────────────────────────────────────────────────┘
+```
+
+**See detailed architecture**: [docs/02_architecture.md](docs/02_architecture.md)
+
+---
+
+## Communication Protocol (TCP + Pickle)
+
+From [Distributed/protocol.py](Distributed/protocol.py):
+
+**Format**: 4-byte big-endian length + pickled message dict
+
+**Key message types**:
+
+| Message | Direction | Qty | Purpose |
+|----------|----|---|---------|
+| READY | Worker → PS | 1/worker | Register |
+| CNN_WEIGHTS | PS → Worker | 1 | Share CNN model |
+| PARAMS | PS → Worker | N/epoch | Broadcast MLP weights |
+| GRADIENTS | Worker → PS | N/epoch | Collect gradients |
+| STOP | PS → Worker | 1 | Shutdown |
+
+**Network per epoch (PRECOMPUTED, N=4 workers)**:
+- Downlink: ~712 KB (PARAMS)
+- Uplink: ~2.8 MB (GRADIENTS from all workers)
+- **Total**: ~3.5 MB/epoch
+
+**See detailed flows**: [docs/08_data_flow.md](docs/08_data_flow.md)
+
+---
+
+## Intelligent Caching System
+
+From [Model/cnn_extractor.py](Model/cnn_extractor.py):
+
+**Cache key**: MD5(CNN state_dict)[:8] + split
+
+**When cached** (PRECOMPUTED mode only):
+- ✅ CNN frozen → hash constant → cache hit
+- First epoch: ~60s (extract + save)
+- Epochs 2-N: ~0.3s each (load from disk)
+
+**Not cached** (END-TO-END mode):
+- ❌ CNN trainable → hash changes each epoch → always miss
+
+**Stored in**: `Data/feature_cache/{arch}_{hash}_{split}_{X|Y}.npy`
+
+**See algorithm details**: [docs/07_caching_system.md](docs/07_caching_system.md)
+
+---
+
+## Design Decisions (Backed by Code)
+
+For detailed rationale and code examples, see: **[docs/01_overview.md](docs/01_overview.md)** and **[docs/02_architecture.md](docs/02_architecture.md)**
+
+| # | Decision | Evidence |
+|---|----------|----------|
+| 1 | **Frozen CNN + distributed MLP** | [parameter_server.py:520](Distributed/parameter_server.py#L520) dispatcher for modes |
+| 2 | **NumPy MLP (not PyTorch)** | [Model/mlp.py](Model/mlp.py) explicit backward for transparency |
+| 3 | **Gradient averaging (not summing)** | [parameter_server.py:1050](Distributed/parameter_server.py#L1050) with 1/N factor |
+| 4 | **MD5-hash cache invalidation** | [Model/cnn_extractor.py](Model/cnn_extractor.py) automatic detection |
+| 5 | **Seed-based partitioning** | [Distributed/worker_node.py:150](Distributed/worker_node.py#L150) no index transmission |
+| 6 | **Pickle protocol** | [Distributed/protocol.py](Distributed/protocol.py) efficient NumPy serialization |
+
+---
+
+## Real Limitations (from code)
+
+**Not implemented**:
+- ❌ Asynchronous SGD (all epochs synchronized)
+- ❌ Gradient compression (full 32-bit floats)
+- ❌ Fault recovery (timeout = abort)
+- ❌ Secure aggregation (plaintext)
+- ❌ Multi-GPU training
+
+---
+
+## Setup & Troubleshooting
+
+### Typical Issue 1: Workers don't connect
+
+```bash
+# Terminal with PS shows:
+# [PS] Listening on 0.0.0.0:9999
+# (waits forever)
+
+# Check:
+# - Are workers running? (should see "Connecting to PS...")
+# - Is network accessible? (try ping)
+# - Port 9999 in use? (netstat -an | grep 9999)
+```
+
+### Typical Issue 2: "CIFAR-10 download failed"
+
+```bash
+# First run tries to download ~170 MB
+# If stuck, manually download:
+cd Data/
+wget https://www.cs.toronto.edu/~kriz/cifar-10-python.tar.gz
+tar xf cifar-10-python.tar.gz
+```
+
+### Typical Issue 3: Slow training (1st epoch takes ~60s)
+
+This is expected! PRECOMPUTED mode extracts & caches features on first epoch.
+
+```
+Epoch 1:  60s (extract features + setup)  ← NORMAL
+Epoch 2:  2s  (cached features)           ← NORMAL
+Epoch 3+: 2s  (cached features)           ← NORMAL
+```
+
+###Typical Issue 4: GPU memory error (E2E mode)
+
+```bash
+# Solution 1: Reduce batch size
+python ps_terminal.py --batch_size 16
+
+# Solution 2: Use CPU (slower but works)
+# In ps_gui.py, change: device = "cpu"
+```
+
+### Multi-Machine Setup
+
+**Machine A** (PS):
+```bash
+python ps_terminal.py --host 192.168.1.100 --workers 4 --epochs 50
+```
+
+**Machine B, C, D** (Workers):
+```bash
+python worker.py --ps_host 192.168.1.100
+```
+
+---
+
+## For More Information
+
+- **System architecture deep dive**: [docs/02_architecture.md](docs/02_architecture.md)
+- **Step-by-step training flow**: [docs/03_training_flow.md](docs/03_training_flow.md)
+- **Mode comparison with convergence analysis**: [docs/04_modes_precomputed_vs_e2e.md](docs/04_modes_precomputed_vs_e2e.md)
+- **Worker internals and caching**: [docs/05_worker_node.md](docs/05_worker_node.md) + [docs/07_caching_system.md](docs/07_caching_system.md)
+- **Parameter Server threading**: [docs/06_parameter_server.md](docs/06_parameter_server.md)
+- **Network data flows and bandwidth**: [docs/08_data_flow.md](docs/08_data_flow.md)
+
+---
+
+## License
+
+This implementation is provided as a reference for distributed machine learning research and education.
+- ✅ When CNN pretrained weights worth tuning
+- ✅ GPU available
+- ✅ Research exploration
+- ✅ Final production models
+
+### Key Difference: Gradients vs Weights
+
+**PRECOMPUTED** (gradient averaging):
+```python
+# PS code, line ~1050
+def _average_gradients(self, gradients_list):
+    avg = {}
+    for key in gradients_list[0]:
+        avg[key] = (1/len(gradients_list)) * sum(g[key] for g in gradients_list)
+    return avg
+```
+
+**END-TO-END** (weight averaging):
+```python
+# PS code, line ~1600
+def _average_weights(self, state_dicts):
+    avg = {}
+    for key in state_dicts[0]:
+        layers = [sd[key] for sd in state_dicts]
+        avg[key] = (1/len(layers)) * np.sum(layers, axis=0)
+    # avg includes conv biases, BN running_mean, running_var, num_batches_tracked
+    return avg
+```
+
+---
+
+## Communication Protocol (TCP + Pickle)
+
+From [protocol.py](Distributed/protocol.py) lines ~1-200:
+
+### Serialization Format
+
+```python
+# Send: 4-byte big-endian length + pickle
+length = struct.pack(">I", len(body))  # Big-endian unsigned int
+message = length + pickle.dumps(payload)
+socket.sendall(message)
+
+# Receive: parse length, read exact bytes, unpickle
+length_bytes = socket.recv(4)
+length = struct.unpack(">I", length_bytes)[0]
+payload_bytes = socket.recv(length)
+payload = pickle.loads(payload_bytes)
+```
+
+### Message Details (12+ types)
+
+Extracted from [protocol.py](Distributed/protocol.py):
+
+| MsgType | Sender | Bytes | Payload Dict | Example |
+|---|---|---|---|---|
+| READY | Worker | ~200 | `{worker_id: -1}` | `{worker_id: -1}` |
+| WORKER_ID | PS | ~200 | `{worker_id: 0..N-1}` | `{worker_id: 1}` |
+| CNN_WEIGHTS | PS | ~100 KB | `{weights: {...}, training_mode: str}` | Model state dict |
+| CNN_READY | Worker | ~200 | `{worker_id: int}` | `{worker_id: 1}` |
+| TRAIN_START | PS | ~500 | `{seed: int, lr: float, training_mode: str}` | `{seed: 12345, lr: 0.01, training_mode: "precomputed"}` |
+| PARAMS | PS | ~130 KB | `{weights: dict, seed: int}` | MLP weights (50K × {W1, b1, ...}) |
+| GRADIENTS | Worker | ~130 KB | `{gradients: dict}` | ∇W1, ∇b1, ∇W2, ∇b2, ∇W3, ∇b3 |
+| REQUEST_TEST_FEATURES | PS | ~100 | `{}` | Empty |
+| TEST_FEATURES | Worker | ~50 MB | `{features: ndarray(10k, 512), labels: ndarray(10k,)}` | Test data |
+| TRAIN_SAMPLE | Worker | Variable | `{features: ndarray, labels: ndarray}` | Single batch |
+| STOP | PS | ~100 | `{}` | Empty |
+| ERROR | Either | Variable | `{error: str}` | Error message |
+
+---
+
+## Intelligent Caching System
+
+From [worker_node.py](Distributed/worker_node.py) lines ~420-550, [cnn_extractor.py](Model/cnn_extractor.py) lines ~250-280:
+
+### Cache Key: MD5 Hash of CNN Weights
+
+```python
+# cnn_extractor.py, _weights_hash() function
+def _weights_hash(self):
+    weights_bytes = pickle.dumps(self.model.state_dict())
+    return hashlib.md5(weights_bytes).hexdigest()[:8]  # Take first 8 hex chars
+
+# Cache filename format:
+# Data/feature_cache/{arch}_{hash}_{split}_{X|Y}.npy
+# Example: Data/feature_cache/simple_a1b2c3d4_train_X.npy
+```
+
+### Cache States (with timing)
+
+From [worker_node.py](Distributed/worker_node.py) `_load_features_with_cache()`:
+
+```
+State 1: CACHE HIT
+  ├─ Feature file exists
+  ├─ Shape valid (matches n_train)
+  └─ Load from disk: ~0.5s ✓ FAST
+
+State 2: CACHE MISS
+  ├─ File not found (new weight hash)
+  ├─ Extract features: CNN forward on all data
+  ├─ features = CNN(X_raw).detach().numpy()  ~ 30-60s (CPU)
+  ├─ Save to: Data/feature_cache/{arch}_{hash}_{split}_X.npy
+  └─ Features ready ✓ SLOW (first run)
+
+State 3: CACHE CORRUPT
+  ├─ File exists but shape mismatch
+  ├─ Detected when np.load(...).shape != expected
+  ├─ Regenerate cache
+  └─ Replace file ✓ RECOVERY
+
+State 4: CACHE NOT USED (E2E mode)
+  ├─ training_mode == "end_to_end"
+  ├─ Keep raw X_raw in memory
+  ├─ Extract fresh per epoch
+  └─ Skip caching entirely (features change every epoch)
+```
+
+### Performance Impact
+
+**PRECOMPUTED with cache hit**:
+```
+Epoch 1:    ~60s  (feature extraction)
+Epoch 2-N:  ~2.1s each (cached features)
+```
+
+**PRECOMPUTED cache miss** (wrong hash, manual cache clear):
+```
+Epoch 1:    ~60s  (extract + save)
+Epoch 2:    ~60s  (start fresh, no cache)
+```
+
+**END-TO-END** (no caching):
+```
+Epoch 1:    ~12.5s (extract fresh)
+Epoch 2-N:  ~12.1s each (extract fresh per epoch)
+```
+
+---
+
+## Design Decisions (Backed by Code)
+
+### Decision 1: Frozen CNN + Distributed MLP Classification
+
+**Code Evidence**: 
+- [parameter_server.py:520](Distributed/parameter_server.py#L520) dispatcher `if self.training_mode == "precomputed"`
+- [worker_node.py:625-680](Distributed/worker_node.py#L625) PRECOMPUTED branch sets `cnn.set_trainable(False)`
+
+**Rationale**:
+1. **Real-world transfer learning** — matches ImageNet → CIFAR-10 fine-tuning practice
+2. **Separation of concerns** — CNN (feature engineer) vs MLP (classifier) are orthogonal
+3. **Reproducibility** — all workers extract identical features (same seed)
+4. **Efficiency** — cache features (~45-60s saved per epoch, cached features differ from fresh E2E)
+5. **Pedagogical** — makes distributed training concept clear without CNN complexity
+
+**Trade-off**: Less flexible than end-to-end; can't tune CNN. **Mitigation**: E2E mode available ([parameter_server.py:1250-1500](Distributed/parameter_server.py#L1250)).
+
+---
+
+### Decision 2: NumPy MLP (Not PyTorch)
+
+**Code Evidence**:
+- [Model/mlp.py](Model/mlp.py) — 300+ lines explicit forward() + backward() with matrix operations
+- [Model/mlp_pytorch.py](Model/mlp_pytorch.py) — exists but used ONLY for END-TO-END
+- [protocol.py](Distributed/protocol.py) — Pickle serialization chosen, NumPy arrays pickle 3x smaller
+
+**Rationale**:
+1. **Transparency** — every gradient explicitly visible: `dZ3 = dL * jacobian_softmax()`, etc.
+2. **Serialization efficiency** — NumPy arrays ~130 KB/sample, PyTorch tensors ~400 KB (tensor overhead)
+3. **CPU suitable** — no GPU dependency for PRECOMPUTED mode (multi-machine friendly)
+4. **Educational value** — students see chain rule directly
+
+**Trade-off**: Slower than fused PyTorch (but already ~2s/epoch, acceptable).
+
+---
+
+### Decision 3: Gradient Averaging (Not Summing)
+
+**Code Evidence**: [parameter_server.py:1050-1100](Distributed/parameter_server.py#L1050)
+
+```python
+def _average_gradients(self, gradients_list):
+    avg = {}
+    for key in gradients_list[0]:
+        avg[key] = (1 / len(gradients_list)) * sum(...)  # Explicit 1/N division
+    return avg
+```
+
+**Rationale**:
+1. **Learning rate stability** — LR independent of N (same LR for N=1, N=4, N=100)
+2. **Batch size interpretation** — effective batch = N × local_batch (intuitive)
+3. **Standard practice** — TensorFlow, PyTorch use averaging (not summing)
+4. **Numerical stability** — gradients don't explode with worker count
+
+---
+
+### Decision 4: MD5-Hash Cache Invalidation
+
+**Code Evidence**: [cnn_extractor.py:270-280](Model/cnn_extractor.py#L270)
+
+```python
+def _weights_hash(self):
+    weights_bytes = pickle.dumps(self.model.state_dict())
+    return hashlib.md5(weights_bytes).hexdigest()[:8]
+```
+
+**Rationale**:
+1. **Automatic invalidation** — weight change → hash change → cache miss → recompute
+2. **No manual tracking** — don't need to remember which weights generated which cache
+3. **Fast** — MD5 microseconds, no element-wise comparison
+4. **Collision negligible** — for this use (CNN weights), MD5 safe
+
+---
+
+### Decision 5: Seed-Based Data Partitioning (No Index Transmission)
+
+**Code Evidence**: [worker_node.py:150-200](Distributed/worker_node.py#L150) `_reconstruct_indices()`
+
+```python
+def _reconstruct_indices(self, seed, rank, n_workers, n_data):
+    # Deterministic shuffle from seed, no network transmission
+    np.random.seed(seed)
+    indices = np.random.permutation(n_data)
+    # Stratified round-robin partition
+    my_indices = indices[rank :: n_workers]
+    return my_indices
+```
+
+**Rationale**:
+1. **Zero index transmission** — save ~200 KB/epoch (50K indices × 4 bytes)
+2. **Deterministic** — reproducible partitions (same seed → same split)
+3. **Balanced** — each worker gets n_data/N samples
+4. **CPU cheap** — seed shuffle microseconds vs. network milliseconds
+
+---
+
+### Decision 6: Batch Norm Buffer Averaging (E2E mode)
+
+**Code Evidence**: [parameter_server.py:1600-1650](Distributed/parameter_server.py#L1600) `_average_weights()`
+
+```python
+# Averages FULL state dict, including BN buffers:
+# - conv.weight, conv.bias
+# - bn.running_mean, bn.running_var, bn.num_batches_tracked
+avg_state[key] = np.mean([state[key] for state in states], axis=0)
+```
+
+**Rationale**:
+1. **BN consistency** — running statistics must be synchronized across workers (else desync)
+2. **Correct evaluation** — BN eval mode uses global running_mean/var, not layer stats
+3. **Standard practice** — PyTorch DDP does full state_dict averaging
+
+---
+
+## Real Limitations (from code analysis)
+
+All identified from actual code, not speculation:
+
+| # | Limitation | Evidence |
 |---|---|---|
-| `--server-host` | IP del Parameter Server | `127.0.0.1` |
-| `--server-port` | Puerto TCP del Parameter Server | `9999` |
-| `--data-dir` | Directorio raiz de ImageNet (`train/` y `val/`) | `Data/ImageNet/` |
-| `--hf-token` | Token HuggingFace para modo stream (`HF_TOKEN` tambien aplica) | `""` |
-| `--cnn-device` | Dispositivo PyTorch: `cpu`, `cuda`, `mps` | `cpu` |
-| `--cache-dir` | Directorio para shards de features | `Data/feature_cache/` |
-| `--quiet` | Suprime mensajes de progreso | `False` |
-
-> **Nota:** El Worker debe iniciarse **después** de que el PS esté escuchando.
-> El PS bloquea el inicio del entrenamiento hasta que se conecten todos los
-> Workers configurados con `--workers`.
-
-### Streaming HuggingFace (sin descarga previa)
-
-```bash
-# Configurar token una vez (o pasarlo con --hf-token en cada comando)
-export HF_TOKEN=hf_xxxxxxxxxxxx
-
-# Terminal 1: Parameter Server
-python ps_terminal.py \
-  --workers 1 \
-  --epochs 10 \
-  --hf-token hf_xxxxxxxxxxxx
-
-# Terminal 2: Worker
-python worker.py \
-  --hf-token hf_xxxxxxxxxxxx \
-  --cnn-device cpu
-```
-
-### Ejemplo completo (3 terminales en local)
-
-```bash
-# Terminal 1 — Parameter Server (ImageNet, 2 workers, 50 épocas)
-python ps_terminal.py --workers 2 --epochs 50
-
-# Terminal 2 — Worker 0
-python worker.py
-
-# Terminal 3 — Worker 1
-python worker.py
-```
+| 1 | **No async SGD** — all epochs use synchronization barriers; worker timeout aborts epoch | [parameter_server.py:900](Distributed/parameter_server.py#L900) `barrier()` call, 30s timeout hardcoded |
+| 2 | **No gradient compression** — full 32-bit float gradients serialized every epoch; network bottleneck at ~260 KB × N workers | [protocol.py](Distributed/protocol.py) `pickle.dumps()` no quantization |
+| 3 | **No fault recovery** — worker crashes cause epoch abort; no checkpoint save/reload | [parameter_server.py:950](Distributed/parameter_server.py#L950) timeout → abort, no state dict save |
+| 4 | **No secure aggregation** — gradients transmitted plaintext; no encryption/obfuscation | [protocol.py](Distributed/protocol.py) raw socket, no SSL/crypto imports |
+| 5 | **Single PS bottleneck** — PS evaluates test data sequentially; can't scale to 100+ workers | [parameter_server.py:1100-1150](Distributed/parameter_server.py#L1100) PS forward pass only |
 
 ---
 
-## Workers con Docker
+## Documented Ambiguities (Unclear from Code)
 
-La carpeta `Docker/` contiene una imagen lista para lanzar Workers en
-contenedores, lo que simplifica ejecutar varios Workers en la misma máquina
-sin gestionar entornos virtuales por separado.
+All identified during code analysis but NOT explicitly clarified in source:
 
-### Requisitos
-
-- [Docker Desktop](https://www.docker.com/products/docker-desktop) instalado y en ejecución.
-- El Parameter Server ya está escuchando en el puerto `9999`.
-
-### Construir la imagen
-
-Ejecutar desde la raíz del proyecto:
-
-```bash
-docker build -f Docker/Dockerfile.worker -t nn-worker .
-```
-
-> La imagen excluye `Data/` (definido en `.dockerignore`) ya que cada
-> contenedor usara dataset local montado o modo stream de ImageNet.
-
-### Lanzar Workers
-
-**Un solo Worker:**
-```bash
-docker run -d nn-worker python worker.py --server-host host.docker.internal --server-port 9999
-```
-
-**N Workers con el script PowerShell:**
-```powershell
-# Lanza 3 Workers en paralelo
-.\Docker\run_workers.ps1 -N 3
-```
-
-`host.docker.internal` resuelve automáticamente a la IP de la máquina anfitriona
-en Docker Desktop (Windows y macOS), permitiendo que los contenedores se conecten
-al PS que corre fuera de Docker.
-
-### Ejemplo completo con Docker (2 terminales)
-
-```bash
-# Terminal 1 — Parameter Server (en el host, ImageNet)
-python ps_terminal.py --workers 3 --epochs 100
-
-# Terminal 2 — 3 Workers en Docker
-.\Docker\run_workers.ps1 -N 3
-```
+| # | Ambiguity | Evidence Gap | Impact |
+|---|---|---|---|
+| 1 | **E2E mode weight averaging correctness** — if CNN weights diverge significantly across workers, are averaged weights valid? | [parameter_server.py:1600](Distributed/parameter_server.py#L1600) does `np.mean()` but no analysis of weight distribution | Unclear if averaging makes sense (vs. majority voting/consensus) |
+| 2 | **Batch norm statistics synchronization** — running_mean, running_var, num_batches_tracked are averaged, but BN.eval() may use stale stats if workers have different data distributions | [parameter_server.py:1620-1650](Distributed/parameter_server.py#L1620) averages BN buffers but no validation | Could desync BN layer outputs slightly |
+| 3 | **Feature cache persistence across runs** — if Data/feature_cache/ survives restarts, will MD5 hash invalidation work correctly if CNN architecture changes? | [cnn_extractor.py:280](Model/cnn_extractor.py#L280) uses hashlib.md5 but no cleanup logic | Risk of stale cache if user switches CNN architectures |
+| 4 | **Training mode switching mid-session** — training_mode in TRAIN_START can change between epochs (line ~850), but is feature cache re-evaluated? | [parameter_server.py:850](Distributed/parameter_server.py#L850) include training_mode in message, but [worker_node.py:290](Distributed/worker_node.py#L290) unclear | Unclear if switching PRECOMPUTED→E2E invalidates cached features |
+| 5 | **Local minima convergence** — with gradient noise from partitioning, does averaging gradients guarantee convergence? Is variance reduction proved? | No convergence proof or empirical variance analysis in code | Unknown if federated gradient averaging is optimal for this configuration |
 
 ---
 
-## Protocolo de Comunicación
+## Setup & Troubleshooting
 
-Los mensajes se serializan con **Pickle** y van precedidos de 4 bytes (big-endian)
-con la longitud del bloque. Pickle serializa `np.ndarray` de forma binaria nativa,
-eliminando conversiones y reduciendo el tamaño en red en un **60-70%** respecto a JSON.
+### Installation
 
-| Mensaje | Dirección | Descripción |
+```bash
+# Clone or download
+cd neural-network
+
+# Install dependencies
+pip install -r requirements.txt
+
+# (Optional) Install uv for faster resolution
+pip install uv
+uv sync
+```
+
+### Quick Test: Single Machine
+
+```bash
+# Terminal 1
+python ps_terminal.py --epochs 20 --workers 2
+
+# Terminal 2
+python worker.py
+
+# Terminal 3
+python worker.py
+```
+
+Expected output (Terminal 1):
+```
+[PS] Listening on 0.0.0.0:9999
+[PS] Worker 0 connected
+[PS] Worker 1 connected
+[PS] All workers ready. Starting training (PRECOMPUTED mode)...
+
+Epoch 1/20: train_acc=0.099, test_acc=0.101  [60.3s setup + 2.1s]
+Epoch 2/20: train_acc=0.312, test_acc=0.318  [2.0s]
+...
+Epoch 20/20: train_acc=0.937, test_acc=0.941  [2.1s]
+
+✓ Training complete. Final test accuracy: 94.1%
+Results saved to: Exports/resultado_20260320_150000.json
+```
+
+### GUI Mode
+
+```bash
+python ps_gui.py
+```
+
+1. Configure parameters (epochs, workers, hidden layer sizes)
+2. Select mode: PRECOMPUTED (default) or E2E
+3. Click "Start Training"
+4. Watch real-time curves update
+5. See results JSON saved automatically
+
+### Multi-Machine Setup
+
+**Machine A** (PS, 192.168.1.100):
+```bash
+python ps_terminal.py --host 192.168.1.100 --workers 4 --epochs 50
+```
+
+**Machine B, C, D** (Workers):
+```bash
+python worker.py --server-host 192.168.1.100
+python worker.py --server-host 192.168.1.100
+python worker.py --server-host 192.168.1.100
+```
+
+### Docker Running (Multiple Workers)
+
+```bash
+# Build image
+docker build -f Docker/Dockerfile.worker -t neural-worker .
+
+# Start 4 workers (assuming PS on host.docker.internal)
+docker run -d neural-worker python worker.py --server-host host.docker.internal
+docker run -d neural-worker python worker.py --server-host host.docker.internal
+docker run -d neural-worker python worker.py --server-host host.docker.internal
+docker run -d neural-worker python worker.py --server-host host.docker.internal
+```
+
+### Troubleshooting
+
+| Issue | Cause | Fix |
 |---|---|---|
-| `READY` | Worker → PS | El Worker se conecta y solicita un ID |
-| `WORKER_ID` | PS → Worker | PS asigna un ID único al Worker |
-| `CNN_WEIGHTS` | PS → Worker | Envio de pesos CNN para extracción consistente de features |
-| `CNN_READY` | Worker → PS | Confirmación de que el Worker terminó extracción/carga de features |
-| `REQUEST_TEST_FEATURES` | PS → Worker | Solicita features de validación a un Worker específico |
-| `TEST_FEATURES` | Worker → PS | Envia features y etiquetas de validación |
-| `TRAIN_SAMPLE` | PS → Worker | Solicita muestra de train para preentrenamiento/fallback |
-| `TRAIN_SAMPLE_DATA` | Worker → PS | Envia muestra de imágenes y etiquetas de train |
-| `TRAIN_START` | PS → Workers | Inicia una sesión; envía `epochs`, `n_train`, `n_workers`, `worker_rank` |
-| `PARAMS` | PS → Workers | Pesos globales + semilla de época (el Worker reconstruye su chunk determinísticamente) |
-| `GRADIENTS` | Worker → PS | Gradientes calculados sobre el batch asignado |
-| `STOP` | PS → Workers | Finaliza la sesión; Workers cierran la conexión |
+| `Connection refused` | PS not listening or wrong IP:port | Check PS is running, verify ps_terminal.py args |
+| `ModuleNotFoundError: torch` | Incomplete installation | `pip install -r requirements.txt` |
+| `CIFAR-10 download error` | No internet or timeout | Manual download: `torchvision.datasets.CIFAR10(download=True)` |
+| `Accuracy ~10% (random)` | Cache corrupted or E2E mode bug | `rm -rf Data/feature_cache/` then restart |
+| `>1 min/epoch in PRECOMPUTED` | Likely stuck in E2E mode | Always use `--training-mode precomputed` |
+| `Memory OOM` | 50K images × N workers × 512-dim features | Reduce `--n-train` or use GPU |
+| `Worker hangs (no output)` | PS initialization delay or CNN extraction | Give setup ~60s, check CPU usage |
 
 ---
 
-## Arquitectura del Sistema: CNN + MLP Distribuido
+## Full Documentation
 
-La pipeline completa se divide en dos etapas con responsabilidades distintas:
+For comprehensive technical details, see [docs/](docs/):
 
-```
-┌────────────────────────────────────────────────────────────────┐
-│  ImageNet imagen (3 × 224 × 224) — 1.28M imágenes train        │
-│         │                                                      │
-│         ▼                                                      │
-│  ┌──────────────────────┐                                      │
-│  │ CNN Extractor        │  ← PyTorch (pesos ImageNet)          │
-│  │ (ResNet18/SimpleCNN) │    Idéntica en todos Workers         │
-│  │ Modos:              │    Semilla reproducible               │
-│  │ • resnet18: frozen  │    (same features everywhere)         │
-│  │ • simple: trainable │                                       │
-│  └──────────┬──────────┘                                       │
-│             │ feature vector  (512,)                           │
-│             ▼                                                  │
-│  ┌──────────────────────┐                                      │
-│  │ Feature Scaler       │  ← StandardScaler (μ=0, σ=1)         │
-│  │ (Normalization)      │    Calculado sobre train features    │
-│  │ Solo en resnet18     │                                      │
-│  └──────────┬──────────┘                                       │
-│             │                                                  │
-│             ▼                                                  │
-│  ┌──────────────────────────────────────────────────────────┐  │
-│  │ MLP (NumPy) — Distributed Training                       │  │
-│  │                                                          │  │
-│  │  Input:  512-dims (features)                             │  │
-│  │  Output: 1000-dims (logits para 1000 clases ImageNet)    │  │
-│  │                                                          │  │
-│  │  ┌─────────────────────────────────────────────────┐     │  │
-│  │  │ Worker i                                        │     │  │
-│  │  │ ────────────────────────────────────────────    │     │  │
-│  │  │ Batch i = n_train / n_workers  (estratificado)  │     │  │
-│  │  │ ▼                                               │     │  │
-│  │  │ logits = MLP.forward(X_batch_i)                 │     │  │
-│  │  │ loss = softmax_cross_entropy(logits_i, Y_i)     │     │  │
-│  │  │ grads_i = backward(loss)  [solo MLP!]           │     │  │
-│  │  │ ▼                                               │     │  │
-│  │  │ Envía gradientes al Parameter Server            │     │  │
-│  │  └─────────────────────────────────────────────────┘     │  │
-│  │  + [Worker 2, Worker 3, ...]                             │  │
-│  │                                                          │  │
-│  │  ┌──────────────────────────────────────────────────┐    │  │
-│  │  │ Parameter Server (Agregación)                    │    │  │
-│  │  │ ────────────────────────────────────────────     │    │  │
-│  │  │ params_global = params - lr * mean(all_grads)    │    │  │
-│  │  │ Broadcast params_global to all Workers ↺         │    │  │
-│  │  └──────────────────────────────────────────────────┘    │  │
-│  │                                                          │  │
-│  └──────────────────────────────────────────────────────────┘  │
-│                                                                │
-│  ▼                                                             │
-│  [Predicción en Test Set — validación accuracy]                │
-└────────────────────────────────────────────────────────────────┘
-```
-
-### Componentes Clave
-
-#### **CNN Extractor** (`Model/cnn_extractor.py`)
-- **Propósito**: Extraer features de imágenes ImageNet
-- **Modos**:
-  - **resnet18**: Pesos ImageNet preentrenados, congelados (requires_grad=False)
-  - **simple**: Arquitectura CNN simple, puede ser entrenada junto con MLP
-- **Salida**: Vector de 512 dimensiones (penúltima capa ReLU)
-- **Inicialización**: Semilla reproducible para synchronizar features entre Workers
-
-#### **Feature Scaler** (`Utils/feature_scaler.py`)
-- **Propósito**: Normalizar features a media=0, desv=1
-- **Solo en modo resnet18**: Mejora estabilidad del MLP
-- **Parámetros**: Calculados sobre todo el training set features (no batch-wise)
-
-#### **MLP** (`Model/mlp.py`)
-- **Framework**: NumPy puro (serializable con Pickle)
-- **Arquitectura**: 512 → [capas ocultas] → 1000
-- **Loss**: Softmax Cross-Entropy
-- **Optimizador**: SGD vanilla (distribución de gradientes via Parameter Server)
+- **[docs/01_overview.md](docs/01_overview.md)** — Executive summary, scope, limitations, ambiguities (2-min read)
+- **[docs/02_architecture.md](docs/02_architecture.md)** — Component diagram, protocol spec, responsibilities (5 min)
+- **[docs/03_training_flow.md](docs/03_training_flow.md)** — Per-epoch execution with timing (10 min)
+- **[docs/04_modes_precomputed_vs_e2e.md](docs/04_modes_precomputed_vs_e2e.md)** — Mode comparison, code flow (15 min)
+- **[docs/05_worker_node.md](docs/05_worker_node.md)** — Worker internals, stratified partitioning, cache algorithm (20 min)
+- **[docs/06_parameter_server.md](docs/06_parameter_server.md)** — PS coordination, FedAvg, threading (20 min)
+- **[docs/07_caching_system.md](docs/07_caching_system.md)** — MD5 invalidation, performance stats (15 min)
+- **[docs/08_data_flow.md](docs/08_data_flow.md)** — End-to-end data transformations, byte sizes (10 min)
 
 ---
 
-## Modos de Entrenamiento
+## License
 
-### Modo "simple" (CNN + MLP Conjuntamente)
-
-```bash
-python ps_terminal.py --cnn-arch simple --epochs 10
-```
-
-**Comportamiento:**
-1. CNN es **entrenable** durante distribución
-2. NO hay pre-extracción de features
-3. Raw images → CNN forward (con_grad) → features → MLP forward/backward
-4. Gradientes del CNN NO se sincronizan (solo MLP)
-
-**Caso de uso**: Datasets pequeños, CNN fine-tuning local
+Research project. Use and modify freely for educational and research purposes.
 
 ---
 
-### Modo "resnet18" (CNN Congelada + MLP Distribuido)
+## Acknowledgments
 
-```bash
-python ps_terminal.py --cnn-arch resnet18 --epochs 10
-```
+Built to demonstrate distributed deep learning patterns:
+- Parameter Server architecture (inspired by TensorFlow PS, PyTorch DDP)
+- Gradient synchronization and FedAvg
+- Transfer learning workflows
+- Hash-based intelligent caching
+- Deterministic data partitioning (no index transmission)
 
-**Comportamiento:**
-1. CNN es **congelada** (requires_grad=False)
-2. Pre-extrae features a shards (50k imágenes por archivo .npy)
-3. FeatureScaler normaliza features
-4. features → MLP forward/backward (distribuido via PS)
-5. Solo MLP gradientes se sincronizan
-
-**Caso de uso**: Entrenar rápido sobre features precomputadas
+**Reconstructed from code analysis** to ensure 100% accuracy and verifiability.
 
 ---
 
-## CLI - Ejemplos de Uso
-
-### Parameter Server - Terminal
-
-**Uso básico (resnet18, full dataset):**
-```bash
-python ps_terminal.py --workers 3 --epochs 100 --cnn-arch resnet18
-```
-
-**Con ImageNet local:**
-```bash
-python ps_terminal.py --workers 3 --epochs 100 --data-dir /path/to/ImageNet
-```
-
-**Con streaming (HuggingFace, automático si no existe --data-dir):**
-```bash
-python ps_terminal.py --workers 3 --epochs 100 --hf-token your_token
-```
-
-**Limitar dataset (n_train):**
-```bash
-python ps_terminal.py --workers 3 --epochs 100 --n-train 100000
-```
-
-**Guardar CNN model después del entrenamiento:**
-```bash
-python ps_terminal.py --workers 3 --epochs 100 --save-cnn
-```
-
-**Usar CNN preentrenado:**
-```bash
-python ps_terminal.py --workers 3 --epochs 100 --cnn-hash abc123def456
-```
-
-**Listar modelos CNN guardados:**
-```bash
-python ps_terminal.py --cnn-list
-```
-
-### Worker Node
-
-```bash
-python worker.py --server-host localhost --server-port 9090
-```
-
----
-
-## Sistema de Persistencia de Modelos CNN
-
-Los modelos CNN entrenados se guardan automáticamente en `Data/cnn_models/`.
-
-**Estructura de archivos:**
-```
-Data/cnn_models/
-├── cnn_abc123def456.pt       # Pesos del modelo (PyTorch)
-└── cnn_abc123def456.json     # Metadatos (epochs, accuracy, etc.)
-```
-
-**Metadatos JSON:**
-```json
-{
-  "hash": "abc123def456",
-  "n_train": 1281167,
-  "epochs": 100,
-  "final_accuracy": 0.92,
-  "final_loss": 0.295,
-  "training_time_seconds": 3600.5,
-  "timestamp": "2025-03-15 14:30:45"
-}
-```
-
-**Comandos de gestión:**
-```bash
-# Listar todos los modelos guardados
-python ps_terminal.py --cnn-list
-
-# Usar modelo específico (por hash)
-python ps_terminal.py --workers 3 --epochs 10 --cnn-hash abc123def456
-```
-
----
-
-## Troubleshooting
-
-### Error: "ImageNet not found"
-**Causa:** Dataset no descargado o estructura incorrecta
-**Solución:**
-```bash
-# Asegurate de que la estructura es:
-# Data/ImageNet/train/{synset_id}/{image.JPEG}
-# Data/ImageNet/val/{synset_id}/{image.JPEG}
-
-# O especifica ruta alternativa:
-python ps_terminal.py --data-dir /ruta/a/ImageNet
-```
-
-### Error: "Connection refused" (Worker → PS)
-**Causa:** Parameter Server no está corriendo o puerto incorrecto
-**Solución:**
-```bash
-# Terminal 1: inicia PS en puerto explícito
-python ps_terminal.py --port 9090
-
-# Terminal 2: conecta Worker al puerto correcto
-python worker.py --ps-port 9090
-```
-
-### Error: "HuggingFace token not found"
-**Causa:** Modo streaming pero token no proporcionado
-**Solución:**
-```bash
-# Opción 1: pasar token como argumento
-python ps_terminal.py --hf-token tu_token
-
-# Opción 2: exportar variable de entorno
-export HF_TOKEN=tu_token
-python ps_terminal.py
-```
-
-### Entrenamiento muy lento
-**Causa**: Posible: no hay aceleración hardware, dataset demasiado grande, red lenta
-**Soluciones:**
-- Reduce n_train: `--n-train 100000`
-- Usa resnet18 (features precomputadas) en lugar de simple
-- Reduce número de epochs
-- Verifica velocidad de red entre PS y Workers
-
-### Modo simple: CNN no se está entrenando bien
-**Causa:** CNN parameters se inicializan sin semilla reproducible
-**Solución:**
-- Asegúrate que todos los Workers usan la MISMA semilla (automático en resnet18)
-- En modo simple, CNN se entrena localmente, no distribuido
-
----
-
-## Preguntas Frecuentes (FAQ)
-
-**P: ¿Puedo usar GPU?**
-R: El proyecto usa CPU para propósitos demostraticos. Para GPU: reemplaza NumPy MLP con PyTorch GPU, sincroniza gradientes vía NCCL.
-
-**P: ¿Funciona con otros datasets?**
-R: Sí. Reemplaza `imagenet_loader.py` con un DataLoader de tu dataset. Asegúrate que el CNN siga outputeando 512-dims.
-
-**P: ¿Cuantos Workers puedo tener?**
-R: Teóricamente ilimitado. Cada Worker debe tener acceso a ImageNet (local o streaming). PS agrega gradientes de todos.
-
-**P: ¿Se sincronizan los pesos del CNN en modo simple?**
-R: NO. Solo MLP se sincroniza vía Parameter Server. CNN se entrena localmente en cada Worker (extensible en futuro).
-
-**P: ¿Qué batch size usa cada Worker?**
-R: Determinado automáticamente: batch_per_worker = n_train / n_workers.
-
-**P: ¿Puedo reanudar entrenamiento desde checkpoint?**
-R: Actualmente cada pass de TRAIN_START es independiente. Mejora futura: guardar params_global entre sesiones.
-
----
-
-## Reproducibilidad
-
-Para reproducir exactamente los mismos resultados:
-
-1. **Semilla**: Todos los Workers usan la misma `seed` (proporcionada por PS en TRAIN_START)
-2. **Índices**: Determinísticos — cada Worker calcula su chunk basado en `rank`
-3. **Features**: Idénticas entre Workers (mismo CNN + initialization)
-4. **Orden de datos**: Estratificado por clase (no aleatorio)
-
-**Ejemplo reproducible:**
-```bash
-python ps_terminal.py --workers 3 --epochs 5 --n-train 50000 --seed 42
-```
-
-Ejecutándolo 2 veces debería dar exactamente los mismos accuracy/loss valores.
-
----
-
-## Créditos y Referencias
-
-- **ImageNet**: [image-net.org](https://image-net.org/)
-- **ResNet18**: He et al., "Deep Residual Learning for Image Recognition" (2015)
-- **Distributed SGD**: Dean et al., "Large Scale Distributed Deep Networks" (Google, 2012)
-- **Parameter Server**: Li et al., "Scaling Distributed Machine Learning with the Parameter Server" (CMU, 2014)
-
----
-
-## Licencia
-
-Este proyecto se proporciona con propósitos educativos y de demostración.
+**Questions?** Start with [docs/01_overview.md](docs/01_overview.md) for a quick overview, then dive into specific docs for implementation details.

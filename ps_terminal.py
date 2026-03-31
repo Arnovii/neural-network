@@ -65,17 +65,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from Distributed.parameter_server import ParameterServer
 from Model.cnn_extractor import CNNExtractor
 from Model.mlp import init_params
-from Utils.imagenet_loader import (
-    NUM_CLASSES,
-    detect_data_source,
-    load_imagenet_labels,
-    load_imagenet_labels_stream,
-)
-from Utils.cnn_model_manager import (
-    save_cnn_model,
-    load_cnn_model,
-    print_models,
-)
+from Utils.cifar_loader import NUM_CLASSES, load_cifar10_test
 from Utils.results_exporter import export_results
 
 
@@ -93,43 +83,44 @@ def _on_epoch_end(
     test_loss: float | None,
 ) -> None:
     """
-    Imprime en consola un resumen del estado del entrenamiento al finalizar una época.
+    Callback ejecutado al final de cada época — imprime resumen en consola.
 
-    Muestra una barra de progreso basada en la precisión de entrenamiento, junto con
-    las métricas principales de la época actual. Si se proporcionan métricas del
-    conjunto de prueba, también se incluyen en la salida.
+    :param epoch: Número de época actual (1-based, no 0-based).
+    :type epoch: int, ej. 1, 2, ..., 100.
 
-    :param epoch: Número de la época actual.
-    :type epoch: int
+    :param total: Total de épocas planificadas.
+    :type total: int.
 
-    :param total: Número total de épocas del entrenamiento.
-    :type total: int
+    :param train_acc: Precisión de entrenamiento en porcentaje 0-100.
+    :type train_acc: float, ej. 87.5.
 
-    :param train_acc: Precisión del modelo en el conjunto de entrenamiento (porcentaje).
-    :type train_acc: float
+    :param train_loss: Cross-entropy loss en entrenamiento.
+    :type train_loss: float, ej. 0.312.
 
-    :param train_loss: Valor de la función de pérdida en entrenamiento.
-    :type train_loss: float
+    :param test_acc: Precisión en conjunto de prueba. None si no hay evaluación.
+    :type test_acc: float | None, porcentaje 0-100 o None.
 
-    :param test_acc: Precisión en el conjunto de prueba en porcentaje. Si es ``None``,
-                     no se muestra en la salida.
-    :type test_acc: float | None
+    :param test_loss: Cross-entropy loss en prueba. Solo se usa si test_acc != None.
+    :type test_loss: float | None.
 
-    :param test_loss: Valor de la función de pérdida en el conjunto de prueba. Solo se
-                      utiliza cuando ``test_acc`` no es ``None``.
-    :type test_loss: float | None
-
-    :return: No retorna ningún valor; solo imprime información en consola.
-    :rtype: None
+    :return: None (solo imprime en consola).
+    :rtype: NoneType.
     """
+    # Barra de progreso: 20 caracteres, cada uno representa 5% (100/20)
+    # int(accuracy/5) convierte 0-100% a 0-20 caracteres llenos
     bar = "█" * int(train_acc / 5)
+    bar_padded = bar.ljust(20, "░")  # rellena con ░ hasta 20 caracteres
+
+    # Formato condicional: mostrar métricas de prueba solo si existen
     test_str = (
         f"  | precisión_prueba={test_acc:.2f}%  pérdida_prueba={test_loss:.4f}"
         if test_acc is not None
         else ""
     )
+
     print(
-        f"  [{bar:<20}] {train_acc:5.2f}%  pérdida={train_loss:.4f}{test_str}  ({epoch}/{total})"
+        f"  [{bar_padded}] {train_acc:5.2f}%  "
+        f"pérdida={train_loss:.4f}{test_str}  ({epoch}/{total})"
     )
 
 
@@ -178,8 +169,8 @@ def main() -> None:
     parser.add_argument(
         "--n-train",
         type=int,
-        default=None,
-        help="Total de ejemplos de entrenamiento (default: use full dataset ~1,281,167).",
+        default=50_000,
+        help="Total de ejemplos de entrenamiento (default: 50000, máx CIFAR-10 train)",
     )
     parser.add_argument(
         "--seed", type=int, default=None, help="Semilla aleatoria (default: ninguna)"
@@ -193,9 +184,9 @@ def main() -> None:
     parser.add_argument(
         "--cnn-arch",
         type=str,
-        default="resnet18",
+        default="simple",
         choices=["simple", "resnet18"],
-        help="Arquitectura CNN: simple (CNN propia entrenable) | resnet18 (pesos ImageNet). (default: resnet18)",
+        help="Arquitectura CNN: simple (preentrenada local) | resnet18 (pesos ImageNet, default: simple)",
     )
     parser.add_argument(
         "--cnn-device",
@@ -204,69 +195,12 @@ def main() -> None:
         help="Dispositivo PyTorch para la CNN: cpu, cuda, mps (default: cpu)",
     )
     parser.add_argument(
-        "--data-dir",
-        type=str,
-        default=None,
-        help="Directorio raíz de ImageNet con train/ y val/. "
-        "Si no existe se usa modo stream.",
-    )
-    parser.add_argument(
-        "--hf-token",
-        type=str,
-        default="",
-        help="Token HuggingFace para modo stream (o variable HF_TOKEN).",
-    )
-    parser.add_argument(
-        "--cnn-pretrain-epochs",
-        type=int,
-        default=5,
-        help="Épocas de pretrain para arch=simple. 0=sin pretrain. (default: 5)",
-    )
-    parser.add_argument(
-        "--cnn-pretrain-lr",
-        type=float,
-        default=0.001,
-        help="Learning rate para pretrain de CNN simple. (default: 0.001)",
-    )
-    parser.add_argument(
         "--cnn-pretrain-samples",
         type=int,
         default=10000,
         help="Número de imágenes para preentrenar la CNN simple (default: 10000)",
     )
-    parser.add_argument(
-        "--save-cnn",
-        action="store_true",
-        help="Guardar pesos de la CNN al finalizar (solo modo 'simple')",
-    )
-    parser.add_argument(
-        "--cnn-hash",
-        type=str,
-        default=None,
-        help="Cargar modelo CNN guardado por hash (modo 'simple')",
-    )
-    parser.add_argument(
-        "--feature-cache",
-        action="store_true",
-        default=True,
-        help="Enable per-batch feature caching for ResNet18 mode (default: enabled)",
-    )
-    parser.add_argument(
-        "--cnn-list",
-        action="store_true",
-        help="Listar modelos CNN guardados y salir",
-    )
     args = parser.parse_args()
-
-    # Manejar --cnn-list
-    if args.cnn_list:
-        print_models()
-        sys.exit(0)
-
-    # Resolver n_train: si no se especifica, usar el dataset completo de ImageNet
-    IMAGENET_TRAIN_SIZE = 1_281_167
-    if args.n_train is None:
-        args.n_train = IMAGENET_TRAIN_SIZE
 
     # resnet18 siempre usa pesos ImageNet — es la única configuración útil.
     cnn_pretrained = args.cnn_arch == "resnet18"
@@ -274,7 +208,7 @@ def main() -> None:
     OUTPUT_SIZE = NUM_CLASSES
 
     print("=" * 70)
-    print("PARAMETER SERVER — Configuración (ImageNet)")
+    print("PARAMETER SERVER — Configuración (CIFAR-10)")
     print("=" * 70)
     print(f"  Host            : {args.host}:{args.port}")
     print(f"  Workers         : {args.workers}")
@@ -289,7 +223,6 @@ def main() -> None:
     print(f"  Learning rate   : {args.lr}")
     print(f"  Ejemplos train  : {args.n_train}")
     print(f"  Semilla         : {args.seed if args.seed is not None else 'aleatoria'}")
-    print(f"  Feature cache   : {'enabled' if args.feature_cache else 'disabled'}")
     print("=" * 70)
 
     # Espera hasta que se conecten los N Workers requeridos
@@ -332,92 +265,48 @@ def main() -> None:
     ready_event.wait()
     print()
 
-    # Cargar CNN guardada o crear una nueva
-    if args.cnn_hash:
-        print(f"\nCargando modelo CNN (hash={args.cnn_hash})...")
-        cnn = load_cnn_model(
-            args.cnn_hash,
-            device=args.cnn_device,
-            seed=42,
-        )
-        if cnn is None:
-            print(f"⚠ Modelo no encontrado: {args.cnn_hash}")
-            print("  Usa --cnn-list para ver modelos disponibles.")
-            sys.exit(1)
-        feature_dim = cnn.feature_dim
-        print(f"CNN cargada — arch={cnn.arch}  feature_dim={feature_dim}\n")
-    else:
-        # Construir CNN nueva
-        print("\nConstruyendo extractor CNN...")
-        # La CNN siempre usa seed=42 — independiente de la semilla MLP.
-        # Mezclarlas haría que --seed invalide la caché CNN.
-        cnn = CNNExtractor(
-            arch=args.cnn_arch,
-            pretrained=cnn_pretrained,
-            device=args.cnn_device,
-            seed=42,
-        )
-        feature_dim = cnn.feature_dim
-        print(f"CNN lista — arch={args.cnn_arch}  feature_dim={feature_dim}\n")
-
-    # Pretrain CNN simple si se solicitaron epocas > 0
-    pretrain_epochs = args.cnn_pretrain_epochs
-    pretrain_lr = args.cnn_pretrain_lr
-    if args.cnn_arch == "simple" and pretrain_epochs > 0:
-        print("Solicitando muestra de train al Worker para pretrain CNN...")
-        train_sample = server.request_train_sample(
-            n_samples=getattr(args, "cnn_pretrain_samples", 10000)
-        )
-        if train_sample is not None:
-            X_pre, Y_pre = train_sample
-            print(
-                f"Muestra recibida: {len(X_pre)} imgs. "
-                f"Preentrenando {pretrain_epochs} epocas (lr={pretrain_lr})..."
-            )
-            cnn.pretrain(
-                X_pre,
-                Y_pre,
-                epochs=pretrain_epochs,
-                lr=pretrain_lr,
-                verbose=True,
-                n_classes=NUM_CLASSES,
-            )
-            print("Pretrain CNN simple completado.\n")
-        else:
-            print(
-                "Aviso: sin Workers disponibles para pretrain. "
-                "CNN simple arranca con pesos aleatorios.\n"
-            )
-    elif args.cnn_arch == "simple":
-        print("CNN simple con pesos aleatorios (--cnn-pretrain-epochs=0).\n")
-
-    # Cargar etiquetas val. Detecta automáticamente disco local o stream.
-    import os as _os
-
-    hf_token = (getattr(args, "hf_token", "") or "").strip() or _os.environ.get(
-        "HF_TOKEN", ""
+    # Construye el extractor CNN con la misma semilla que usarán los Workers,
+    # garantizando que todos partan de los mismos pesos convolucionales.
+    print("\nConstruyendo extractor CNN...")
+    # La CNN siempre usa seed=42 — independiente de la semilla MLP.
+    # Mezclarlas haría que --seed invalide la caché CNN.
+    cnn = CNNExtractor(
+        arch=args.cnn_arch,
+        pretrained=cnn_pretrained,
+        device=args.cnn_device,
+        seed=42,
     )
-    data_dir = getattr(args, "data_dir", None)
-    Y_test = None
-    source = detect_data_source(data_dir)
-    if source == "local" and data_dir:
-        try:
-            print("Cargando etiquetas val de ImageNet local...")
-            Y_test = load_imagenet_labels(split="val", data_dir=data_dir)
-            print(f"  {len(Y_test):,} etiquetas val cargadas.\n")
-        except Exception as _e:
-            print(f"  ⚠ No se pudieron cargar etiquetas val: {_e}")
-    elif hf_token:
-        try:
-            print("Cargando etiquetas val desde HuggingFace...")
-            Y_test = load_imagenet_labels_stream(split="val", token=hf_token)
-            print(f"  {len(Y_test):,} etiquetas val cargadas.\n")
-        except Exception as _e:
-            print(f"  ⚠ Error HuggingFace: {_e}")
-    else:
-        print("  ℹ Sin --data-dir ni --hf-token: sin evaluación de test.\n")
+    feature_dim = cnn.feature_dim
+    print(f"CNN lista — arch={args.cnn_arch}  feature_dim={feature_dim}\n")
 
+    # X_test_raw se usa como fallback si el Worker no envía TEST_FEATURES.
+    # Si el Worker 0 sí los envía, el PS los usará en lugar de este fallback.
+    print("Cargando datos de prueba CIFAR-10 (10 000 imágenes)...")
+    X_test_raw, Y_test = load_cifar10_test(verbose=False)
     server.set_cnn(cnn)
+
+    # Si la CNN simple no tiene caché, preentrenar con datos de TRAIN
+    # (pedidos al Worker) en lugar de X_test → sin sesgo en evaluación.
+    if args.cnn_arch == "simple":
+        import glob as _glob
+
+        has_cache = bool(_glob.glob(str(cnn._cache_dir) + "/simple_*_weights.pt"))
+        if not has_cache:
+            print(
+                "[PS] Solicitando muestra de train al Worker "
+                "para preentrenar CNN sin sesgo..."
+            )
+            train_sample = server.request_train_sample(
+                n_samples=args.cnn_pretrain_samples
+            )
+            if train_sample is not None:
+                X_pre, Y_pre = train_sample
+                print(
+                    f"[PS] Muestra recibida ({len(X_pre)} imgs). Preentrenando CNN..."
+                )
+                cnn.pretrain(X_pre, Y_pre, epochs=10, verbose=True)
+            else:
+                print("[PS] ⚠ Sin Workers — pretrain usará datos de prueba.")
 
     initial_params = init_params(
         feature_dim, args.hidden1, args.hidden2, OUTPUT_SIZE, args.seed
@@ -430,32 +319,15 @@ def main() -> None:
         initial_params=initial_params,
         learning_rate=args.lr,
         n_train=args.n_train,
+        X_test=X_test_raw,  # fallback: PS extrae si Worker no envía TEST_FEATURES
         Y_test=Y_test,
         momentum=args.momentum,
-        seed=args.seed,
+        training_mode="precomputed",  # ps_terminal siempre usa precomputed
     )
 
     elapsed = time.perf_counter() - t_start
 
     server.shutdown()
-
-    # Guardar CNN si se solicitó (solo modo 'simple')
-    if args.save_cnn and args.cnn_arch == "simple":
-        print("\nGuardando modelo CNN...")
-        try:
-            model_hash = save_cnn_model(
-                cnn,
-                n_train=args.n_train,
-                epochs=args.epochs,
-                final_accuracy=history["accuracies"][-1],
-                final_loss=history["losses"][-1],
-                elapsed_time=elapsed,
-                description=f"Entrenamiento automático con {args.n_train:,} ejemplos",
-            )
-            print(f"  ✓ CNN guardada — hash: {model_hash}")
-            print(f"    Cargarlo después con: --cnn-hash {model_hash}")
-        except Exception as e:
-            print(f"  ⚠ Error al guardar CNN: {e}")
 
     # Resumen final
     print("\n" + "=" * 70)
@@ -498,7 +370,6 @@ def main() -> None:
         "n_train": args.n_train,
         "workers": args.workers,
         "seed": args.seed,
-        "feature_cache": args.feature_cache,
     }
     json_path = export_results(history, config, elapsed)
     print(f"\n  Resultados exportados a: {json_path}")
