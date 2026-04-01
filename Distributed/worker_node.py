@@ -224,6 +224,11 @@ class WorkerNode:
         No hay barrera con otros Workers. Cada iteración es completamente
         independiente. El PS aplica las actualizaciones inmediatamente.
         """
+        # Si la CNN no fue proporcionada por el PS, usar una por defecto
+        if self._cnn is None:
+            self._cnn = CNNExtractor(arch="resnet18", device=str(self.device), seed=42)
+            self._log("⚠  CNN no recibida del PS — usando ResNet18 por defecto")
+
         assert self._sock is not None
         assert self._cnn is not None
         assert self._stream is not None
@@ -398,15 +403,35 @@ class WorkerNode:
 
         Si `existing` ya existe, reutiliza el objeto en lugar de crear uno nuevo.
         Esto evita la sobrecarga de construir un nn.Module cada iteración.
+
+        Si mlp_state está vacío (PS no inicializado aún), crea un MLP con valores por defecto.
         """
         if existing is None:
-            # Inferir dimensiones del state_dict recibido
-            feature_dim = mlp_state["fc1.weight"].shape[1]
-            hidden1 = mlp_state["fc1.weight"].shape[0]
-            hidden2 = mlp_state["fc2.weight"].shape[0]
-            existing = MLPPyTorch(feature_dim, hidden1, hidden2, _IMAGENET_CLASSES).to(
-                self.device
-            )
+            # Si mlp_state está vacío, usar valores por defecto
+            if not mlp_state or "fc1.weight" not in mlp_state:
+                # CNN debe estar inicializada para obtener feature_dim
+                assert self._cnn is not None, (
+                    "CNN no inicializada, no se puede inferir feature_dim"
+                )
+                feature_dim = self._cnn.feature_dim
+                hidden1 = self.hidden1
+                hidden2 = self.hidden2
+                existing = MLPPyTorch(
+                    feature_dim, hidden1, hidden2, _IMAGENET_CLASSES
+                ).to(self.device)
+                if not mlp_state:
+                    self._log(
+                        f"⚠  MLP no recibido del PS — usando valores por defecto "
+                        f"({feature_dim}→{hidden1}→{hidden2}→1000)"
+                    )
+            else:
+                # Inferir dimensiones del state_dict recibido
+                feature_dim = mlp_state["fc1.weight"].shape[1]
+                hidden1 = mlp_state["fc1.weight"].shape[0]
+                hidden2 = mlp_state["fc2.weight"].shape[0]
+                existing = MLPPyTorch(
+                    feature_dim, hidden1, hidden2, _IMAGENET_CLASSES
+                ).to(self.device)
 
         with torch.no_grad():
             for name, param in existing.named_parameters():

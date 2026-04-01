@@ -14,7 +14,7 @@ OPCIONES:
     --batch-size      Imágenes por batch                 (default: 64)
     --hidden1         Neuronas capa oculta 1 del MLP     (default: 1024)
     --hidden2         Neuronas capa oculta 2 del MLP     (default: 512)
-    --device          cpu | cuda | cuda:0 | mps           (default: cpu)
+    --device          cpu | cuda | cuda:0 | mps           (default: auto-detect CUDA/MPS/CPU)
     --dataset         Dataset HF Hub                     (default: ILSVRC/imagenet-1k)
     --shuffle-buffer  Imágenes en buffer de shuffle      (default: 1000)
     --prefetch        Batches pre-cargados en background  (default: 4)
@@ -43,9 +43,27 @@ import argparse
 import os
 import sys
 
+import torch
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from Distributed.worker_node import WorkerNode
+
+
+def get_default_device() -> str:
+    """
+    Detecta el dispositivo disponible con prioridad: CUDA > MPS > CPU.
+
+    Retorna:
+        - 'cuda' si hay GPU NVIDIA disponible
+        - 'mps' si hay accelerador Apple Metal Performance Shaders
+        - 'cpu' como fallback
+    """
+    if torch.cuda.is_available():
+        return "cuda"
+    elif torch.backends.mps.is_available():
+        return "mps"
+    return "cpu"
 
 
 def main() -> None:
@@ -59,7 +77,7 @@ def main() -> None:
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--hidden1", type=int, default=1024)
     parser.add_argument("--hidden2", type=int, default=512)
-    parser.add_argument("--device", type=str, default="cpu")
+    parser.add_argument("--device", type=str, default=get_default_device())
     parser.add_argument("--dataset", type=str, default="ILSVRC/imagenet-1k")
     parser.add_argument("--shuffle-buffer", type=int, default=1000)
     parser.add_argument("--prefetch", type=int, default=4)
@@ -79,7 +97,12 @@ def main() -> None:
     print(f"  Dataset        : {args.dataset}")
     print(f"  Batch size     : {args.batch_size}")
     print(f"  MLP hidden     : {args.hidden1} → {args.hidden2} → 1000")
-    print(f"  Device         : {args.device}")
+    device_str = (
+        f"{args.device} (auto-detected)"
+        if args.device == get_default_device()
+        else args.device
+    )
+    print(f"  Device         : {device_str}")
     print(f"  Shuffle buffer : {args.shuffle_buffer}")
     print(f"  Prefetch       : {args.prefetch} batches")
     print(f"  Accum steps    : {args.accum_steps}")
