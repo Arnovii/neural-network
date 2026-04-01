@@ -45,20 +45,21 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Parameter Server asíncrono — ImageNet-1k"
     )
-    parser.add_argument("--host",             type=str,   default="0.0.0.0")
-    parser.add_argument("--port",             type=int,   default=9999)
-    parser.add_argument("--wait-workers",     type=int,   default=1)
-    parser.add_argument("--lr",               type=float, default=0.001)
+    parser.add_argument("--host", type=str, default="0.0.0.0")
+    parser.add_argument("--port", type=int, default=9999)
+    parser.add_argument("--wait-workers", type=int, default=1)
+    parser.add_argument("--lr", type=float, default=0.001)
     parser.add_argument("--staleness-lambda", type=float, default=0.1)
-    parser.add_argument("--hidden1",          type=int,   default=1024)
-    parser.add_argument("--hidden2",          type=int,   default=512)
-    parser.add_argument("--cnn-arch",         type=str,   default="resnet18",
-                        choices=["resnet18", "simple"])
-    parser.add_argument("--steps-per-report", type=int,   default=500)
-    parser.add_argument("--max-steps",        type=int,   default=0)
-    parser.add_argument("--dataset",          type=str,   default="ILSVRC/imagenet-1k")
-    parser.add_argument("--hf-token",         type=str,   default=None)
-    parser.add_argument("--metrics-window",   type=int,   default=200)
+    parser.add_argument("--hidden1", type=int, default=1024)
+    parser.add_argument("--hidden2", type=int, default=512)
+    parser.add_argument(
+        "--cnn-arch", type=str, default="resnet18", choices=["resnet18", "simple"]
+    )
+    parser.add_argument("--steps-per-report", type=int, default=500)
+    parser.add_argument("--max-steps", type=int, default=0)
+    parser.add_argument("--dataset", type=str, default="ILSVRC/imagenet-1k")
+    parser.add_argument("--hf-token", type=str, default=None)
+    parser.add_argument("--metrics-window", type=int, default=200)
     args = parser.parse_args()
 
     hf_token = args.hf_token or os.environ.get("HF_TOKEN")
@@ -75,7 +76,9 @@ def main() -> None:
     print(f"  Staleness λ       : {args.staleness_lambda}")
     print(f"  Steps/reporte     : {args.steps_per_report}")
     print(f"  Max steps         : {args.max_steps or '∞'}")
-    print(f"  HF Token          : {'✓ configurado' if hf_token else '✗ no configurado'}")
+    print(
+        f"  HF Token          : {'✓ configurado' if hf_token else '✗ no configurado'}"
+    )
     print("=" * 68)
 
     # ── Evento de conexión ──
@@ -109,22 +112,22 @@ def main() -> None:
             stop.set()
 
     def on_report(step, loss, acc):
-        print(f"\n{'─'*60}")
+        print(f"\n{'─' * 60}")
         print(f"  Reporte | step={step:,} | loss={loss:.4f} | acc={acc:.2f}%")
-        print(f"{'─'*60}\n")
+        print(f"{'─' * 60}\n")
 
     # ── Crear PS ──
     ps = ParameterServer(
-        host             = args.host,
-        port             = args.port,
-        learning_rate    = args.lr,
-        staleness_lambda = args.staleness_lambda,
-        steps_per_report = args.steps_per_report,
-        metrics_window   = args.metrics_window,
-        on_step          = on_step,
-        on_report        = on_report,
-        on_worker_connected    = on_connected,
-        on_worker_disconnected = on_disconnected,
+        host=args.host,
+        port=args.port,
+        learning_rate=args.lr,
+        staleness_lambda=args.staleness_lambda,
+        steps_per_report=args.steps_per_report,
+        metrics_window=args.metrics_window,
+        on_step=on_step,
+        on_report=on_report,
+        on_worker_connected=on_connected,
+        on_worker_disconnected=on_disconnected,
     )
 
     # ── Cargar CNN ──

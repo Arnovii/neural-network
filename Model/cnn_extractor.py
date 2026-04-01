@@ -7,7 +7,7 @@ ARQUITECTURAS:
   "resnet18" → ResNet-18 con pesos ImageNet (recomendado).
                Con pretrained=True: pesos IMAGENET1K_V1.
                feature_dim = 512. Sin capa de clasificación.
-             
+
   "simple"   → CNN propia de 3 bloques Conv→BN→ReLU→MaxPool.
                feature_dim = 512. Sin pesos preentrenados.
                Útil para experimentación sin descargar pesos externos.
@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import hashlib
 import io
-import os
 from typing import Optional
 
 import numpy as np
@@ -37,6 +36,7 @@ FEATURE_DIM = 512
 # ================================================================
 # CNN SIMPLE
 # ================================================================
+
 
 class _SimpleCNN(nn.Module):
     """
@@ -77,6 +77,7 @@ class _SimpleCNN(nn.Module):
 # EXTRACTOR PÚBLICO
 # ================================================================
 
+
 class CNNExtractor:
     """
     Envuelve una CNN PyTorch y expone una interfaz simple para el sistema distribuido.
@@ -107,10 +108,10 @@ class CNNExtractor:
         if arch not in self.ARCHITECTURES:
             raise ValueError(f"arch debe ser {self.ARCHITECTURES}, recibido: {arch!r}")
 
-        self.arch      = arch
+        self.arch = arch
         self.pretrained = pretrained
-        self.seed      = seed
-        self.device    = torch.device(device)
+        self.seed = seed
+        self.device = torch.device(device)
 
         if seed is not None:
             torch.manual_seed(seed)
@@ -126,6 +127,7 @@ class CNNExtractor:
             return _SimpleCNN()
 
         import torchvision.models as tvm
+
         weights = "IMAGENET1K_V1" if pretrained else None
         model = tvm.resnet18(weights=weights)
         model.fc = nn.Identity()  # type: ignore  # expone vector de 512 features
@@ -182,8 +184,8 @@ class CNNExtractor:
         :param verbose:    Imprimir progreso.
         :return:           Features (N, feature_dim) float32.
         """
-        N      = len(X)
-        parts  = []
+        N = len(X)
+        parts = []
         starts = range(0, N, batch_size)
 
         for i, start in enumerate(starts, 1):
@@ -193,8 +195,11 @@ class CNNExtractor:
                 parts.append(self._model(t).cpu().numpy())
             if verbose:
                 done = min(start + batch_size, N)
-                print(f"\r  [CNN] {done}/{N} imgs ({i}/{len(starts)} batches)",
-                      end="", flush=True)
+                print(
+                    f"\r  [CNN] {done}/{N} imgs ({i}/{len(starts)} batches)",
+                    end="",
+                    flush=True,
+                )
 
         if verbose:
             print()

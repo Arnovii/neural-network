@@ -84,6 +84,4 @@ class MLPPyTorch(nn.Module):
         with torch.no_grad():
             for name, param in self.named_parameters():
                 if name in state:
-                    param.data.copy_(
-                        torch.from_numpy(state[name]).to(param.device)
-                    )
+                    param.data.copy_(torch.from_numpy(state[name]).to(param.device))

@@ -7,46 +7,60 @@ asíncrono sobre ImageNet-1k:
 1. **Streaming de ImageNet-1k**: Descarga bajo demanda desde HuggingFace con:
 
    - Streaming puro: Nunca descarga el dataset completo (~1.2M imágenes).
-   - Sharding automático: Cada Worker consume su porción de datos sin solapamiento.
+   - Sharding automático: Cada Worker consume su porción sin solapamiento.
    - Prefetching asíncrono: Hilo background llena cola mientras entrenamiento consume.
-   - Reconexión automática: Reintentos ante errores de red.
+   - Normalización: ImageNet stats (mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
    - Transforms: RandomResizedCrop + HorizontalFlip para train; CenterCrop para val.
 
    Datasets soportados:
    - ILSVRC/imagenet-1k (requiere token HF + licencia aceptada)
-   - timm/imagenet-1k-wds (formato WebDataset, acceso público)
+   - timm/imagenet-1k-wds (WebDataset público, alternativa)
 
-2. **Logging centralizado**: Clase FormattedLogger con:
+2. **Logging centralizado**: FormattedLogger con:
 
-   - Colorización ANSI independiente de SO
+   - Colorización ANSI (UNIX/Windows 10+)
    - Timestamps para cada mensaje
-   - Fases etiquetadas: [INFO], [TRAIN], [EVAL], [ERROR], etc.
-   - Soporte para modo quiet
+   - Tags etiquetados: [INFO], [WORKER], [PS], [TRAIN], [EVAL], etc.
+   - Soporte para modo silencioso
 
-3. **Exportación de resultados**: JSON con historiales de training incluyendo
-   metadatos (arquitectura, épocas, workers activos, etc.).
+3. **Exportación de resultados**: Función export_results() que serializa
+   históricos de training a JSON con metadatos.
 
 MÓDULOS
 =======
 
 imagenet_streaming : module
-    ImageNetStream: Iterador que descarga batches desde HF bajo demanda.
-    PrefetchBuffer: Buffer asíncrono con pre-fetching en hilo background.
-    ValidationStream: Iterador de validación (un solo pase, no infinito).
-    build_worker_stream(): Factory que retorna PrefetchBuffer listo para usar.
+    Clases y funciones para streaming de ImageNet-1k:
 
-    Parámetros clave:
-    - worker_rank, num_workers: Sharding del dataset
-    - prefetch_batches: Tamaño de cola (default=4, ~385MB por batch)
-    - shuffle_buffer: Buffer de shuffle interno (default=1000 imágenes)
+    - ImageNetStream: Iterador que descarga batches bajo demanda
+    - PrefetchBuffer: Buffer asíncrono con pre-fetching en hilo background
+    - ValidationStream: Iterador de validación (un solo pase completo)
+    - build_worker_stream(): Factory que retorna PrefetchBuffer configurado
+    - get_train_transform(): Transforms de data augmentation para entrenamiento
+    - get_val_transform(): Transforms neutros para validación
+
+    Parámetros principales:
+    - worker_rank, num_workers: Sharding del dataset por Worker
+    - batch_size: Imágenes por batch
+    - prefetch_batches: Tamaño de cola de prefetch (default=4, ~385MB RAM)
+    - shuffle_buffer: Buffer de shuffle interno (default=1000)
+    - image_size: Tamaño final de crop (default=224)
 
 logging_util : module
-    Clase FormattedLogger con métodos para cada fase.
-    get_logger(): Retorna logger global con colorización.
+    Módulo de logging estructurado:
+
+    - FormattedLogger: Clase principal con etiquetas por fase
+    - get_logger(use_colors=False): Retorna logger global singleton
+
+    Métodos de FormattedLogger:
+    - info(msg), warning(msg), error(msg), etc.
+    - Cada método añade timestamp y colorización automática
 
 results_exporter : module
-    save_results(): Serializa histórico a JSON con metadatos.
-    load_results(): Recarga histórico desde JSON.
+    Exportación de historiales:
+
+    - export_results(history, filepath): Serializa histórico a JSON
+      Guarda pérdidas, accuracies, metadatos (modelo, epochs, etc.)
 
 EXPORTACIONES PRINCIPALES
 ==========================
@@ -54,97 +68,116 @@ EXPORTACIONES PRINCIPALES
 ImageNetStream : class
     from Utils.imagenet_streaming import ImageNetStream
 
+    Iterador de batches bajo demanda desde HF.
+    Parámetros: dataset_name, worker_rank, num_workers, batch_size, etc.
+
 PrefetchBuffer : class
     from Utils.imagenet_streaming import PrefetchBuffer
+
+    Buffer asíncrono con pre-fetching en background.
+    Métodos: start(), stop(), __iter__(), __next__()
+    Propiedad: queue_size
 
 ValidationStream : class
     from Utils.imagenet_streaming import ValidationStream
 
+    Iterador de validación (un solo pase, no infinito).
+    Método: iterate() → Generator de (X_batch, Y_batch)
+
 build_worker_stream : function
     from Utils.imagenet_streaming import build_worker_stream
+
+    Factory que construye y retorna PrefetchBuffer configurado.
+    Parámetros: worker_rank, num_workers, batch_size, dataset_name, etc.
+
+get_train_transform, get_val_transform : functions
+    from Utils.imagenet_streaming import get_train_transform, get_val_transform
+
+    Retornan pipelines de transforms (augmentation para train, neutros para val).
+
+FormattedLogger : class
+    from Utils.logging_util import FormattedLogger
+
+    Logger estructurado con colorización y timestamps.
 
 get_logger : function
     from Utils.logging_util import get_logger
 
-save_results, load_results : functions
-    from Utils.results_exporter import save_results, load_results
+    Retorna logger global singleton.
+    Parámetro: use_colors (default False para GUI)
+
+export_results : function
+    from Utils.results_exporter import export_results
+
+    Serializa histórico de entrenamiento a JSON.
 
 FLUJO TÍPICO
 ============
 
     # Worker: Crear stream con sharding
+    from Utils.imagenet_streaming import build_worker_stream
+
     stream = build_worker_stream(
-        worker_rank=0, num_workers=2, batch_size=64,
-        dataset_name='ILSVRC/imagenet-1k', hf_token=token
+        worker_rank=0, num_workers=2,
+        batch_size=64, dataset_name='ILSVRC/imagenet-1k',
+        hf_token=token, prefetch_batches=4
     )
     stream.start()
 
-    for X_batch, Y_batch in stream:  # (64, 3, 224, 224), (64,)
-        # entrenar con batch
-        pass
+    for X_batch, Y_batch in stream:  # Yield (64, 3, 224, 224), (64,)
+        # Entrenar con batch
+        loss, acc = train_step(X_batch, Y_batch)
 
     stream.stop()
 
     # PS: Validación periódica
+    from Utils.imagenet_streaming import ValidationStream
+
     val_stream = ValidationStream(
         dataset_name='ILSVRC/imagenet-1k',
         batch_size=256, max_batches=50, hf_token=token
     )
     for X_val, Y_val in val_stream.iterate():
-        # evaluar
-        pass
-"""
-
-export_results : function
-    Exporta historial de entrenamiento a JSON.
-
-    :param history: Dict con "accuracies", "losses", etc.
-    :type history: Dict[str, List[float]]
-
-    :param filepath: Ruta donde guardar JSON.
-    :type filepath: str
-
-get_logger : function
-    Retorna instancia global de FormattedLogger configurada.
-
-    :param use_colors: Usa colores ANSI (default False para GUI).
-    :type use_colors: bool
-
-    :return: Instancia logger global.
-    :rtype: FormattedLogger
-
-Uso rápido
-----------
-    from Utils import load_cifar10_train, load_cifar10_test, export_results, get_logger
-
-    # Cargar datos
-    X_train, Y_train = load_cifar10_train()
-    X_test, Y_test = load_cifar10_test()
+        # Evaluar modelo global
+        acc, loss = evaluate(X_val, Y_val)
 
     # Logging
-    logger = get_logger(use_colors=True)
-    logger.train("Epoch 1: loss=0.45, acc=0.82")
+    from Utils.logging_util import get_logger
 
-    # Exportar resultados
-    history = {"accuracies": [0.5, 0.7, 0.82], "losses": [1.2, 0.8, 0.45]}
-    export_results(history, "results/training_output.json")
+    logger = get_logger(use_colors=True)
+    logger.info("Iniciando entrenamiento")
+    logger.error("Error de conexión")
+
+    # Exportación
+    from Utils.results_exporter import export_results
+
+    history = {
+        "losses": [5.2, 4.8, 4.1, ...],
+        "accuracies": [0.05, 0.12, 0.25, ...],
+        "steps": [0, 500, 1000, ...]
+    }
+    export_results(history, "results.json")
 """
 
-# CIFAR-10 loaders
-from Utils.cifar_loader import (
-    load_cifar10_train,
-    load_cifar10_test,
-    NUM_CLASSES,
+from Utils.imagenet_streaming import (
+    ImageNetStream,
+    PrefetchBuffer,
+    ValidationStream,
+    build_worker_stream,
+    get_train_transform,
+    get_val_transform,
 )
-
-# Results export
+from Utils.logging_util import FormattedLogger, get_logger
 from Utils.results_exporter import export_results
 
 __all__ = [
-    # CIFAR-10
-    "load_cifar10_train",
-    "load_cifar10_test",
-    "NUM_CLASSES",
-    # Results export
+    "ImageNetStream",
+    "PrefetchBuffer",
+    "ValidationStream",
+    "build_worker_stream",
+    "get_train_transform",
+    "get_val_transform",
+    "FormattedLogger",
+    "get_logger",
     "export_results",
 ]

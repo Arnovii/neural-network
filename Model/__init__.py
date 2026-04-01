@@ -9,73 +9,89 @@ Este paquete encapsula la arquitectura de dos capas de la red distribuida:
    - ResNet-18 preentrenado (ImageNet IMAGENET1K_V1): ~50M params (recomendado)
    - Simple CNN custom: 3 bloques Conv→BN→ReLU→MaxPool (~1M params)
 
-   La CNN se congela en eval() durante el entrenamiento distribuido (los pesos
-   se envían por TCP pero solo el MLP recibe gradientes en Workers).
+   La CNN implementa:
+   - _build(): Construye modelo según arquitectura
+   - extract_batched(): Extrae features de batch de imágenes
+   - _get_weights_bytes(): Serializa state_dict para TCP
+   - load_weights_from_bytes(): Carga state_dict desde TCP
 
 2. **MLP (PyTorch)**: Clasificador multicapa que realiza clasificación 1k-way
    sobre las features extraídas por CNN. Arquitectura:
 
-   feature_dim (512) → hidden1 (1024 default) → hidden2 (512 default) → 1000 clases
+   feature_dim (512) → fc1 (hidden1, ReLU) → fc2 (hidden2, ReLU) → fc3 (1000 clases)
 
-   Implementa forward pass, backward, SGD local. Sincronización de parámetros
-   mediante FedAvg asíncrono en PS.
+   Implementa:
+   - forward(): Pase forward (fc1→ReLU→fc2→ReLU→fc3)
+   - state_dict_numpy(): Exporta pesos a Dict[str, np.ndarray] para PS
+   - load_state_dict_numpy(): Carga pesos desde Dict[str, np.ndarray] del PS
 
 MÓDULOS
 =======
 
 cnn_extractor : module
-    Clase CNNExtractor con soporte para ResNet-18 (pretrained) y Simple CNN.
-    - _build(): Construye modelo según arquitectura
-    - extract_batched(): Extrae features de batch de imágenes
-    - _get_weights_bytes(): Serializa state_dict para TCP
-    - load_weights_from_bytes(): Carga state_dict desde TCP
+    Clase CNNExtractor: Extractor CNN con soporte ResNet-18 + Simple.
+    Métodos principales:
+    - __init__(arch, pretrained, device, seed)
+    - _build(): Construcción de arquitectura
+    - feature_dim: Propiedad (siempre 512)
+    - extract_batched(): Forward pass de imágenes
+    - _get_weights_bytes(): Serialización para TCP
+    - load_weights_from_bytes(): Deserialización desde TCP
 
 mlp_pytorch : module
-    Clase MLPPyTorch: MLP en PyTorch con forward pass y gradient support.
-    - __init__(): Inicializa capas fc1, fc2, fc3 con dims configurables
-    - forward(): Pase forward (fc1→ReLU→fc2→ReLU→fc3)
-    - state_dict_numpy(): Exporta pesos a Dict[str, np.ndarray] para PS
-    - Integración automática con torch.optim para SGD local
+    Clase MLPPyTorch(nn.Module): Clasificador MLP en PyTorch.
+    Métodos principales:
+    - __init__(feature_dim, hidden1, hidden2, n_classes)
+    - forward(x): Pase forward (N, feature_dim) → (N, n_classes)
+    - state_dict_numpy(): Exporta parámetros como Dict[str, np.ndarray]
+    - load_state_dict_numpy(state): Carga parámetros desde Dict[str, np.ndarray]
 
 EXPORTACIONES PRINCIPALES
 ==========================
 
 CNNExtractor : class
     from Model.cnn_extractor import CNNExtractor
-    
-    arch='resnet18' | arch='simple'
-    pretrained=True (solo para resnet18)
-    device='cpu' | 'cuda' | 'cuda:0' | 'mps'
+
+    Parámetros:
+    - arch: 'resnet18' (recomendado) | 'simple'
+    - pretrained: True (carga IMAGENET1K_V1 para resnet18)
+    - device: 'cpu' | 'cuda' | 'cuda:0' | 'mps'
+    - seed: int o None (para reproducibilidad)
 
 MLPPyTorch : class
     from Model.mlp_pytorch import MLPPyTorch
-    
-    feature_dim: dimensión de entrada (512 para ResNet-18)
-    hidden1, hidden2: capas ocultas (1024, 512 default)
-    n_classes: 1000 (ImageNet-1k)
+
+    Parámetros:
+    - feature_dim: Dimensión de entrada (512 para ResNet-18)
+    - hidden1: Neuronas capa 1 (default 1024)
+    - hidden2: Neuronas capa 2 (default 512)
+    - n_classes: Clases salida (1000 para ImageNet-1k)
 
 FLUJO TÍPICO
 ============
 
     # PS: Cargar CNN una sola vez
-    cnn = CNNExtractor(arch='resnet18', pretrained=True, device='cpu')
-    cnn_bytes = cnn._get_weights_bytes()  # serializar para enviar
+    cnn = CNNExtractor(arch='resnet18', pretrained=True)
+    cnn_bytes = cnn._get_weights_bytes()  # serializar para enviar a Workers
 
     # Worker: Recibir y entrenar MLP
     mlp = MLPPyTorch(feature_dim=512, hidden1=1024, hidden2=512, n_classes=1000)
-    # ... loop de entrenamiento ...
-    params = mlp.state_dict_numpy()  # exportar para PS
-"""
-    logits, loss, grads = forward_and_gradients(X_features, Y_labels, params)
+
+    # Loop de entrenamiento
+    features = cnn.extract_batched(image_batch)  # (N, 512)
+    logits = mlp(features)  # (N, 1000)
+    loss = F.cross_entropy(logits, labels)
+    loss.backward()
+    # ... SGD update ...
+
+    # Enviar parámetros al PS
+    params = mlp.state_dict_numpy()
 """
 
 from Model.cnn_extractor import CNNExtractor
-from Model.mlp import init_params, forward_and_gradients, evaluate, apply_gradients
+from Model.mlp_pytorch import MLPPyTorch
 
 __all__ = [
     "CNNExtractor",
-    "init_params",
-    "forward_and_gradients",
-    "evaluate",
-    "apply_gradients",
+    "MLPPyTorch",
 ]

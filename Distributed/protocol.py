@@ -42,15 +42,15 @@ from typing import Any, Dict
 
 
 class MsgType(str, Enum):
-    READY          = "READY"
-    WORKER_ID      = "WORKER_ID"
-    CNN_WEIGHTS    = "CNN_WEIGHTS"
-    CNN_ACK        = "CNN_ACK"
-    START          = "START"
+    READY = "READY"
+    WORKER_ID = "WORKER_ID"
+    CNN_WEIGHTS = "CNN_WEIGHTS"
+    CNN_ACK = "CNN_ACK"
+    START = "START"
     REQUEST_PARAMS = "REQUEST_PARAMS"
-    PARAMS         = "PARAMS"
-    UPDATES        = "UPDATES"
-    STOP           = "STOP"
+    PARAMS = "PARAMS"
+    UPDATES = "UPDATES"
+    STOP = "STOP"
 
 
 def send_message(sock: socket.socket, msg_type: MsgType, payload: Any) -> None:

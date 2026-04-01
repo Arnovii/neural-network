@@ -30,7 +30,7 @@ import socket
 import threading
 import time
 import collections
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -45,6 +45,7 @@ _log = get_logger(use_colors=True)
 # ================================================================
 # MÉTRICAS CON VENTANA DESLIZANTE
 # ================================================================
+
 
 class RunningMetrics:
     """
@@ -84,6 +85,7 @@ class RunningMetrics:
 # ================================================================
 # PARAMETER SERVER
 # ================================================================
+
 
 class ParameterServer:
     """
@@ -155,8 +157,11 @@ class ParameterServer:
 
         # ── Historial (para GUI) ──
         self._history: Dict[str, List] = {
-            "steps": [], "losses": [], "accuracies": [],
-            "n_workers": [], "timestamps": [],
+            "steps": [],
+            "losses": [],
+            "accuracies": [],
+            "n_workers": [],
+            "timestamps": [],
         }
         self._history_lock = threading.Lock()
 
@@ -319,10 +324,14 @@ class ParameterServer:
         # ── 2. Distribuir CNN ──
         if self._cnn is not None:
             try:
-                send_message(conn, MsgType.CNN_WEIGHTS, {
-                    "arch": self._cnn.arch,
-                    "weights_bytes": self._cnn._get_weights_bytes(),
-                })
+                send_message(
+                    conn,
+                    MsgType.CNN_WEIGHTS,
+                    {
+                        "arch": self._cnn.arch,
+                        "weights_bytes": self._cnn._get_weights_bytes(),
+                    },
+                )
                 ack = receive_message(conn)
                 if ack["type"] == MsgType.CNN_ACK:
                     _log.ps(f"Worker {wid}: CNN cargada ✓")
@@ -368,12 +377,16 @@ class ParameterServer:
                         cnn_copy = {k: v.copy() for k, v in self._cnn_state.items()}
                         ver = self._version
                     try:
-                        send_message(conn, MsgType.PARAMS, {
-                            "mlp_state": mlp_copy,
-                            "cnn_state": cnn_copy,
-                            "version":   ver,
-                            "lr":        self.learning_rate,
-                        })
+                        send_message(
+                            conn,
+                            MsgType.PARAMS,
+                            {
+                                "mlp_state": mlp_copy,
+                                "cnn_state": cnn_copy,
+                                "version": ver,
+                                "lr": self.learning_rate,
+                            },
+                        )
                     except Exception as e:
                         _log.error(f"Error enviando PARAMS a Worker {wid}: {e}")
                         break
@@ -403,11 +416,11 @@ class ParameterServer:
         Esto es correcto: promediar running stats de Workers que vieron shards
         distintos del mismo dataset produce una estimación global válida.
         """
-        loss         = payload.get("loss", 0.0)
-        acc          = payload.get("accuracy", 0.0)
+        loss = payload.get("loss", 0.0)
+        acc = payload.get("accuracy", 0.0)
         version_read = payload.get("version_read", 0)
-        mlp_weights  = payload.get("mlp_weights")   # Dict[str, np.ndarray] PyTorch keys
-        cnn_weights  = payload.get("cnn_weights")   # Dict[str, np.ndarray] state_dict
+        mlp_weights = payload.get("mlp_weights")  # Dict[str, np.ndarray] PyTorch keys
+        cnn_weights = payload.get("cnn_weights")  # Dict[str, np.ndarray] state_dict
 
         with self._params_lock:
             staleness = max(0, self._version - version_read)
@@ -495,7 +508,9 @@ class ParameterServer:
         with torch.no_grad():
             for name, arr in cnn_copy.items():
                 if name in sd:
-                    sd[name] = torch.from_numpy(arr).to(sd[name].device).to(sd[name].dtype)
+                    sd[name] = (
+                        torch.from_numpy(arr).to(sd[name].device).to(sd[name].dtype)
+                    )
             base.load_state_dict(sd)
         self._cnn._model.eval()
 
@@ -513,9 +528,7 @@ class ParameterServer:
         with torch.no_grad():
             for name, param in mlp.named_parameters():
                 if name in mlp_copy:
-                    param.data.copy_(
-                        torch.from_numpy(mlp_copy[name]).to(param.device)
-                    )
+                    param.data.copy_(torch.from_numpy(mlp_copy[name]).to(param.device))
         mlp.eval()
 
         # Iterar sobre validación
@@ -532,13 +545,13 @@ class ParameterServer:
             Y = torch.from_numpy(Y_np).to(self._cnn.device)
             with torch.no_grad():
                 features = self._cnn._model(X)
-                logits   = mlp(features)
-                loss     = criterion(logits, Y)
-                correct  = (logits.argmax(1) == Y).sum().item()
+                logits = mlp(features)
+                loss = criterion(logits, Y)
+                correct = (logits.argmax(1) == Y).sum().item()
             n = len(Y_np)
             total_correct += correct
-            total_loss    += loss.item() * n
-            total_n       += n
+            total_loss += loss.item() * n
+            total_n += n
 
         if total_n == 0:
             return 0.0, 0.0

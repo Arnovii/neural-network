@@ -41,7 +41,7 @@ from PIL import Image
 
 # ── Estadísticas estándar de ImageNet ────────────────────────────
 MEAN = [0.485, 0.456, 0.406]
-STD  = [0.229, 0.224, 0.225]
+STD = [0.229, 0.224, 0.225]
 NUM_CLASSES = 1000
 
 
@@ -49,29 +49,35 @@ NUM_CLASSES = 1000
 # TRANSFORMS
 # ================================================================
 
+
 def get_train_transform(image_size: int = 224) -> T.Compose:
-    return T.Compose([
-        T.RandomResizedCrop(image_size, antialias=True),
-        T.RandomHorizontalFlip(),
-        T.ToImage(),
-        T.ToDtype(torch.float32, scale=True),
-        T.Normalize(mean=MEAN, std=STD),
-    ])
+    return T.Compose(
+        [
+            T.RandomResizedCrop(image_size, antialias=True),
+            T.RandomHorizontalFlip(),
+            T.ToImage(),
+            T.ToDtype(torch.float32, scale=True),
+            T.Normalize(mean=MEAN, std=STD),
+        ]
+    )
 
 
 def get_val_transform(image_size: int = 224) -> T.Compose:
-    return T.Compose([
-        T.Resize(256, antialias=True),
-        T.CenterCrop(image_size),
-        T.ToImage(),
-        T.ToDtype(torch.float32, scale=True),
-        T.Normalize(mean=MEAN, std=STD),
-    ])
+    return T.Compose(
+        [
+            T.Resize(256, antialias=True),
+            T.CenterCrop(image_size),
+            T.ToImage(),
+            T.ToDtype(torch.float32, scale=True),
+            T.Normalize(mean=MEAN, std=STD),
+        ]
+    )
 
 
 # ================================================================
 # STREAM ITERATOR (infinito para train)
 # ================================================================
+
 
 class ImageNetStream:
     """
@@ -102,20 +108,21 @@ class ImageNetStream:
         seed: Optional[int] = None,
         hf_token: Optional[str] = None,
     ) -> None:
-        self.dataset_name  = dataset_name
-        self.worker_rank   = worker_rank
-        self.num_workers   = num_workers
-        self.batch_size    = batch_size
+        self.dataset_name = dataset_name
+        self.worker_rank = worker_rank
+        self.num_workers = num_workers
+        self.batch_size = batch_size
         self.shuffle_buffer = shuffle_buffer
-        self.seed          = seed
-        self.hf_token      = hf_token
-        self.transform     = get_train_transform(image_size)
-        self._dataset      = None
-        self._batches      = 0
-        self._samples      = 0
+        self.seed = seed
+        self.hf_token = hf_token
+        self.transform = get_train_transform(image_size)
+        self._dataset = None
+        self._batches = 0
+        self._samples = 0
 
     def _open_dataset(self):
         from datasets import load_dataset
+
         kw = {"streaming": True, "split": "train"}
         if self.hf_token:
             kw["token"] = self.hf_token
@@ -152,9 +159,9 @@ class ImageNetStream:
                 self._dataset = self._open_dataset()
             try:
                 for sample in self._dataset:
-                    raw   = sample.get("image") or sample.get("jpg") or sample.get("png")
+                    raw = sample.get("image") or sample.get("jpg") or sample.get("png")
                     label = sample.get("label") or sample.get("cls") or 0
-                    img   = self._to_pil(raw)
+                    img = self._to_pil(raw)
                     if img is None:
                         continue
                     try:
@@ -168,13 +175,15 @@ class ImageNetStream:
                         Y = np.array(buf_Y[: self.batch_size], dtype=np.int64)
                         buf_X = buf_X[self.batch_size :]
                         buf_Y = buf_Y[self.batch_size :]
-                        self._batches  += 1
-                        self._samples  += self.batch_size
+                        self._batches += 1
+                        self._samples += self.batch_size
                         yield X, Y
                 # Stream agotado → reiniciar
                 self._dataset = None
             except Exception as e:
-                print(f"[Stream W{self.worker_rank}] Error: {e}. Reconectando en 5 s...")
+                print(
+                    f"[Stream W{self.worker_rank}] Error: {e}. Reconectando en 5 s..."
+                )
                 time.sleep(5)
                 self._dataset = None
 
@@ -196,6 +205,7 @@ class ImageNetStream:
 # PREFETCH BUFFER
 # ================================================================
 
+
 class PrefetchBuffer:
     """
     Buffer asíncrono que pre-carga batches en un hilo background.
@@ -212,17 +222,18 @@ class PrefetchBuffer:
     """
 
     def __init__(self, source: ImageNetStream, buffer_size: int = 4) -> None:
-        self._source   = source
+        self._source = source
         self._q: queue.Queue = queue.Queue(maxsize=buffer_size)
-        self._stop     = threading.Event()
-        self._thread:  Optional[threading.Thread] = None
-        self._error:   Optional[Exception] = None
+        self._stop = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+        self._error: Optional[Exception] = None
 
     def start(self) -> None:
         iter(self._source)
         self._stop.clear()
         self._thread = threading.Thread(
-            target=self._fill, daemon=True,
+            target=self._fill,
+            daemon=True,
             name=f"prefetch-W{self._source.worker_rank}",
         )
         self._thread.start()
@@ -270,7 +281,9 @@ class PrefetchBuffer:
                     raise StopIteration
                 continue
             if item is None:
-                raise RuntimeError(str(self._error) if self._error else "Stream terminado")
+                raise RuntimeError(
+                    str(self._error) if self._error else "Stream terminado"
+                )
             return item
 
     @property
@@ -281,6 +294,7 @@ class PrefetchBuffer:
 # ================================================================
 # VALIDACIÓN (un solo paso sobre el split completo)
 # ================================================================
+
 
 class ValidationStream:
     """
@@ -305,13 +319,14 @@ class ValidationStream:
         hf_token: Optional[str] = None,
     ) -> None:
         self.dataset_name = dataset_name
-        self.batch_size   = batch_size
-        self.max_batches  = max_batches
-        self.hf_token     = hf_token
-        self.transform    = get_val_transform(image_size)
+        self.batch_size = batch_size
+        self.max_batches = max_batches
+        self.hf_token = hf_token
+        self.transform = get_val_transform(image_size)
 
     def iterate(self) -> Generator[Tuple[np.ndarray, np.ndarray], None, None]:
         from datasets import load_dataset
+
         kw = {"streaming": True, "split": "validation"}
         if self.hf_token:
             kw["token"] = self.hf_token
@@ -323,9 +338,9 @@ class ValidationStream:
         for sample in ds:
             if self.max_batches and done >= self.max_batches:
                 break
-            raw   = sample.get("image") or sample.get("jpg")
+            raw = sample.get("image") or sample.get("jpg")
             label = sample.get("label") or sample.get("cls") or 0
-            img   = ImageNetStream._to_pil(raw)
+            img = ImageNetStream._to_pil(raw)
             if img is None:
                 continue
             try:
@@ -351,6 +366,7 @@ class ValidationStream:
 # FACTORY
 # ================================================================
 
+
 def build_worker_stream(
     worker_rank: int,
     num_workers: int,
@@ -368,13 +384,13 @@ def build_worker_stream(
     Devuelve un PrefetchBuffer listo para llamar .start() e iterar.
     """
     source = ImageNetStream(
-        dataset_name   = dataset_name,
-        worker_rank    = worker_rank,
-        num_workers    = num_workers,
-        batch_size     = batch_size,
-        image_size     = image_size,
-        shuffle_buffer = shuffle_buffer,
-        seed           = seed,
-        hf_token       = hf_token,
+        dataset_name=dataset_name,
+        worker_rank=worker_rank,
+        num_workers=num_workers,
+        batch_size=batch_size,
+        image_size=image_size,
+        shuffle_buffer=shuffle_buffer,
+        seed=seed,
+        hf_token=hf_token,
     )
     return PrefetchBuffer(source, buffer_size=prefetch_batches)

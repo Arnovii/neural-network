@@ -27,7 +27,6 @@ GRADIENT ACCUMULATION:
 """
 
 import socket
-import time
 from typing import Dict, Optional, Tuple
 
 import numpy as np
@@ -84,27 +83,27 @@ class WorkerNode:
         accum_steps: int = 1,
         verbose: bool = True,
     ) -> None:
-        self.server_host    = server_host
-        self.server_port    = server_port
-        self.dataset_name   = dataset_name
-        self.worker_rank    = worker_rank
-        self.num_workers    = num_workers
-        self.batch_size     = batch_size
-        self.hidden1        = hidden1
-        self.hidden2        = hidden2
-        self.device         = torch.device(device)
+        self.server_host = server_host
+        self.server_port = server_port
+        self.dataset_name = dataset_name
+        self.worker_rank = worker_rank
+        self.num_workers = num_workers
+        self.batch_size = batch_size
+        self.hidden1 = hidden1
+        self.hidden2 = hidden2
+        self.device = torch.device(device)
         self.shuffle_buffer = shuffle_buffer
         self.prefetch_batches = prefetch_batches
-        self.image_size     = image_size
-        self.hf_token       = hf_token
-        self.accum_steps    = accum_steps
-        self.verbose        = verbose
+        self.image_size = image_size
+        self.hf_token = hf_token
+        self.accum_steps = accum_steps
+        self.verbose = verbose
 
         self._worker_id: Optional[int] = None
-        self._sock:      Optional[socket.socket] = None
-        self._cnn:       Optional[CNNExtractor] = None
-        self._mlp:       Optional[MLPPyTorch] = None
-        self._stream:    Optional[PrefetchBuffer] = None
+        self._sock: Optional[socket.socket] = None
+        self._cnn: Optional[CNNExtractor] = None
+        self._mlp: Optional[MLPPyTorch] = None
+        self._stream: Optional[PrefetchBuffer] = None
         self._batches_done = 0
 
     # ================================================================
@@ -158,18 +157,20 @@ class WorkerNode:
     def _init_stream(self) -> None:
         """Construye el pipeline de streaming con prefetching en background."""
         self._stream = build_worker_stream(
-            worker_rank     = self.worker_rank,
-            num_workers     = self.num_workers,
-            batch_size      = self.batch_size,
-            dataset_name    = self.dataset_name,
-            image_size      = self.image_size,
-            shuffle_buffer  = self.shuffle_buffer,
-            prefetch_batches= self.prefetch_batches,
-            seed            = 42 + self.worker_rank,
-            hf_token        = self.hf_token,
+            worker_rank=self.worker_rank,
+            num_workers=self.num_workers,
+            batch_size=self.batch_size,
+            dataset_name=self.dataset_name,
+            image_size=self.image_size,
+            shuffle_buffer=self.shuffle_buffer,
+            prefetch_batches=self.prefetch_batches,
+            seed=42 + self.worker_rank,
+            hf_token=self.hf_token,
         )
         self._stream.start()
-        self._log(f"Stream iniciado: {self.dataset_name} | shard {self.worker_rank}/{self.num_workers}")
+        self._log(
+            f"Stream iniciado: {self.dataset_name} | shard {self.worker_rank}/{self.num_workers}"
+        )
 
     # ================================================================
     # HANDSHAKE + LOOP PRINCIPAL
@@ -199,7 +200,7 @@ class WorkerNode:
 
     def _load_cnn(self, payload: dict) -> None:
         """Carga la CNN recibida del PS y confirma con CNN_ACK."""
-        arch          = payload["arch"]
+        arch = payload["arch"]
         weights_bytes = payload["weights_bytes"]
         assert self._sock is not None
 
@@ -245,11 +246,11 @@ class WorkerNode:
                 self._log(f"Mensaje inesperado: {msg['type']}")
                 continue
 
-            payload      = msg["payload"]
-            mlp_state    = payload["mlp_state"]     # Dict[str, np.ndarray] PyTorch keys
-            cnn_state    = payload["cnn_state"]     # Dict[str, np.ndarray] state_dict
+            payload = msg["payload"]
+            mlp_state = payload["mlp_state"]  # Dict[str, np.ndarray] PyTorch keys
+            cnn_state = payload["cnn_state"]  # Dict[str, np.ndarray] state_dict
             version_read = payload["version"]
-            lr           = payload["lr"]
+            lr = payload["lr"]
 
             # ── 2. Sincronizar modelo local con el estado global ──
             self._sync_cnn(cnn_state)
@@ -268,14 +269,14 @@ class WorkerNode:
 
                 loss, acc, n = self._train_batch(X_np, Y_np, lr)
                 total_loss += loss * n
-                total_acc  += acc  * n
-                total_n    += n
+                total_acc += acc * n
+                total_n += n
 
             if total_n == 0:
                 continue
 
             avg_loss = total_loss / total_n
-            avg_acc  = total_acc  / total_n
+            avg_acc = total_acc / total_n
             self._batches_done += self.accum_steps
 
             if self.verbose and self._batches_done % 10 == 0:
@@ -288,14 +289,18 @@ class WorkerNode:
 
             # ── 4. Enviar actualizaciones al PS ──
             try:
-                send_message(self._sock, MsgType.UPDATES, {
-                    "loss":         avg_loss,
-                    "accuracy":     avg_acc,
-                    "batch_size":   total_n,
-                    "version_read": version_read,
-                    "mlp_weights":  self._serialize_mlp(),
-                    "cnn_weights":  self._serialize_cnn(),
-                })
+                send_message(
+                    self._sock,
+                    MsgType.UPDATES,
+                    {
+                        "loss": avg_loss,
+                        "accuracy": avg_acc,
+                        "batch_size": total_n,
+                        "version_read": version_read,
+                        "mlp_weights": self._serialize_mlp(),
+                        "cnn_weights": self._serialize_cnn(),
+                    },
+                )
             except Exception as e:
                 self._log(f"Error enviando UPDATES: {e}")
                 return
@@ -314,8 +319,8 @@ class WorkerNode:
         """
         assert self._cnn is not None
         assert self._mlp is not None
-        
-        X = torch.from_numpy(X_np).to(self.device)   # (N, 3, 224, 224)
+
+        X = torch.from_numpy(X_np).to(self.device)  # (N, 3, 224, 224)
         Y = torch.from_numpy(Y_np.astype(np.int64)).to(self.device)
 
         # Activar modo entrenamiento
@@ -329,9 +334,9 @@ class WorkerNode:
         self._mlp.zero_grad()
 
         # Forward E2E
-        features = self._cnn._model(X)           # (N, feature_dim)
-        logits   = self._mlp(features)            # (N, 1000)
-        loss_t   = nn.functional.cross_entropy(logits, Y)
+        features = self._cnn._model(X)  # (N, feature_dim)
+        logits = self._mlp(features)  # (N, 1000)
+        loss_t = nn.functional.cross_entropy(logits, Y)
 
         # Backward
         loss_t.backward()
@@ -349,9 +354,9 @@ class WorkerNode:
         with torch.no_grad():
             correct = (logits.argmax(1) == Y).sum().item()
 
-        n        = len(Y_np)
+        n = len(Y_np)
         loss_val = loss_t.item()
-        acc_val  = 100.0 * correct / n
+        acc_val = 100.0 * correct / n
 
         # Restaurar CNN a eval
         self._cnn._model.eval()
@@ -373,14 +378,12 @@ class WorkerNode:
         """
         assert self._cnn is not None
         base = getattr(self._cnn._model, "model", self._cnn._model)
-        sd   = base.state_dict()
+        sd = base.state_dict()
         with torch.no_grad():
             for name, arr in cnn_state.items():
                 if name in sd:
                     sd[name] = (
-                        torch.from_numpy(arr)
-                        .to(sd[name].device)
-                        .to(sd[name].dtype)
+                        torch.from_numpy(arr).to(sd[name].device).to(sd[name].dtype)
                     )
             base.load_state_dict(sd)
         self._cnn._model.eval()
@@ -399,18 +402,16 @@ class WorkerNode:
         if existing is None:
             # Inferir dimensiones del state_dict recibido
             feature_dim = mlp_state["fc1.weight"].shape[1]
-            hidden1     = mlp_state["fc1.weight"].shape[0]
-            hidden2     = mlp_state["fc2.weight"].shape[0]
-            existing    = MLPPyTorch(
-                feature_dim, hidden1, hidden2, _IMAGENET_CLASSES
-            ).to(self.device)
+            hidden1 = mlp_state["fc1.weight"].shape[0]
+            hidden2 = mlp_state["fc2.weight"].shape[0]
+            existing = MLPPyTorch(feature_dim, hidden1, hidden2, _IMAGENET_CLASSES).to(
+                self.device
+            )
 
         with torch.no_grad():
             for name, param in existing.named_parameters():
                 if name in mlp_state:
-                    param.data.copy_(
-                        torch.from_numpy(mlp_state[name]).to(param.device)
-                    )
+                    param.data.copy_(torch.from_numpy(mlp_state[name]).to(param.device))
         return existing
 
     # ================================================================

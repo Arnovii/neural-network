@@ -38,12 +38,13 @@ from Model.mlp_pytorch import MLPPyTorch
 # TOOLTIP
 # ================================================================
 
+
 class ToolTip:
     def __init__(self, widget: tk.Widget, text: str) -> None:
         self.widget = widget
-        self.text   = text
-        self._id    = None
-        self._tip   = None
+        self.text = text
+        self._id = None
+        self._tip = None
         widget.bind("<Enter>", lambda e: self._schedule())
         widget.bind("<Leave>", lambda e: self._cancel())
 
@@ -64,23 +65,36 @@ class ToolTip:
         self._tip = tw = tk.Toplevel(self.widget)
         tw.wm_overrideredirect(True)
         tw.wm_geometry(f"+{x}+{y}")
-        tk.Label(tw, text=self.text, justify="left",
-                 background="#ffffe0", relief="solid", borderwidth=1,
-                 font=("Helvetica", 9)).pack(ipadx=5, ipady=3)
+        tk.Label(
+            tw,
+            text=self.text,
+            justify="left",
+            background="#ffffe0",
+            relief="solid",
+            borderwidth=1,
+            font=("Helvetica", 9),
+        ).pack(ipadx=5, ipady=3)
 
 
 # ================================================================
 # APLICACIÓN
 # ================================================================
 
+
 class PSApp:
     WORKER_COLORS = [
-        "#2196F3", "#4CAF50", "#FF9800", "#9C27B0",
-        "#F44336", "#00BCD4", "#795548", "#E91E63",
+        "#2196F3",
+        "#4CAF50",
+        "#FF9800",
+        "#9C27B0",
+        "#F44336",
+        "#00BCD4",
+        "#795548",
+        "#E91E63",
     ]
-    _S_OFFLINE   = "OFFLINE"
+    _S_OFFLINE = "OFFLINE"
     _S_LISTENING = "LISTENING"
-    _S_TRAINING  = "TRAINING"
+    _S_TRAINING = "TRAINING"
 
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
@@ -91,16 +105,16 @@ class PSApp:
         self.root.rowconfigure(0, weight=1)
 
         self._q: queue.Queue = queue.Queue()
-        self._ps:    ParameterServer | None = None
+        self._ps: ParameterServer | None = None
         self._state: str = self._S_OFFLINE
 
-        self._workers: dict = {}   # wid → addr
-        self._steps_hist:   list = []
-        self._loss_hist:    list = []
-        self._acc_hist:     list = []
-        self._val_steps:    list = []
-        self._val_loss:     list = []
-        self._val_acc:      list = []
+        self._workers: dict = {}  # wid → addr
+        self._steps_hist: list = []
+        self._loss_hist: list = []
+        self._acc_hist: list = []
+        self._val_steps: list = []
+        self._val_loss: list = []
+        self._val_acc: list = []
         self._workers_hist: list = []
         self._t_start: float = 0.0
         self._status = tk.StringVar(value="Listo.")
@@ -118,7 +132,9 @@ class PSApp:
         ttk.Label(
             self.root,
             textvariable=self._status,
-            relief=tk.SUNKEN, anchor=tk.W, padding=(6, 2),
+            relief=tk.SUNKEN,
+            anchor=tk.W,
+            padding=(6, 2),
         ).grid(row=1, column=0, columnspan=2, sticky="ew")
 
     def _build_left(self) -> None:
@@ -126,22 +142,27 @@ class PSApp:
         cont.grid(row=0, column=0, sticky="ns", padx=5, pady=5)
         cont.grid_propagate(False)
 
-        cv   = tk.Canvas(cont, highlightthickness=0)
-        sb   = ttk.Scrollbar(cont, orient="vertical", command=cv.yview)
+        cv = tk.Canvas(cont, highlightthickness=0)
+        sb = ttk.Scrollbar(cont, orient="vertical", command=cv.yview)
         cv.configure(yscrollcommand=sb.set)
-        frm  = ttk.Frame(cv, padding="10")
-        frm.bind("<Configure>",
-                 lambda e: cv.configure(scrollregion=cv.bbox("all")))
-        cw   = cv.create_window((0, 0), window=frm, anchor="nw")
+        frm = ttk.Frame(cv, padding="10")
+        frm.bind("<Configure>", lambda e: cv.configure(scrollregion=cv.bbox("all")))
+        cw = cv.create_window((0, 0), window=frm, anchor="nw")
         cv.bind("<Configure>", lambda e: cv.itemconfig(cw, width=e.width))
-        cv.bind("<Enter>",  lambda e: cv.bind_all(
-            "<MouseWheel>", lambda ev: cv.yview_scroll(int(-1*(ev.delta/120)), "units")))
-        cv.bind("<Leave>",  lambda e: cv.unbind_all("<MouseWheel>"))
+        cv.bind(
+            "<Enter>",
+            lambda e: cv.bind_all(
+                "<MouseWheel>",
+                lambda ev: cv.yview_scroll(int(-1 * (ev.delta / 120)), "units"),
+            ),
+        )
+        cv.bind("<Leave>", lambda e: cv.unbind_all("<MouseWheel>"))
         cv.pack(side="left", fill="both", expand=True)
         sb.pack(side="right", fill="y")
 
-        ttk.Label(frm, text="PS — ImageNet-1k",
-                  font=("Helvetica", 13, "bold")).pack(pady=6)
+        ttk.Label(frm, text="PS — ImageNet-1k", font=("Helvetica", 13, "bold")).pack(
+            pady=6
+        )
 
         # ── Conexión ──────────────────────────────────────
         self._section(frm, "Conexión TCP")
@@ -152,24 +173,33 @@ class PSApp:
 
         # ── Dataset ───────────────────────────────────────
         self._section(frm, "Dataset")
-        self._v_dataset   = tk.StringVar(value="ILSVRC/imagenet-1k")
-        self._v_hf_token  = tk.StringVar(value=os.environ.get("HF_TOKEN", ""))
+        self._v_dataset = tk.StringVar(value="ILSVRC/imagenet-1k")
+        self._v_hf_token = tk.StringVar(value=os.environ.get("HF_TOKEN", ""))
         self._entry(frm, "Dataset HF Hub:", self._v_dataset, width=30)
         ttk.Label(frm, text="HF Token:").pack(anchor=tk.W)
         ttk.Entry(frm, textvariable=self._v_hf_token, width=30, show="*").pack(
-            fill=tk.X, pady=2)
-        ttk.Label(frm,
-                  text="ℹ ILSVRC/imagenet-1k requiere token con\n  licencia aceptada en HF.",
-                  font=("Helvetica", 8), foreground="#1565C0",
-                  justify=tk.LEFT).pack(anchor=tk.W, pady=(2, 4))
+            fill=tk.X, pady=2
+        )
+        ttk.Label(
+            frm,
+            text="ℹ ILSVRC/imagenet-1k requiere token con\n  licencia aceptada en HF.",
+            font=("Helvetica", 8),
+            foreground="#1565C0",
+            justify=tk.LEFT,
+        ).pack(anchor=tk.W, pady=(2, 4))
 
         # ── CNN ───────────────────────────────────────────
         self._section(frm, "CNN Extractor")
         self._v_arch = tk.StringVar(value="resnet18")
-        ttk.Radiobutton(frm, text="ResNet-18 + pesos ImageNet (recomendado)",
-                        variable=self._v_arch, value="resnet18").pack(anchor=tk.W)
-        ttk.Radiobutton(frm, text="Simple CNN (sin pretrain)",
-                        variable=self._v_arch, value="simple").pack(anchor=tk.W)
+        ttk.Radiobutton(
+            frm,
+            text="ResNet-18 + pesos ImageNet (recomendado)",
+            variable=self._v_arch,
+            value="resnet18",
+        ).pack(anchor=tk.W)
+        ttk.Radiobutton(
+            frm, text="Simple CNN (sin pretrain)", variable=self._v_arch, value="simple"
+        ).pack(anchor=tk.W)
 
         # ── MLP ───────────────────────────────────────────
         self._section(frm, "Clasificador MLP")
@@ -180,42 +210,54 @@ class PSApp:
 
         # ── Async SGD ─────────────────────────────────────
         self._section(frm, "Async SGD")
-        self._v_lr       = tk.StringVar(value="0.001")
-        self._v_lambda   = tk.StringVar(value="0.1")
-        self._v_report   = tk.IntVar(value=500)
-        self._v_window   = tk.IntVar(value=200)
-        self._entry(frm, "Learning rate:",       self._v_lr,     width=12)
-        self._entry(frm, "Staleness λ (0–1):",   self._v_lambda, width=12)
-        self._entry(frm, "Steps por reporte:",   self._v_report, width=12)
-        self._entry(frm, "Ventana métricas:",    self._v_window, width=12)
-        ttk.Label(frm,
-                  text="ℹ λ=0: sin corrección  λ=0.1: moderada  λ=1: fuerte",
-                  font=("Helvetica", 8), foreground="#2E7D32").pack(
-            anchor=tk.W, pady=(2, 8))
+        self._v_lr = tk.StringVar(value="0.001")
+        self._v_lambda = tk.StringVar(value="0.1")
+        self._v_report = tk.IntVar(value=500)
+        self._v_window = tk.IntVar(value=200)
+        self._entry(frm, "Learning rate:", self._v_lr, width=12)
+        self._entry(frm, "Staleness λ (0–1):", self._v_lambda, width=12)
+        self._entry(frm, "Steps por reporte:", self._v_report, width=12)
+        self._entry(frm, "Ventana métricas:", self._v_window, width=12)
+        ttk.Label(
+            frm,
+            text="ℹ λ=0: sin corrección  λ=0.1: moderada  λ=1: fuerte",
+            font=("Helvetica", 8),
+            foreground="#2E7D32",
+        ).pack(anchor=tk.W, pady=(2, 8))
 
         # ── Evaluación ────────────────────────────────────
         self._section(frm, "Evaluación")
         self._v_val_batches = tk.IntVar(value=50)
         self._entry(frm, "Batches de validación:", self._v_val_batches, width=8)
-        self._btn_eval = ttk.Button(frm, text="Evaluar en validación ahora",
-                                    command=self._cmd_evaluate)
+        self._btn_eval = ttk.Button(
+            frm, text="Evaluar en validación ahora", command=self._cmd_evaluate
+        )
         self._btn_eval.pack(fill=tk.X, pady=6)
 
         # ── Botones ───────────────────────────────────────
         ttk.Separator(frm, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=(18, 8))
-        self._btn_listen   = ttk.Button(frm, text="Encender servidor",
-                                        command=self._cmd_listen)
-        self._btn_train    = ttk.Button(frm, text="▶  Iniciar entrenamiento",
-                                        command=self._cmd_train)
-        self._btn_shutdown = ttk.Button(frm, text="■  Detener todo",
-                                        command=self._cmd_shutdown)
-        self._btn_clear    = ttk.Button(frm, text="Limpiar gráficas",
-                                        command=self._clear_plots)
-        for btn in (self._btn_listen, self._btn_train, self._btn_shutdown, self._btn_clear):
+        self._btn_listen = ttk.Button(
+            frm, text="Encender servidor", command=self._cmd_listen
+        )
+        self._btn_train = ttk.Button(
+            frm, text="▶  Iniciar entrenamiento", command=self._cmd_train
+        )
+        self._btn_shutdown = ttk.Button(
+            frm, text="■  Detener todo", command=self._cmd_shutdown
+        )
+        self._btn_clear = ttk.Button(
+            frm, text="Limpiar gráficas", command=self._clear_plots
+        )
+        for btn in (
+            self._btn_listen,
+            self._btn_train,
+            self._btn_shutdown,
+            self._btn_clear,
+        ):
             btn.pack(fill=tk.X, pady=3)
 
-        ToolTip(self._btn_listen,   "Abre el socket TCP y espera Workers.")
-        ToolTip(self._btn_train,    "Configura el modelo y activa el entrenamiento.")
+        ToolTip(self._btn_listen, "Abre el socket TCP y espera Workers.")
+        ToolTip(self._btn_train, "Configura el modelo y activa el entrenamiento.")
         ToolTip(self._btn_shutdown, "Envía STOP a todos los Workers y cierra el PS.")
 
     def _build_right(self) -> None:
@@ -229,8 +271,9 @@ class PSApp:
         wf.grid(row=0, column=0, sticky="ew", pady=(0, 6))
 
         cols = ("ID", "Dirección", "Estado")
-        self._tree = ttk.Treeview(wf, columns=cols, show="headings",
-                                  height=4, selectmode="none")
+        self._tree = ttk.Treeview(
+            wf, columns=cols, show="headings", height=4, selectmode="none"
+        )
         for col, w in zip(cols, (60, 200, 120)):
             self._tree.heading(col, text=col)
             self._tree.column(col, width=w, anchor="center")
@@ -240,9 +283,15 @@ class PSApp:
         srv_row.pack(fill=tk.X, pady=(6, 0))
         ttk.Label(srv_row, text="Servidor:").pack(side=tk.LEFT)
         self._srv_var = tk.StringVar(value="OFFLINE")
-        self._srv_lbl = tk.Label(srv_row, textvariable=self._srv_var,
-                                 font=("Helvetica", 10, "bold"), fg="white",
-                                 bg="#607D8B", padx=8, pady=2)
+        self._srv_lbl = tk.Label(
+            srv_row,
+            textvariable=self._srv_var,
+            font=("Helvetica", 10, "bold"),
+            fg="white",
+            bg="#607D8B",
+            padx=8,
+            pady=2,
+        )
         self._srv_lbl.pack(side=tk.LEFT, padx=8)
 
         # Métricas en tiempo real
@@ -250,20 +299,24 @@ class PSApp:
         m_row.pack(fill=tk.X, pady=(4, 0))
         self._m_step = tk.StringVar(value="Step: —")
         self._m_loss = tk.StringVar(value="Loss: —")
-        self._m_acc  = tk.StringVar(value="Acc: —")
+        self._m_acc = tk.StringVar(value="Acc: —")
         self._m_stale = tk.StringVar(value="Staleness: —")
         for v in (self._m_step, self._m_loss, self._m_acc, self._m_stale):
             ttk.Label(m_row, textvariable=v, font=("Courier", 9)).pack(
-                side=tk.LEFT, padx=10)
+                side=tk.LEFT, padx=10
+            )
 
         # ── Gráficas ──────────────────────────────────────
         pf = ttk.Frame(right)
         pf.grid(row=1, column=0, sticky="nsew")
         self._fig, (self._ax_loss, self._ax_acc, self._ax_wk) = plt.subplots(
-            1, 3, figsize=(13, 4), dpi=95)
+            1, 3, figsize=(13, 4), dpi=95
+        )
         self._fig.suptitle(
             "Entrenamiento Distribuido Asíncrono — ImageNet-1k",
-            fontsize=12, fontweight="bold")
+            fontsize=12,
+            fontweight="bold",
+        )
         self._setup_axes()
         self._canvas = FigureCanvasTkAgg(self._fig, master=pf)
         self._canvas.draw()
@@ -273,9 +326,16 @@ class PSApp:
         lf = ttk.LabelFrame(right, text="Log", padding=4)
         lf.grid(row=2, column=0, sticky="ew", pady=(6, 0))
         lf.columnconfigure(0, weight=1)
-        self._log_txt = tk.Text(lf, height=5, state=tk.DISABLED,
-                                font=("Courier", 9), bg="#1e1e1e", fg="#d4d4d4",
-                                wrap=tk.WORD, relief=tk.FLAT)
+        self._log_txt = tk.Text(
+            lf,
+            height=5,
+            state=tk.DISABLED,
+            font=("Courier", 9),
+            bg="#1e1e1e",
+            fg="#d4d4d4",
+            wrap=tk.WORD,
+            relief=tk.FLAT,
+        )
         ls = ttk.Scrollbar(lf, command=self._log_txt.yview)
         self._log_txt.configure(yscrollcommand=ls.set)
         self._log_txt.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
@@ -285,23 +345,25 @@ class PSApp:
 
     @staticmethod
     def _section(parent, text):
-        ttk.Label(parent, text=text,
-                  font=("Helvetica", 10, "bold")).pack(anchor=tk.W, pady=(14, 0))
+        ttk.Label(parent, text=text, font=("Helvetica", 10, "bold")).pack(
+            anchor=tk.W, pady=(14, 0)
+        )
         ttk.Separator(parent, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=2)
 
     @staticmethod
     def _entry(parent, label, var, width=22):
         ttk.Label(parent, text=label).pack(anchor=tk.W)
-        kwargs: dict = {"textvariable": var, "width": width, "pady": 2}
+        entry = ttk.Entry(parent, textvariable=var, width=width)
+        pack_kwargs: dict[str, str | int] = {"pady": 2}  # type: ignore
         if width == 22:
-            kwargs["fill"] = tk.X
-        ttk.Entry(parent, **kwargs).pack()
+            pack_kwargs["fill"] = "x"  # type: ignore
+        entry.pack(**pack_kwargs)  # type: ignore
 
     def _setup_axes(self):
         for ax, title, ylabel in [
             (self._ax_loss, "Pérdida (ventana deslizante)", "Loss"),
-            (self._ax_acc,  "Precisión (ventana deslizante)", "Precisión (%)"),
-            (self._ax_wk,   "Workers activos", "N Workers"),
+            (self._ax_acc, "Precisión (ventana deslizante)", "Precisión (%)"),
+            (self._ax_wk, "Workers activos", "N Workers"),
         ]:
             ax.set_title(title)
             ax.set_xlabel("Steps")
@@ -318,18 +380,22 @@ class PSApp:
         has_w = bool(self._workers)
         s = self._state
         self._btn_listen.configure(
-            state=tk.NORMAL if s == self._S_OFFLINE else tk.DISABLED)
+            state=tk.NORMAL if s == self._S_OFFLINE else tk.DISABLED
+        )
         self._btn_train.configure(
-            state=tk.NORMAL if s == self._S_LISTENING and has_w else tk.DISABLED)
+            state=tk.NORMAL if s == self._S_LISTENING and has_w else tk.DISABLED
+        )
         self._btn_shutdown.configure(
-            state=tk.NORMAL if s != self._S_OFFLINE else tk.DISABLED)
+            state=tk.NORMAL if s != self._S_OFFLINE else tk.DISABLED
+        )
         self._btn_eval.configure(
-            state=tk.NORMAL if s == self._S_TRAINING else tk.DISABLED)
+            state=tk.NORMAL if s == self._S_TRAINING else tk.DISABLED
+        )
 
         cfg = {
-            self._S_OFFLINE:   ("OFFLINE",   "#607D8B"),
+            self._S_OFFLINE: ("OFFLINE", "#607D8B"),
             self._S_LISTENING: ("LISTENING", "#2E7D32"),
-            self._S_TRAINING:  ("TRAINING",  "#1565C0"),
+            self._S_TRAINING: ("TRAINING", "#1565C0"),
         }
         text, color = cfg[s]
         self._srv_var.set(text)
@@ -339,27 +405,28 @@ class PSApp:
         try:
             host = self._v_host.get().strip()
             port = int(self._v_port.get())
-            lr   = float(self._v_lr.get())
-            lam  = float(self._v_lambda.get())
-            rep  = int(self._v_report.get())
-            win  = int(self._v_window.get())
+            lr = float(self._v_lr.get())
+            lam = float(self._v_lambda.get())
+            rep = int(self._v_report.get())
+            win = int(self._v_window.get())
         except ValueError as e:
             messagebox.showerror("Parámetro inválido", str(e))
             return
 
         q = self._q
         self._ps = ParameterServer(
-            host=host, port=port,
-            learning_rate=lr, staleness_lambda=lam,
-            steps_per_report=rep, metrics_window=win,
+            host=host,
+            port=port,
+            learning_rate=lr,
+            staleness_lambda=lam,
+            steps_per_report=rep,
+            metrics_window=win,
             on_step=lambda step, loss, acc, stale: q.put(
-                ("step", (step, loss, acc, stale))),
-            on_report=lambda step, loss, acc: q.put(
-                ("report", (step, loss, acc))),
-            on_worker_connected=lambda wid, addr: q.put(
-                ("connected", (wid, addr))),
-            on_worker_disconnected=lambda wid: q.put(
-                ("disconnected", (wid,))),
+                ("step", (step, loss, acc, stale))
+            ),
+            on_report=lambda step, loss, acc: q.put(("report", (step, loss, acc))),
+            on_worker_connected=lambda wid, addr: q.put(("connected", (wid, addr))),
+            on_worker_disconnected=lambda wid: q.put(("disconnected", (wid,))),
         )
         try:
             self._ps.listen()
@@ -384,28 +451,32 @@ class PSApp:
             messagebox.showerror("Parámetro inválido", str(e))
             return
 
-        arch     = self._v_arch.get()
+        arch = self._v_arch.get()
         hf_token = self._v_hf_token.get().strip() or None
-        q        = self._q
+        q = self._q
 
         def _setup():
             try:
                 assert self._ps is not None
                 q.put(("log", f"[PS] Cargando CNN {arch}..."))
                 cnn = CNNExtractor(
-                    arch=arch, pretrained=(arch == "resnet18"),
-                    device="cpu", seed=42)
+                    arch=arch, pretrained=(arch == "resnet18"), device="cpu", seed=42
+                )
                 self._ps.set_cnn(cnn)
 
                 mlp = MLPPyTorch(
-                    feature_dim=cnn.feature_dim,
-                    hidden1=h1, hidden2=h2, n_classes=1000)
+                    feature_dim=cnn.feature_dim, hidden1=h1, hidden2=h2, n_classes=1000
+                )
                 self._ps.set_mlp(mlp.state_dict_numpy())
 
-                q.put(("log",
-                       f"[PS] Modelo listo: {arch} | "
-                       f"feature_dim={cnn.feature_dim} | "
-                       f"MLP {cnn.feature_dim}→{h1}→{h2}→1000"))
+                q.put(
+                    (
+                        "log",
+                        f"[PS] Modelo listo: {arch} | "
+                        f"feature_dim={cnn.feature_dim} | "
+                        f"MLP {cnn.feature_dim}→{h1}→{h2}→1000",
+                    )
+                )
                 q.put(("ready", None))
             except Exception as e:
                 q.put(("error", e))
@@ -420,7 +491,7 @@ class PSApp:
                 return
         threading.Thread(target=self._ps.stop, daemon=True).start()
         self._state = self._S_OFFLINE
-        self._ps    = None
+        self._ps = None
         self._workers.clear()
         for row in self._tree.get_children():
             self._tree.delete(row)
@@ -431,17 +502,18 @@ class PSApp:
     def _cmd_evaluate(self) -> None:
         if not self._ps or self._state != self._S_TRAINING:
             return
-        dataset  = self._v_dataset.get().strip()
+        dataset = self._v_dataset.get().strip()
         hf_token = self._v_hf_token.get().strip() or None
-        n_bat    = int(self._v_val_batches.get())
-        q        = self._q
+        n_bat = int(self._v_val_batches.get())
+        q = self._q
 
         def _eval():
             assert self._ps is not None
             q.put(("log", f"[PS] Evaluando ({n_bat} batches de validación)..."))
             try:
                 acc, loss = self._ps.evaluate(
-                    dataset_name=dataset, max_batches=n_bat, hf_token=hf_token)
+                    dataset_name=dataset, max_batches=n_bat, hf_token=hf_token
+                )
                 step = self._ps.current_version
                 q.put(("val_result", (step, loss, acc)))
             except Exception as e:
@@ -457,14 +529,22 @@ class PSApp:
         try:
             while True:
                 kind, data = self._q.get_nowait()
-                if   kind == "connected":    self._on_connected(*data)
-                elif kind == "disconnected": self._on_disconnected(*data)
-                elif kind == "step":         self._on_step(*data)
-                elif kind == "report":       self._on_report(*data)
-                elif kind == "val_result":   self._on_val(*data)
-                elif kind == "ready":        self._on_ready()
-                elif kind == "log":          self._log(data)
-                elif kind == "error":        self._on_error(data)
+                if kind == "connected":
+                    self._on_connected(*data)
+                elif kind == "disconnected":
+                    self._on_disconnected(*data)
+                elif kind == "step":
+                    self._on_step(*data)
+                elif kind == "report":
+                    self._on_report(*data)
+                elif kind == "val_result":
+                    self._on_val(*data)
+                elif kind == "ready":
+                    self._on_ready()
+                elif kind == "log":
+                    self._log(data)
+                elif kind == "error":
+                    self._on_error(data)
         except queue.Empty:
             pass
         except Exception as e:
@@ -478,11 +558,12 @@ class PSApp:
 
     def _on_connected(self, wid, addr) -> None:
         self._workers[wid] = addr
-        tag   = f"w{wid}"
+        tag = f"w{wid}"
         color = self.WORKER_COLORS[wid % len(self.WORKER_COLORS)]
         if not self._tree.exists(tag):
-            self._tree.insert("", tk.END, iid=tag,
-                              values=(wid, addr, "Activo"), tags=(tag,))
+            self._tree.insert(
+                "", tk.END, iid=tag, values=(wid, addr, "Activo"), tags=(tag,)
+            )
             self._tree.tag_configure(tag, foreground=color)
         self._refresh_buttons()
         self._log(f"[W{wid}] Conectado desde {addr}")
@@ -523,7 +604,7 @@ class PSApp:
         self._status.set(f"Validación | acc={acc:.2f}% | loss={loss:.4f}")
 
     def _on_ready(self) -> None:
-        self._state  = self._S_TRAINING
+        self._state = self._S_TRAINING
         self._t_start = time.perf_counter()
         self._refresh_buttons()
         self._log("[PS] Entrenamiento asíncrono activo.")
@@ -546,30 +627,63 @@ class PSApp:
         self._setup_axes()
 
         if self._steps_hist:
-            self._ax_loss.plot(self._steps_hist, self._loss_hist,
-                               "-o", color="#F44336", lw=2, ms=3, label="Train")
+            self._ax_loss.plot(
+                self._steps_hist,
+                self._loss_hist,
+                "-o",
+                color="#F44336",
+                lw=2,
+                ms=3,
+                label="Train",
+            )
             if self._val_steps:
-                self._ax_loss.scatter(self._val_steps, self._val_loss,
-                                      color="#FF9800", s=60, zorder=5, label="Val")
+                self._ax_loss.scatter(
+                    self._val_steps,
+                    self._val_loss,
+                    color="#FF9800",
+                    s=60,
+                    zorder=5,
+                    label="Val",
+                )
             self._ax_loss.legend(fontsize=8)
 
-            self._ax_acc.plot(self._steps_hist, self._acc_hist,
-                              "-o", color="#2196F3", lw=2, ms=3, label="Train")
+            self._ax_acc.plot(
+                self._steps_hist,
+                self._acc_hist,
+                "-o",
+                color="#2196F3",
+                lw=2,
+                ms=3,
+                label="Train",
+            )
             if self._val_steps:
-                self._ax_acc.scatter(self._val_steps, self._val_acc,
-                                     color="#FF9800", s=60, zorder=5, label="Val")
+                self._ax_acc.scatter(
+                    self._val_steps,
+                    self._val_acc,
+                    color="#FF9800",
+                    s=60,
+                    zorder=5,
+                    label="Val",
+                )
             self._ax_acc.legend(fontsize=8)
 
-            self._ax_wk.step(self._steps_hist, self._workers_hist,
-                             color="#4CAF50", lw=2)
+            self._ax_wk.step(
+                self._steps_hist, self._workers_hist, color="#4CAF50", lw=2
+            )
             self._ax_wk.set_ylim(0, max(self._workers_hist, default=1) + 1)
 
         self._canvas.draw()
 
     def _clear_plots(self) -> None:
-        for lst in (self._steps_hist, self._loss_hist, self._acc_hist,
-                    self._val_steps, self._val_loss, self._val_acc,
-                    self._workers_hist):
+        for lst in (
+            self._steps_hist,
+            self._loss_hist,
+            self._acc_hist,
+            self._val_steps,
+            self._val_loss,
+            self._val_acc,
+            self._workers_hist,
+        ):
             lst.clear()
         self._update_plots()
 
@@ -591,9 +705,10 @@ class PSApp:
 # MAIN
 # ================================================================
 
+
 def main() -> None:
     root = tk.Tk()
-    app  = PSApp(root)
+    app = PSApp(root)
 
     def on_close():
         if app._state == app._S_TRAINING:

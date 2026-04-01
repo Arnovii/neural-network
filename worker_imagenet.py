@@ -52,21 +52,21 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Worker asíncrono — Entrenamiento distribuido ImageNet-1k"
     )
-    parser.add_argument("--server-host",   type=str,   default="127.0.0.1")
-    parser.add_argument("--server-port",   type=int,   default=9999)
-    parser.add_argument("--rank",          type=int,   default=0)
-    parser.add_argument("--num-workers",   type=int,   default=1)
-    parser.add_argument("--batch-size",    type=int,   default=64)
-    parser.add_argument("--hidden1",       type=int,   default=1024)
-    parser.add_argument("--hidden2",       type=int,   default=512)
-    parser.add_argument("--device",        type=str,   default="cpu")
-    parser.add_argument("--dataset",       type=str,   default="ILSVRC/imagenet-1k")
-    parser.add_argument("--shuffle-buffer",type=int,   default=1000)
-    parser.add_argument("--prefetch",      type=int,   default=4)
-    parser.add_argument("--image-size",    type=int,   default=224)
-    parser.add_argument("--hf-token",      type=str,   default=None)
-    parser.add_argument("--accum-steps",   type=int,   default=1)
-    parser.add_argument("--quiet",         action="store_true")
+    parser.add_argument("--server-host", type=str, default="127.0.0.1")
+    parser.add_argument("--server-port", type=int, default=9999)
+    parser.add_argument("--rank", type=int, default=0)
+    parser.add_argument("--num-workers", type=int, default=1)
+    parser.add_argument("--batch-size", type=int, default=64)
+    parser.add_argument("--hidden1", type=int, default=1024)
+    parser.add_argument("--hidden2", type=int, default=512)
+    parser.add_argument("--device", type=str, default="cpu")
+    parser.add_argument("--dataset", type=str, default="ILSVRC/imagenet-1k")
+    parser.add_argument("--shuffle-buffer", type=int, default=1000)
+    parser.add_argument("--prefetch", type=int, default=4)
+    parser.add_argument("--image-size", type=int, default=224)
+    parser.add_argument("--hf-token", type=str, default=None)
+    parser.add_argument("--accum-steps", type=int, default=1)
+    parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args()
 
     hf_token = args.hf_token or os.environ.get("HF_TOKEN")
@@ -91,21 +91,21 @@ def main() -> None:
         print("   Alternativa pública: --dataset timm/imagenet-1k-wds\n")
 
     WorkerNode(
-        server_host     = args.server_host,
-        server_port     = args.server_port,
-        dataset_name    = args.dataset,
-        worker_rank     = args.rank,
-        num_workers     = args.num_workers,
-        batch_size      = args.batch_size,
-        hidden1         = args.hidden1,
-        hidden2         = args.hidden2,
-        device          = args.device,
-        shuffle_buffer  = args.shuffle_buffer,
-        prefetch_batches= args.prefetch,
-        image_size      = args.image_size,
-        hf_token        = hf_token,
-        accum_steps     = args.accum_steps,
-        verbose         = not args.quiet,
+        server_host=args.server_host,
+        server_port=args.server_port,
+        dataset_name=args.dataset,
+        worker_rank=args.rank,
+        num_workers=args.num_workers,
+        batch_size=args.batch_size,
+        hidden1=args.hidden1,
+        hidden2=args.hidden2,
+        device=args.device,
+        shuffle_buffer=args.shuffle_buffer,
+        prefetch_batches=args.prefetch,
+        image_size=args.image_size,
+        hf_token=hf_token,
+        accum_steps=args.accum_steps,
+        verbose=not args.quiet,
     ).run()
 
 
