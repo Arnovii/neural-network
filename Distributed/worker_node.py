@@ -233,11 +233,16 @@ class WorkerNode:
         assert self._cnn is not None
         assert self._stream is not None
 
+        self._log(f"Inicializando iterador del stream...")
         stream_iter = iter(self._stream)
+        self._log(f"✓ Stream iterator listo")
         version_read = 0
+        iter_count = 0
 
         while True:
+            iter_count += 1
             # ── 1. Pedir parámetros globales ──
+            self._log(f"[iter {iter_count}] REQUEST_PARAMS...")
             try:
                 send_message(self._sock, MsgType.REQUEST_PARAMS, {})
                 msg = receive_message(self._sock)
@@ -264,15 +269,32 @@ class WorkerNode:
             # ── 3. Entrenar accum_steps batches ──
             total_loss, total_acc, total_n = 0.0, 0.0, 0
 
-            for _ in range(self.accum_steps):
+            for step_idx in range(self.accum_steps):
+                self._log(f"[iter {iter_count}, step {step_idx}] Esperando batch...")
                 try:
                     X_np, Y_np = next(stream_iter)
+                    self._log(
+                        f"[iter {iter_count}, step {step_idx}] ✓ Batch recibido: {X_np.shape}"
+                    )
                 except StopIteration:
                     assert self._stream is not None
+                    self._log(
+                        f"[iter {iter_count}, step {step_idx}] Stream agotado, reiniciando..."
+                    )
                     stream_iter = iter(self._stream)
+                    self._log(
+                        f"[iter {iter_count}, step {step_idx}] Obteniendo nuevo batch..."
+                    )
                     X_np, Y_np = next(stream_iter)
+                    self._log(
+                        f"[iter {iter_count}, step {step_idx}] ✓ Nuevo batch: {X_np.shape}"
+                    )
 
+                self._log(f"[iter {iter_count}, step {step_idx}] Entrenando batch...")
                 loss, acc, n = self._train_batch(X_np, Y_np, lr)
+                self._log(
+                    f"[iter {iter_count}, step {step_idx}] ✓ Batch entrenado: loss={loss:.4f}, acc={acc:.2f}%"
+                )
                 total_loss += loss * n
                 total_acc += acc * n
                 total_n += n
@@ -293,6 +315,7 @@ class WorkerNode:
                 )
 
             # ── 4. Enviar actualizaciones al PS ──
+            self._log(f"[iter {iter_count}] Serializando y enviando UPDATES...")
             try:
                 send_message(
                     self._sock,
@@ -305,6 +328,9 @@ class WorkerNode:
                         "mlp_weights": self._serialize_mlp(),
                         "cnn_weights": self._serialize_cnn(),
                     },
+                )
+                self._log(
+                    f"[iter {iter_count}] ✓ UPDATES enviados. Avg loss={avg_loss:.4f}, acc={avg_acc:.2f}%"
                 )
             except Exception as e:
                 self._log(f"Error enviando UPDATES: {e}")
