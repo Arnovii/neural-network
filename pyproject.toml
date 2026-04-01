@@ -8,5 +8,6 @@ dependencies = [
     "matplotlib>=3.10.8",
     "mplcursors>=0.7",
     "numpy>=2.4.2",
+    "psutil>=6.0.0",
     "torchvision>=0.25.0",
 ]

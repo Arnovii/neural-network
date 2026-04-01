@@ -1,0 +1,379 @@
+"""
+ps_terminal.py
+
+Punto de entrada del Parameter Server.
+
+──────────────────────────────────────────────────────────────────
+USO
+──────────────────────────────────────────────────────────────────
+    python ps_terminal.py [opciones]
+
+Opciones:
+    --host                  IP en la que escucha el servidor     (default: 0.0.0.0)
+    --port                  Puerto TCP                           (default: 9999)
+    --workers               Número de Workers a esperar          (default: 2)
+    --epochs                Épocas de entrenamiento              (default: 10)
+    --hidden1               Neuronas en la primera capa oculta   (default: 256)
+    --hidden2               Neuronas en la segunda capa oculta   (default: 128)
+    --lr                    Tasa de aprendizaje                  (default: 0.01)
+    --n-train               Total de ejemplos de entrenamiento   (default: 50000)
+    --cnn-arch              Arquitectura CNN: simple o resnet18  (default: simple)
+    --cnn-device            Dispositivo PyTorch: cpu, cuda, mps  (default: cpu)
+    --cnn-pretrain-samples  Imágenes para preentrenar CNN        (default: 10000)
+    --seed                  Semilla aleatoria                    (default: ninguna)
+    --momentum              Momentum SGD para MLP                (default: 0.9)
+
+Ejemplo — servidor esperando 3 workers, 20 épocas, 5000 muestras para CNN:
+    python ps_terminal.py --workers 3 --epochs 20 --cnn-pretrain-samples 5000
+
+──────────────────────────────────────────────────────────────────
+ARQUITECTURA
+──────────────────────────────────────────────────────────────────
+El PS tiene tres fases:
+
+    1. listen()  → Abre el socket y acepta Workers en un hilo de
+                   fondo. Retorna inmediatamente.
+
+    2. Espera    → El script bloquea hasta que se conectan
+                   exactamente --workers Workers.
+
+    3. train()   → Ejecuta el loop de entrenamiento distribuido:
+                       Por cada época:
+                       a. Genera una semilla aleatoria de época.
+                       b. Broadcast: params + semilla a cada Worker.
+                       c. Cada Worker reconstruye su chunk localmente.
+                       d. Esperar gradientes de TODOS los Workers.
+                       e. Promediar:  ∇θ = (1/N) * Σ ∇θL(Bᵢ)
+                       f. Actualizar: θ ← θ − lr * ∇θ
+
+    4. shutdown() → Envía STOP a los Workers y cierra el servidor.
+
+Los datos de entrenamiento (imágenes) nunca salen de cada Worker.
+Al finalizar imprime el historial de precisión y pérdida por época
+y exporta los resultados a ``Exports/`` vía ``Utils/results_exporter``.
+"""
+
+import argparse
+import os
+import sys
+import threading
+import time
+
+# Asegura que los módulos del proyecto sean importables
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from Distributed.parameter_server import ParameterServer
+from Model.cnn_extractor import CNNExtractor
+from Model.mlp import init_params
+from Utils.cifar_loader import NUM_CLASSES, load_cifar10_test
+from Utils.results_exporter import export_results
+
+
+# ================================================================
+# CALLBACK DE PROGRESO
+# ================================================================
+
+
+def _on_epoch_end(
+    epoch: int,
+    total: int,
+    train_acc: float,
+    train_loss: float,
+    test_acc: float | None,
+    test_loss: float | None,
+) -> None:
+    """
+    Callback ejecutado al final de cada época — imprime resumen en consola.
+
+    :param epoch: Número de época actual (1-based, no 0-based).
+    :type epoch: int, ej. 1, 2, ..., 100.
+
+    :param total: Total de épocas planificadas.
+    :type total: int.
+
+    :param train_acc: Precisión de entrenamiento en porcentaje 0-100.
+    :type train_acc: float, ej. 87.5.
+
+    :param train_loss: Cross-entropy loss en entrenamiento.
+    :type train_loss: float, ej. 0.312.
+
+    :param test_acc: Precisión en conjunto de prueba. None si no hay evaluación.
+    :type test_acc: float | None, porcentaje 0-100 o None.
+
+    :param test_loss: Cross-entropy loss en prueba. Solo se usa si test_acc != None.
+    :type test_loss: float | None.
+
+    :return: None (solo imprime en consola).
+    :rtype: NoneType.
+    """
+    # Barra de progreso: 20 caracteres, cada uno representa 5% (100/20)
+    # int(accuracy/5) convierte 0-100% a 0-20 caracteres llenos
+    bar = "█" * int(train_acc / 5)
+    bar_padded = bar.ljust(20, "░")  # rellena con ░ hasta 20 caracteres
+
+    # Formato condicional: mostrar métricas de prueba solo si existen
+    test_str = (
+        f"  | precisión_prueba={test_acc:.2f}%  pérdida_prueba={test_loss:.4f}"
+        if test_acc is not None
+        else ""
+    )
+
+    print(
+        f"  [{bar_padded}] {train_acc:5.2f}%  "
+        f"pérdida={train_loss:.4f}{test_str}  ({epoch}/{total})"
+    )
+
+
+# ================================================================
+# MAIN
+# ================================================================
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Parameter Server — Algoritmo de Diego Distribuido"
+    )
+    parser.add_argument(
+        "--host",
+        type=str,
+        default="0.0.0.0",
+        help="IP en la que escucha el servidor (default: 0.0.0.0)",
+    )
+    parser.add_argument(
+        "--port", type=int, default=9999, help="Puerto TCP (default: 9999)"
+    )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=2,
+        help="Número de Workers a esperar (default: 2)",
+    )
+    parser.add_argument(
+        "--epochs", type=int, default=10, help="Épocas de entrenamiento (default: 10)"
+    )
+    parser.add_argument(
+        "--hidden1",
+        type=int,
+        default=256,
+        help="Neuronas en la primera capa oculta (default: 256)",
+    )
+    parser.add_argument(
+        "--hidden2",
+        type=int,
+        default=128,
+        help="Neuronas en la segunda capa oculta (default: 128)",
+    )
+    parser.add_argument(
+        "--lr", type=float, default=0.01, help="Tasa de aprendizaje (default: 0.01)"
+    )
+    parser.add_argument(
+        "--n-train",
+        type=int,
+        default=50_000,
+        help="Total de ejemplos de entrenamiento (default: 50000, máx CIFAR-10 train)",
+    )
+    parser.add_argument(
+        "--seed", type=int, default=None, help="Semilla aleatoria (default: ninguna)"
+    )
+    parser.add_argument(
+        "--momentum",
+        type=float,
+        default=0.9,
+        help="Momentum SGD para el MLP (0.0=SGD puro, 0.9=default)",
+    )
+    parser.add_argument(
+        "--cnn-arch",
+        type=str,
+        default="simple",
+        choices=["simple", "resnet18"],
+        help="Arquitectura CNN: simple (preentrenada local) | resnet18 (pesos ImageNet, default: simple)",
+    )
+    parser.add_argument(
+        "--cnn-device",
+        type=str,
+        default="cpu",
+        help="Dispositivo PyTorch para la CNN: cpu, cuda, mps (default: cpu)",
+    )
+    parser.add_argument(
+        "--cnn-pretrain-samples",
+        type=int,
+        default=10000,
+        help="Número de imágenes para preentrenar la CNN simple (default: 10000)",
+    )
+    args = parser.parse_args()
+
+    # resnet18 siempre usa pesos ImageNet — es la única configuración útil.
+    cnn_pretrained = args.cnn_arch == "resnet18"
+
+    OUTPUT_SIZE = NUM_CLASSES
+
+    print("=" * 70)
+    print("PARAMETER SERVER — Configuración (CIFAR-10)")
+    print("=" * 70)
+    print(f"  Host            : {args.host}:{args.port}")
+    print(f"  Workers         : {args.workers}")
+    print(f"  Épocas          : {args.epochs}")
+    print(
+        f"  CNN arch        : {args.cnn_arch}"
+        + (" (pesos ImageNet)" if cnn_pretrained else " (preentrenada localmente)")
+    )
+    print(
+        f"  MLP arquitectura: features → {args.hidden1} → {args.hidden2} → {OUTPUT_SIZE}"
+    )
+    print(f"  Learning rate   : {args.lr}")
+    print(f"  Ejemplos train  : {args.n_train}")
+    print(f"  Semilla         : {args.seed if args.seed is not None else 'aleatoria'}")
+    print("=" * 70)
+
+    # Espera hasta que se conecten los N Workers requeridos
+    ready_event = threading.Event()
+    connected_count = [0]
+
+    def _on_worker_connected(worker_id: int, addr: str) -> None:
+        connected_count[0] += 1
+        print(
+            f"  [+] Worker {worker_id} conectado desde {addr} "
+            f"({connected_count[0]}/{args.workers})"
+        )
+        if connected_count[0] >= args.workers:
+            ready_event.set()
+
+    def _on_worker_disconnected(worker_id: int) -> None:
+        print(f"  [-] Worker {worker_id} desconectado inesperadamente.")
+
+    def _on_gradients_received(
+        worker_id: int, epoch: int, loss: float, accuracy: float
+    ) -> None:
+        print(
+            f"  [↓] Gradientes de Worker {worker_id}  "
+            f"precisión={accuracy:.2f}%  pérdida={loss:.4f}"
+        )
+
+    # Creación del servidor
+    server = ParameterServer(
+        host=args.host,
+        port=args.port,
+        on_worker_connected=_on_worker_connected,
+        on_worker_disconnected=_on_worker_disconnected,
+        on_gradients_received=_on_gradients_received,
+        on_epoch_end=_on_epoch_end,
+    )
+
+    server.listen()
+
+    print(f"\n  Esperando {args.workers} worker(s)...\n")
+    ready_event.wait()
+    print()
+
+    # Construye el extractor CNN con la misma semilla que usarán los Workers,
+    # garantizando que todos partan de los mismos pesos convolucionales.
+    print("\nConstruyendo extractor CNN...")
+    # La CNN siempre usa seed=42 — independiente de la semilla MLP.
+    # Mezclarlas haría que --seed invalide la caché CNN.
+    cnn = CNNExtractor(
+        arch=args.cnn_arch,
+        pretrained=cnn_pretrained,
+        device=args.cnn_device,
+        seed=42,
+    )
+    feature_dim = cnn.feature_dim
+    print(f"CNN lista — arch={args.cnn_arch}  feature_dim={feature_dim}\n")
+
+    # X_test_raw se usa como fallback si el Worker no envía TEST_FEATURES.
+    # Si el Worker 0 sí los envía, el PS los usará en lugar de este fallback.
+    print("Cargando datos de prueba CIFAR-10 (10 000 imágenes)...")
+    X_test_raw, Y_test = load_cifar10_test(verbose=False)
+    server.set_cnn(cnn)
+
+    # Si la CNN simple no tiene caché, preentrenar con datos de TRAIN
+    # (pedidos al Worker) en lugar de X_test → sin sesgo en evaluación.
+    if args.cnn_arch == "simple":
+        import glob as _glob
+
+        has_cache = bool(_glob.glob(str(cnn._cache_dir) + "/simple_*_weights.pt"))
+        if not has_cache:
+            print(
+                "[PS] Solicitando muestra de train al Worker "
+                "para preentrenar CNN sin sesgo..."
+            )
+            train_sample = server.request_train_sample(
+                n_samples=args.cnn_pretrain_samples
+            )
+            if train_sample is not None:
+                X_pre, Y_pre = train_sample
+                print(
+                    f"[PS] Muestra recibida ({len(X_pre)} imgs). Preentrenando CNN..."
+                )
+                cnn.pretrain(X_pre, Y_pre, epochs=10, verbose=True)
+            else:
+                print("[PS] ⚠ Sin Workers — pretrain usará datos de prueba.")
+
+    initial_params = init_params(
+        feature_dim, args.hidden1, args.hidden2, OUTPUT_SIZE, args.seed
+    )
+
+    t_start = time.perf_counter()
+
+    history = server.train(
+        epochs=args.epochs,
+        initial_params=initial_params,
+        learning_rate=args.lr,
+        n_train=args.n_train,
+        X_test=X_test_raw,  # fallback: PS extrae si Worker no envía TEST_FEATURES
+        Y_test=Y_test,
+        momentum=args.momentum,
+        training_mode="precomputed",  # ps_terminal siempre usa precomputed
+    )
+
+    elapsed = time.perf_counter() - t_start
+
+    server.shutdown()
+
+    # Resumen final
+    print("\n" + "=" * 70)
+    print("RESUMEN DE ENTRENAMIENTO")
+    print("=" * 70)
+    print(f"  Precisión final de entrenamiento  : {history['accuracies'][-1]:.2f}%")
+    print(f"  Mejor precisión de entrenamiento  : {max(history['accuracies']):.2f}%")
+    print(f"  Pérdida final de entrenamiento    : {history['losses'][-1]:.4f}")
+    if history["test_accuracies"]:
+        print(f"  Precisión final de prueba   : {history['test_accuracies'][-1]:.2f}%")
+        print(f"  Mejor precisión de prueba   : {max(history['test_accuracies']):.2f}%")
+        print(f"  Pérdida final de prueba     : {history['test_losses'][-1]:.4f}")
+
+    minutes, seconds = divmod(elapsed, 60)
+    print(
+        f"\n  Tiempo de ejecución         : {int(minutes)}m {seconds:.2f}s ({elapsed:.2f}s)"
+    )
+
+    print("\n  Evolución por época:")
+    has_test = bool(history["test_accuracies"])
+    for i, (acc, loss) in enumerate(zip(history["accuracies"], history["losses"]), 1):
+        bar = "█" * int(acc / 5)
+        test_str = ""
+        if has_test:
+            t_acc = history["test_accuracies"][i - 1]
+            t_loss = history["test_losses"][i - 1]
+            test_str = f"  precisión_prueba={t_acc:.2f}%  pérdida_prueba={t_loss:.4f}"
+        print(
+            f"    Época {i:3d}: precisión={acc:5.2f}%  pérdida={loss:.4f}{test_str}  {bar}"
+        )
+
+    # Exportar resultados
+    config = {
+        "epochs": args.epochs,
+        "cnn_arch": args.cnn_arch,
+        "hidden1": args.hidden1,
+        "hidden2": args.hidden2,
+        "learning_rate": args.lr,
+        "momentum": args.momentum,
+        "n_train": args.n_train,
+        "workers": args.workers,
+        "seed": args.seed,
+    }
+    json_path = export_results(history, config, elapsed)
+    print(f"\n  Resultados exportados a: {json_path}")
+
+
+if __name__ == "__main__":
+    main()
