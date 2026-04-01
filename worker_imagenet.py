@@ -1,0 +1,113 @@
+"""
+worker_imagenet.py
+
+Worker asíncrono para entrenamiento distribuido en ImageNet.
+
+USO:
+    python worker_imagenet.py [opciones]
+
+OPCIONES:
+    --server-host     IP del Parameter Server            (default: 127.0.0.1)
+    --server-port     Puerto TCP                         (default: 9999)
+    --rank            Índice de este Worker (0-based)    (default: 0)
+    --num-workers     Total de Workers (para sharding)   (default: 1)
+    --batch-size      Imágenes por batch                 (default: 64)
+    --hidden1         Neuronas capa oculta 1 del MLP     (default: 1024)
+    --hidden2         Neuronas capa oculta 2 del MLP     (default: 512)
+    --device          cpu | cuda | cuda:0 | mps           (default: cpu)
+    --dataset         Dataset HF Hub                     (default: ILSVRC/imagenet-1k)
+    --shuffle-buffer  Imágenes en buffer de shuffle      (default: 1000)
+    --prefetch        Batches pre-cargados en background  (default: 4)
+    --image-size      Tamaño de crop final                (default: 224)
+    --hf-token        Token HuggingFace
+    --accum-steps     Batches a acumular antes de enviar  (default: 1)
+    --quiet           Suprimir mensajes de progreso
+
+EJEMPLO — 2 Workers en la misma máquina con GPUs distintas:
+    python worker_imagenet.py --rank 0 --num-workers 2 --device cuda:0
+    python worker_imagenet.py --rank 1 --num-workers 2 --device cuda:1
+
+EJEMPLO — Workers en máquinas distintas:
+    python worker_imagenet.py --server-host 192.168.1.10 --rank 0 --num-workers 3
+    python worker_imagenet.py --server-host 192.168.1.10 --rank 1 --num-workers 3
+    python worker_imagenet.py --server-host 192.168.1.10 --rank 2 --num-workers 3
+
+TOKEN HF:
+    ImageNet-1k requiere aceptar la licencia en:
+    https://huggingface.co/datasets/ILSVRC/imagenet-1k
+    y usar un token de acceso (export HF_TOKEN=hf_... o --hf-token).
+    Alternativa pública: --dataset timm/imagenet-1k-wds
+"""
+
+import argparse
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from Distributed.worker_node import WorkerNode
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Worker asíncrono — Entrenamiento distribuido ImageNet-1k"
+    )
+    parser.add_argument("--server-host",   type=str,   default="127.0.0.1")
+    parser.add_argument("--server-port",   type=int,   default=9999)
+    parser.add_argument("--rank",          type=int,   default=0)
+    parser.add_argument("--num-workers",   type=int,   default=1)
+    parser.add_argument("--batch-size",    type=int,   default=64)
+    parser.add_argument("--hidden1",       type=int,   default=1024)
+    parser.add_argument("--hidden2",       type=int,   default=512)
+    parser.add_argument("--device",        type=str,   default="cpu")
+    parser.add_argument("--dataset",       type=str,   default="ILSVRC/imagenet-1k")
+    parser.add_argument("--shuffle-buffer",type=int,   default=1000)
+    parser.add_argument("--prefetch",      type=int,   default=4)
+    parser.add_argument("--image-size",    type=int,   default=224)
+    parser.add_argument("--hf-token",      type=str,   default=None)
+    parser.add_argument("--accum-steps",   type=int,   default=1)
+    parser.add_argument("--quiet",         action="store_true")
+    args = parser.parse_args()
+
+    hf_token = args.hf_token or os.environ.get("HF_TOKEN")
+
+    print("=" * 68)
+    print("WORKER ASÍNCRONO — ImageNet-1k Distribuido")
+    print("=" * 68)
+    print(f"  PS             : {args.server_host}:{args.server_port}")
+    print(f"  Rank           : {args.rank}/{args.num_workers}")
+    print(f"  Dataset        : {args.dataset}")
+    print(f"  Batch size     : {args.batch_size}")
+    print(f"  MLP hidden     : {args.hidden1} → {args.hidden2} → 1000")
+    print(f"  Device         : {args.device}")
+    print(f"  Shuffle buffer : {args.shuffle_buffer}")
+    print(f"  Prefetch       : {args.prefetch} batches")
+    print(f"  Accum steps    : {args.accum_steps}")
+    print(f"  HF Token       : {'✓ configurado' if hf_token else '✗ no configurado'}")
+    print("=" * 68)
+
+    if not hf_token:
+        print("\n⚠  Sin token HF — ILSVRC/imagenet-1k requiere autenticación.")
+        print("   Alternativa pública: --dataset timm/imagenet-1k-wds\n")
+
+    WorkerNode(
+        server_host     = args.server_host,
+        server_port     = args.server_port,
+        dataset_name    = args.dataset,
+        worker_rank     = args.rank,
+        num_workers     = args.num_workers,
+        batch_size      = args.batch_size,
+        hidden1         = args.hidden1,
+        hidden2         = args.hidden2,
+        device          = args.device,
+        shuffle_buffer  = args.shuffle_buffer,
+        prefetch_batches= args.prefetch,
+        image_size      = args.image_size,
+        hf_token        = hf_token,
+        accum_steps     = args.accum_steps,
+        verbose         = not args.quiet,
+    ).run()
+
+
+if __name__ == "__main__":
+    main()

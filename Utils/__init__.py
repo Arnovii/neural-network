@@ -1,53 +1,99 @@
 """
-Utils — Utilidades para manejo de datos y exportación de resultados.
+Utils — Utilidades para streaming de datos, logging y exportación de resultados.
 
-Prove funcionalidades esenciales para el pipeline de entrenamiento distribuido:
+Proporciona funcionalidades esenciales para el pipeline de entrenamiento distribuido
+asíncrono sobre ImageNet-1k:
 
-1. **Carga de datos CIFAR-10**: Disponible en dos formatos:
+1. **Streaming de ImageNet-1k**: Descarga bajo demanda desde HuggingFace con:
 
-   - Pickle (``cifar-10-batches-py/*``): Carga estándar from Keras/TensorFlow.
-   - NPZ (``cifar10_train_nchw.npz``): Formato optimizado NCHW precompilado.
+   - Streaming puro: Nunca descarga el dataset completo (~1.2M imágenes).
+   - Sharding automático: Cada Worker consume su porción de datos sin solapamiento.
+   - Prefetching asíncrono: Hilo background llena cola mientras entrenamiento consume.
+   - Reconexión automática: Reintentos ante errores de red.
+   - Transforms: RandomResizedCrop + HorizontalFlip para train; CenterCrop para val.
 
-   Normalización automática: resta media (0.491, 0.482, 0.446), divide por
-   std (0.247, 0.244, 0.261). Conversión a formato NCHW.
+   Datasets soportados:
+   - ILSVRC/imagenet-1k (requiere token HF + licencia aceptada)
+   - timm/imagenet-1k-wds (formato WebDataset, acceso público)
 
-2. **Logging centralizado**: Clase FormattedLogger con colorización, timestamps,
-   y fases de entrenamiento (load, prep, train, eval, cnn, ps, worker, etc).
+2. **Logging centralizado**: Clase FormattedLogger con:
 
-3. **Exportación de resultados**: Serialización de historiales de training
-   (pérdidas, accuracies) a JSON con metadatos (épocas, arquitectura, etc).
+   - Colorización ANSI independiente de SO
+   - Timestamps para cada mensaje
+   - Fases etiquetadas: [INFO], [TRAIN], [EVAL], [ERROR], etc.
+   - Soporte para modo quiet
 
-Módulos
--------
-cifar_loader : modulo
-    Funciones para cargar CIFAR-10 (train/test) con normalización.
-    Soporta tanto formato Pickle como NPZ.
-    Gestión automática de memoria y conversión de tensores.
+3. **Exportación de resultados**: JSON con historiales de training incluyendo
+   metadatos (arquitectura, épocas, workers activos, etc.).
 
-logging_util : modulo
-    Clase FormattedLogger con métodos para cada fase de entrenamiento.
-    Colorización ANSI, timestamps, agregación de métricas.
+MÓDULOS
+=======
 
-results_exporter : modulo
-    Funciones para guardar y cargar historiales de training en JSON.
-    Preserva metadatos y permite reproducibilidad.
+imagenet_streaming : module
+    ImageNetStream: Iterador que descarga batches desde HF bajo demanda.
+    PrefetchBuffer: Buffer asíncrono con pre-fetching en hilo background.
+    ValidationStream: Iterador de validación (un solo pase, no infinito).
+    build_worker_stream(): Factory que retorna PrefetchBuffer listo para usar.
 
-Exportaciones principales
--------------------------
-load_cifar10_train : function
-    Carga dataset de entrenamiento CIFAR-10.
+    Parámetros clave:
+    - worker_rank, num_workers: Sharding del dataset
+    - prefetch_batches: Tamaño de cola (default=4, ~385MB por batch)
+    - shuffle_buffer: Buffer de shuffle interno (default=1000 imágenes)
 
-    :return: (X_train, Y_train) ambos normalizados y en formato NCHW.
-    :rtype: tuple[np.ndarray, np.ndarray]
+logging_util : module
+    Clase FormattedLogger con métodos para cada fase.
+    get_logger(): Retorna logger global con colorización.
 
-load_cifar10_test : function
-    Carga dataset de prueba CIFAR-10.
+results_exporter : module
+    save_results(): Serializa histórico a JSON con metadatos.
+    load_results(): Recarga histórico desde JSON.
 
-    :return: (X_test, Y_test) ambos normalizados y en formato NCHW.
-    :rtype: tuple[np.ndarray, np.ndarray]
+EXPORTACIONES PRINCIPALES
+==========================
 
-NUM_CLASSES : int
-    Constante = 10 (número de clases CIFAR-10).
+ImageNetStream : class
+    from Utils.imagenet_streaming import ImageNetStream
+
+PrefetchBuffer : class
+    from Utils.imagenet_streaming import PrefetchBuffer
+
+ValidationStream : class
+    from Utils.imagenet_streaming import ValidationStream
+
+build_worker_stream : function
+    from Utils.imagenet_streaming import build_worker_stream
+
+get_logger : function
+    from Utils.logging_util import get_logger
+
+save_results, load_results : functions
+    from Utils.results_exporter import save_results, load_results
+
+FLUJO TÍPICO
+============
+
+    # Worker: Crear stream con sharding
+    stream = build_worker_stream(
+        worker_rank=0, num_workers=2, batch_size=64,
+        dataset_name='ILSVRC/imagenet-1k', hf_token=token
+    )
+    stream.start()
+
+    for X_batch, Y_batch in stream:  # (64, 3, 224, 224), (64,)
+        # entrenar con batch
+        pass
+
+    stream.stop()
+
+    # PS: Validación periódica
+    val_stream = ValidationStream(
+        dataset_name='ILSVRC/imagenet-1k',
+        batch_size=256, max_batches=50, hf_token=token
+    )
+    for X_val, Y_val in val_stream.iterate():
+        # evaluar
+        pass
+"""
 
 export_results : function
     Exporta historial de entrenamiento a JSON.
