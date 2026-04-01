@@ -71,7 +71,12 @@ _logger = get_logger(use_colors=True)
 # (divergencia entre workers) sin destruir el learning rate.
 # FedAvg estándar usa E=1 (un paso por época); valores de 5-10
 # son prácticos y dan buen balance entre cómputo y convergencia.
-_E2E_MAX_LOCAL_STEPS = 10
+#
+# [B] Reducido de 10 → 5: con 2 workers cada uno hace 5 pasos Adam
+# sobre su mitad del dataset. Menos pasos = menos especialización local
+# = BN stats más similares entre workers = promedio PS más estable.
+# Con 200 épocas totales el modelo tiene tiempo suficiente para converger.
+_E2E_MAX_LOCAL_STEPS = 5
 
 # Ratio CNN_LR / MLP_LR.
 # La CNN tiene gradientes naturalmente más pequeños (más capas,
@@ -79,8 +84,23 @@ _E2E_MAX_LOCAL_STEPS = 10
 # evita actualizaciones demasiado grandes que destruirían las
 # representaciones aprendidas durante el preentrenamiento.
 # El MLP, siendo más shallow, puede aprender más rápido.
-_E2E_CNN_LR_FACTOR = 0.1   # CNN_LR = learning_rate * 0.1
+#
+# [C] CNN_LR_FACTOR reducido de 0.1 → 0.05: con LR base 0.01 el CNN_LR
+# pasa de 1e-3 a 5e-4. Esto reduce la velocidad de cambio de los pesos
+# CNN (y por tanto de sus BN stats) entre épocas consecutivas, produciendo
+# promedios FedAvg más suaves y curvas de test menos ruidosas.
+# No introduce underfitting: el MLP sigue con LR completo (1.0×lr).
+_E2E_CNN_LR_FACTOR = 0.05  # CNN_LR = learning_rate * 0.05  (antes: 0.1)
 _E2E_MLP_LR_FACTOR = 1.0   # MLP_LR = learning_rate * 1.0
+
+# Norma máxima para gradient clipping en E2E.
+# [D] Adam sin clipping puede producir pasos muy grandes cuando los
+# gradientes son inusualmente altos (especialmente al recibir pesos
+# promediados subóptimos del PS). clip_grad_norm_ con max_norm=1.0
+# es el estándar para entrenamiento distribuido: trunca gradientes que
+# superen la norma sin modificar su dirección, evitando actualizaciones
+# explosivas sin afectar épocas donde los gradientes son normales.
+_E2E_GRAD_CLIP_NORM = 1.0
 
 
 class WorkerNode:
@@ -1078,11 +1098,22 @@ class WorkerNode:
                 # Loss
                 loss_tensor = torch.nn.functional.cross_entropy(logits, Y_mini_torch)
 
-                # [C3] Backward con Adam: zero_grad → backward → step
+                # [C3] Backward con Adam: zero_grad → backward → clip → step
                 # Adam ajusta el LR por parámetro basándose en los momentos,
                 # siendo más robusto que SGD manual ante gradientes ruidosos.
+                #
+                # [D] Gradient clipping antes de step():
+                # Trunca gradientes cuya norma supere _E2E_GRAD_CLIP_NORM (1.0).
+                # Evita actualizaciones explosivas al recibir pesos promediados
+                # del PS que pueden ser subóptimos, sin afectar épocas normales.
+                # clip_grad_norm_ preserva la dirección del gradiente, solo
+                # escala su magnitud — no introduce sesgo en el aprendizaje.
                 self._e2e_optimizer.zero_grad()
                 loss_tensor.backward()
+                torch.nn.utils.clip_grad_norm_(
+                    list(self._cnn._model.parameters()) + list(mlp.parameters()),
+                    max_norm=_E2E_GRAD_CLIP_NORM,
+                )
                 self._e2e_optimizer.step()
 
                 # [P4] Acumular ponderado por tamaño de batch
