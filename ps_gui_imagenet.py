@@ -170,7 +170,9 @@ class PSApp:
         self._v_port = tk.IntVar(value=9999)
         ent_host = self._entry(frm, "Host:", self._v_host)
         ent_port = self._entry(frm, "Puerto:", self._v_port, width=10)
-        ToolTip(ent_host, "IP donde escuchará el servidor (0.0.0.0 = todas las interfaces)")
+        ToolTip(
+            ent_host, "IP donde escuchará el servidor (0.0.0.0 = todas las interfaces)"
+        )
         ToolTip(ent_port, "Puerto TCP para comunicación con Workers")
 
         # ── Dataset ───────────────────────────────────────
@@ -181,7 +183,10 @@ class PSApp:
         ttk.Label(frm, text="HF Token:").pack(anchor=tk.W)
         ent_token = ttk.Entry(frm, textvariable=self._v_hf_token, width=30, show="*")
         ent_token.pack(fill=tk.X, pady=2)
-        ToolTip(ent_dataset, "Dataset de Hugging Face Hub (ej: ILSVRC/imagenet-1k, timm/imagenet-1k-wds)")
+        ToolTip(
+            ent_dataset,
+            "Dataset de Hugging Face Hub (ej: ILSVRC/imagenet-1k, timm/imagenet-1k-wds)",
+        )
         ToolTip(ent_token, "Token de acceso HF para datasets privados.")
         ttk.Label(
             frm,
@@ -205,8 +210,14 @@ class PSApp:
             frm, text="Simple CNN (sin pretrain)", variable=self._v_arch, value="simple"
         )
         rb_simple.pack(anchor=tk.W)
-        ToolTip(rb_resnet, "Extractor preentrenado en ImageNet (más rápido, mejor convergencia)")
-        ToolTip(rb_simple, "CNN simple sin preentrenamiento (para experimentos, convergencia lenta)")
+        ToolTip(
+            rb_resnet,
+            "Extractor preentrenado en ImageNet (más rápido, mejor convergencia)",
+        )
+        ToolTip(
+            rb_simple,
+            "CNN simple sin preentrenamiento (para experimentos, convergencia lenta)",
+        )
 
         # ── MLP ───────────────────────────────────────────
         self._section(frm, "Clasificador MLP")
@@ -230,7 +241,10 @@ class PSApp:
         ToolTip(ent_lr, "Tasa de aprendizaje para SGD (típicamente 0.001–0.01)")
         ToolTip(ent_lambda, "Factor de corrección staleness")
         ToolTip(ent_report, "Cada cuántos steps generar reporte de métricas en consola")
-        ToolTip(ent_window, "Cantidad de steps anteriores para promediar métricas (suaviza ruido)")
+        ToolTip(
+            ent_window,
+            "Cantidad de steps anteriores para promediar métricas (suaviza ruido)",
+        )
         ttk.Label(
             frm,
             text="ℹ λ=0: sin corrección  λ=0.1: moderada  λ=1: fuerte",
@@ -241,7 +255,9 @@ class PSApp:
         # ── Evaluación ────────────────────────────────────
         self._section(frm, "Evaluación")
         self._v_val_batches = tk.IntVar(value=50)
-        ent_valbatches = self._entry(frm, "Batches de validación:", self._v_val_batches, width=8)
+        ent_valbatches = self._entry(
+            frm, "Batches de validación:", self._v_val_batches, width=8
+        )
         self._btn_eval = ttk.Button(
             frm, text="Evaluar en validación ahora", command=self._cmd_evaluate
         )
@@ -273,7 +289,9 @@ class PSApp:
         ToolTip(self._btn_listen, "Abre el socket TCP y espera Workers.")
         ToolTip(self._btn_train, "Configura el modelo y activa el entrenamiento.")
         ToolTip(self._btn_shutdown, "Envía STOP a todos los Workers y cierra el PS.")
-        ToolTip(self._btn_clear, "Limpia históricos de gráficas (no detiene entrenamiento)")
+        ToolTip(
+            self._btn_clear, "Limpia históricos de gráficas (no detiene entrenamiento)"
+        )
 
     def _build_right(self) -> None:
         right = ttk.Frame(self.root)
