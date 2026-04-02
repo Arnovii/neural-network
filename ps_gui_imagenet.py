@@ -168,18 +168,21 @@ class PSApp:
         self._section(frm, "Conexión TCP")
         self._v_host = tk.StringVar(value="0.0.0.0")
         self._v_port = tk.IntVar(value=9999)
-        self._entry(frm, "Host:", self._v_host)
-        self._entry(frm, "Puerto:", self._v_port, width=10)
+        ent_host = self._entry(frm, "Host:", self._v_host)
+        ent_port = self._entry(frm, "Puerto:", self._v_port, width=10)
+        ToolTip(ent_host, "IP donde escuchará el servidor (0.0.0.0 = todas las interfaces)")
+        ToolTip(ent_port, "Puerto TCP para comunicación con Workers")
 
         # ── Dataset ───────────────────────────────────────
         self._section(frm, "Dataset")
         self._v_dataset = tk.StringVar(value="ILSVRC/imagenet-1k")
         self._v_hf_token = tk.StringVar(value=os.environ.get("HF_TOKEN", ""))
-        self._entry(frm, "Dataset HF Hub:", self._v_dataset, width=30)
+        ent_dataset = self._entry(frm, "Dataset HF Hub:", self._v_dataset, width=30)
         ttk.Label(frm, text="HF Token:").pack(anchor=tk.W)
-        ttk.Entry(frm, textvariable=self._v_hf_token, width=30, show="*").pack(
-            fill=tk.X, pady=2
-        )
+        ent_token = ttk.Entry(frm, textvariable=self._v_hf_token, width=30, show="*")
+        ent_token.pack(fill=tk.X, pady=2)
+        ToolTip(ent_dataset, "Dataset de Hugging Face Hub (ej: ILSVRC/imagenet-1k, timm/imagenet-1k-wds)")
+        ToolTip(ent_token, "Token de acceso HF para datasets privados.")
         ttk.Label(
             frm,
             text="ℹ ILSVRC/imagenet-1k requiere token con\n  licencia aceptada en HF.",
@@ -191,22 +194,28 @@ class PSApp:
         # ── CNN ───────────────────────────────────────────
         self._section(frm, "CNN Extractor")
         self._v_arch = tk.StringVar(value="resnet18")
-        ttk.Radiobutton(
+        rb_resnet = ttk.Radiobutton(
             frm,
             text="ResNet-18 + pesos ImageNet (recomendado)",
             variable=self._v_arch,
             value="resnet18",
-        ).pack(anchor=tk.W)
-        ttk.Radiobutton(
+        )
+        rb_resnet.pack(anchor=tk.W)
+        rb_simple = ttk.Radiobutton(
             frm, text="Simple CNN (sin pretrain)", variable=self._v_arch, value="simple"
-        ).pack(anchor=tk.W)
+        )
+        rb_simple.pack(anchor=tk.W)
+        ToolTip(rb_resnet, "Extractor preentrenado en ImageNet (más rápido, mejor convergencia)")
+        ToolTip(rb_simple, "CNN simple sin preentrenamiento (para experimentos, convergencia lenta)")
 
         # ── MLP ───────────────────────────────────────────
         self._section(frm, "Clasificador MLP")
         self._v_h1 = tk.IntVar(value=1024)
         self._v_h2 = tk.IntVar(value=512)
-        self._entry(frm, "Neuronas capa 1:", self._v_h1, width=8)
-        self._entry(frm, "Neuronas capa 2:", self._v_h2, width=8)
+        ent_h1 = self._entry(frm, "Neuronas capa 1:", self._v_h1, width=8)
+        ent_h2 = self._entry(frm, "Neuronas capa 2:", self._v_h2, width=8)
+        ToolTip(ent_h1, "Tamaño de la 1ª capa oculta del MLP (features → h1)")
+        ToolTip(ent_h2, "Tamaño de la 2ª capa oculta del MLP (h1 → h2 → 1000 clases)")
 
         # ── Async SGD ─────────────────────────────────────
         self._section(frm, "Async SGD")
@@ -214,10 +223,14 @@ class PSApp:
         self._v_lambda = tk.StringVar(value="0.1")
         self._v_report = tk.IntVar(value=500)
         self._v_window = tk.IntVar(value=200)
-        self._entry(frm, "Learning rate:", self._v_lr, width=12)
-        self._entry(frm, "Staleness λ (0–1):", self._v_lambda, width=12)
-        self._entry(frm, "Steps por reporte:", self._v_report, width=12)
-        self._entry(frm, "Ventana métricas:", self._v_window, width=12)
+        ent_lr = self._entry(frm, "Learning rate:", self._v_lr, width=12)
+        ent_lambda = self._entry(frm, "Staleness λ (0–1):", self._v_lambda, width=12)
+        ent_report = self._entry(frm, "Steps por reporte:", self._v_report, width=12)
+        ent_window = self._entry(frm, "Ventana métricas:", self._v_window, width=12)
+        ToolTip(ent_lr, "Tasa de aprendizaje para SGD (típicamente 0.001–0.01)")
+        ToolTip(ent_lambda, "Factor de corrección staleness")
+        ToolTip(ent_report, "Cada cuántos steps generar reporte de métricas en consola")
+        ToolTip(ent_window, "Cantidad de steps anteriores para promediar métricas (suaviza ruido)")
         ttk.Label(
             frm,
             text="ℹ λ=0: sin corrección  λ=0.1: moderada  λ=1: fuerte",
@@ -228,11 +241,12 @@ class PSApp:
         # ── Evaluación ────────────────────────────────────
         self._section(frm, "Evaluación")
         self._v_val_batches = tk.IntVar(value=50)
-        self._entry(frm, "Batches de validación:", self._v_val_batches, width=8)
+        ent_valbatches = self._entry(frm, "Batches de validación:", self._v_val_batches, width=8)
         self._btn_eval = ttk.Button(
             frm, text="Evaluar en validación ahora", command=self._cmd_evaluate
         )
         self._btn_eval.pack(fill=tk.X, pady=6)
+        ToolTip(self._btn_eval, "Evalúa modelo en datos de validación (no bloqueante)")
 
         # ── Botones ───────────────────────────────────────
         ttk.Separator(frm, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=(18, 8))
@@ -259,6 +273,7 @@ class PSApp:
         ToolTip(self._btn_listen, "Abre el socket TCP y espera Workers.")
         ToolTip(self._btn_train, "Configura el modelo y activa el entrenamiento.")
         ToolTip(self._btn_shutdown, "Envía STOP a todos los Workers y cierra el PS.")
+        ToolTip(self._btn_clear, "Limpia históricos de gráficas (no detiene entrenamiento)")
 
     def _build_right(self) -> None:
         right = ttk.Frame(self.root)
@@ -358,6 +373,7 @@ class PSApp:
         if width == 22:
             pack_kwargs["fill"] = "x"  # type: ignore
         entry.pack(**pack_kwargs)  # type: ignore
+        return entry
 
     def _setup_axes(self):
         for ax, title, ylabel in [
