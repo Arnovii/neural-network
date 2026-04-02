@@ -444,6 +444,13 @@ class PSApp:
             lam = float(self._v_lambda.get())
             rep = int(self._v_report.get())
             win = int(self._v_window.get())
+            
+            # CRÍTICO: Obtener parámetros de CNN + MLP AHORA (no después en _cmd_train)
+            h1 = int(self._v_h1.get())
+            h2 = int(self._v_h2.get())
+            arch = self._v_arch.get()
+            hf_token = self._v_hf_token.get().strip() or None
+            
         except ValueError as e:
             messagebox.showerror("Parámetro inválido", str(e))
             return
@@ -463,6 +470,32 @@ class PSApp:
             on_worker_connected=lambda wid, addr: q.put(("connected", (wid, addr))),
             on_worker_disconnected=lambda wid: q.put(("disconnected", (wid,))),
         )
+        
+        # ═══════════════════════════════════════════════════════════════
+        # INICIALIZAR CNN + MLP ANTES DE LISTEN (CRÍTICO FIX)
+        # ═══════════════════════════════════════════════════════════════
+        try:
+            self._log(f"[PS] Cargando {arch}...")
+            cnn = CNNExtractor(
+                arch=arch, pretrained=(arch == "resnet18"), device="cpu", seed=42
+            )
+            self._ps.set_cnn(cnn)
+            
+            self._log(f"[PS] Inicializando MLP: {cnn.feature_dim}→{h1}→{h2}→1000")
+            mlp = MLPPyTorch(
+                feature_dim=cnn.feature_dim, hidden1=h1, hidden2=h2, n_classes=1000
+            )
+            self._ps.set_mlp(mlp.state_dict_numpy())
+            
+            self._log(f"[PS] ✓ CNN + MLP listos. Iniciando servidor...")
+        except Exception as e:
+            messagebox.showerror("Error inicializando CNN/MLP", str(e))
+            self._ps = None
+            return
+        
+        # ═══════════════════════════════════════════════════════════════
+        # AHORA escuchar a Workers (ya con CNN + MLP configurados)
+        # ═══════════════════════════════════════════════════════════════
         try:
             self._ps.listen()
         except Exception as e:
@@ -472,51 +505,20 @@ class PSApp:
 
         self._state = self._S_LISTENING
         self._refresh_buttons()
-        self._log(f"[PS] Servidor en {host}:{port}")
+        self._log(f"[PS] Servidor en {host}:{port} — esperando Workers")
         self._status.set(f"Escuchando en {host}:{port}...")
         self.root.after(100, self._poll)
 
     def _cmd_train(self) -> None:
+        """Inicia entrenamiento (CNN + MLP ya fueron cargados en _cmd_listen)."""
         if self._state != self._S_LISTENING or not self._workers:
             return
-        try:
-            h1 = int(self._v_h1.get())
-            h2 = int(self._v_h2.get())
-        except ValueError as e:
-            messagebox.showerror("Parámetro inválido", str(e))
-            return
 
-        arch = self._v_arch.get()
-        hf_token = self._v_hf_token.get().strip() or None
-        q = self._q
-
-        def _setup():
-            try:
-                assert self._ps is not None
-                q.put(("log", f"[PS] Cargando CNN {arch}..."))
-                cnn = CNNExtractor(
-                    arch=arch, pretrained=(arch == "resnet18"), device="cpu", seed=42
-                )
-                self._ps.set_cnn(cnn)
-
-                mlp = MLPPyTorch(
-                    feature_dim=cnn.feature_dim, hidden1=h1, hidden2=h2, n_classes=1000
-                )
-                self._ps.set_mlp(mlp.state_dict_numpy())
-
-                q.put(
-                    (
-                        "log",
-                        f"[PS] Modelo listo: {arch} | "
-                        f"feature_dim={cnn.feature_dim} | "
-                        f"MLP {cnn.feature_dim}→{h1}→{h2}→1000",
-                    )
-                )
-                q.put(("ready", None))
-            except Exception as e:
-                q.put(("error", e))
-
-        threading.Thread(target=_setup, daemon=True).start()
+        self._state = self._S_TRAINING
+        self._refresh_buttons()
+        self._log("[PS] ✓ Entrenamiento iniciado. Workers activos comenzarán a entrenar.")
+        self._status.set("Entrenamiento en progreso...")
+        self.root.after(100, self._poll)
 
     def _cmd_shutdown(self) -> None:
         if not self._ps:

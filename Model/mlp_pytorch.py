@@ -59,10 +59,11 @@ class MLPPyTorch(nn.Module):
         self._init_weights()
 
     def _init_weights(self) -> None:
+        # He initialization uniforme (Kaiming uniform)
+        # Evita los extremos de inicialización muy pequeña que causa
+        # logits casi-cero y softmax uniforme
         for layer in (self.fc1, self.fc2, self.fc3):
-            fan_in = layer.weight.shape[1]
-            std = (2.0 / fan_in) ** 0.5
-            nn.init.normal_(layer.weight, 0.0, std)
+            nn.init.kaiming_uniform_(layer.weight, mode='fan_in', nonlinearity='relu')
             nn.init.zeros_(layer.bias)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:

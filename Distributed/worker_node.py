@@ -367,6 +367,23 @@ class WorkerNode:
         # Forward E2E
         features = self._cnn._model(X)  # (N, feature_dim)
         logits = self._mlp(features)  # (N, 1000)
+        
+        # DIAGNÓSTICO: Verificar que logits no son patológicos
+        logits_mean = logits.mean().item()
+        logits_std = logits.std().item()
+        logits_max = logits.max().item()
+        if abs(logits_mean) < 0.01 and logits_std < 0.1:
+            if not hasattr(self, '_bad_logits_warn_count'):
+                self._bad_logits_warn_count = 0
+            if self._bad_logits_warn_count == 0:
+                self._log(
+                    f"⚠  [CRÍTICO] Logits patológicos: mean={logits_mean:.6f}, "
+                    f"std={logits_std:.6f}, max={logits_max:.6f}. "
+                    f"Softmax será uniforme → accuracy ≈ 0%. "
+                    f"Verifica: (1) PS.set_mlp() se llamó, (2) He init no es demasiado pequeña"
+                )
+                self._bad_logits_warn_count += 1
+        
         loss_t = nn.functional.cross_entropy(logits, Y)
 
         # Backward
@@ -413,6 +430,15 @@ class WorkerNode:
         with torch.no_grad():
             for name, arr in cnn_state.items():
                 if name in sd:
+                    # Proteger contra tipos raros o escalares
+                    if not isinstance(arr, np.ndarray):
+                        arr = np.array(arr)
+                    # Asegurar que es al menos 1-d (evitar escalares 0-d)
+                    if arr.ndim == 0:
+                        arr = arr.reshape((1,))
+                    # Convertir tipos no-float a float64 (seguro para averaging)
+                    if arr.dtype not in [np.float32, np.float64]:
+                        arr = arr.astype(np.float64)
                     sd[name] = (
                         torch.from_numpy(arr).to(sd[name].device).to(sd[name].dtype)
                     )
@@ -447,8 +473,9 @@ class WorkerNode:
                 ).to(self.device)
                 if not mlp_state:
                     self._log(
-                        f"⚠  MLP no recibido del PS — usando valores por defecto "
-                        f"({feature_dim}→{hidden1}→{hidden2}→1000)"
+                        f"⚠  [CRÍTICO] MLP no recibido del PS (PS.set_mlp() no fue llamado?) "
+                        f"— usando random init ({feature_dim}→{hidden1}→{hidden2}→1000). "
+                        f"Esto causará loss≈{np.log(_IMAGENET_CLASSES):.1f} y acc≈0% hasta convergencia lenta."
                     )
             else:
                 # Inferir dimensiones del state_dict recibido
@@ -458,11 +485,23 @@ class WorkerNode:
                 existing = MLPPyTorch(
                     feature_dim, hidden1, hidden2, _IMAGENET_CLASSES
                 ).to(self.device)
+                self._log(f"✓ MLP creado del state_dict del PS: {feature_dim}→{hidden1}→{hidden2}→1000")
 
         with torch.no_grad():
             for name, param in existing.named_parameters():
                 if name in mlp_state:
                     param.data.copy_(torch.from_numpy(mlp_state[name]).to(param.device))
+                    
+        # Diagnóstico: verificar que los pesos no son patológicamente pequeños
+        if existing is not None:
+            fc1_weight_mean = existing.fc1.weight.data.abs().mean().item()
+            if fc1_weight_mean < 0.001:
+                self._log(
+                    f"⚠  [DIAGNÓSTICO] fc1.weight mean abs = {fc1_weight_mean:.6f} "
+                    f"(muy pequeño, logits serán ≈0, accuracy ≈0%). "
+                    f"Verifica que PS.set_mlp() se llamó ANTES de ps.listen()"
+                )
+                    
         return existing
 
     # ================================================================
@@ -473,10 +512,14 @@ class WorkerNode:
         """State_dict completo de la CNN (parámetros + BN buffers)."""
         assert self._cnn is not None
         base = getattr(self._cnn._model, "model", self._cnn._model)
-        return {
-            name: tensor.cpu().numpy().copy()
-            for name, tensor in base.state_dict().items()
-        }
+        result = {}
+        for name, tensor in base.state_dict().items():
+            arr = tensor.cpu().numpy().copy()
+            # Convertir tipos no-float a float64 (seguro para averaging y transporte)
+            if arr.dtype not in [np.float32, np.float64]:
+                arr = arr.astype(np.float64)
+            result[name] = arr
+        return result
 
     def _serialize_mlp(self) -> Dict[str, np.ndarray]:
         """State_dict del MLP en formato PyTorch nativo (fc1.weight, …)."""

@@ -184,10 +184,16 @@ class ParameterServer:
         self._cnn = cnn
         base = getattr(cnn._model, "model", cnn._model)
         with self._params_lock:
-            self._cnn_state = {
-                name: tensor.cpu().numpy().copy()
-                for name, tensor in base.state_dict().items()
-            }
+            # Convertir estado a numpy, protegiendo contra tipos que causen problemas
+            # (ej: buffers int64 o bool de BatchNorm)
+            self._cnn_state = {}
+            for name, tensor in base.state_dict().items():
+                arr = tensor.cpu().numpy().copy()
+                # Convertir tipos no-float a float64 (seguro para averaging y transporte)
+                # float64 es más seguro que float32 para evitar problemas de precisión
+                if arr.dtype not in [np.float32, np.float64]:
+                    arr = arr.astype(np.float64)
+                self._cnn_state[name] = arr
         _log.ps(f"CNN lista: arch={cnn.arch}, feature_dim={cnn.feature_dim}")
 
     def set_mlp(self, mlp_state: Dict[str, np.ndarray]) -> None:
@@ -358,6 +364,15 @@ class ParameterServer:
         No hay barrera: este hilo atiende solo a `wid` de forma continua.
         Otros Workers tienen sus propios hilos y no se bloquean entre sí.
         """
+        # VALIDACIÓN CRÍTICA: MLP DEBE ESTAR INICIALIZADO
+        with self._params_lock:
+            if not self._mlp_state:
+                _log.error(
+                    f"[CRÍTICO] MLP NO INICIALIZADO en PS. "
+                    f"Llama ps.set_mlp() ANTES de ps.listen(). "
+                    f"Worker {wid} recibirá MLP con random init → logs ≈ 0 → accuracy = 0%"
+                )
+        
         try:
             while not self._shutdown.is_set():
                 try:
@@ -436,9 +451,19 @@ class ParameterServer:
             if cnn_weights:
                 for key in self._cnn_state:
                     if key in cnn_weights:
-                        self._cnn_state[key] += alpha * (
-                            cnn_weights[key] - self._cnn_state[key]
-                        )
+                        # Proteger contra mismatch de tipos (ej: buffer int64 de BN)
+                        # Asegurar ambos operandos son float
+                        current = self._cnn_state[key]
+                        incoming = cnn_weights[key]
+                        
+                        # Convertir a float64 si no lo son
+                        if current.dtype not in [np.float32, np.float64]:
+                            current = current.astype(np.float64)
+                        if incoming.dtype not in [np.float32, np.float64]:
+                            incoming = incoming.astype(np.float64)
+                        
+                        # Averaging seguro
+                        self._cnn_state[key] = current + alpha * (incoming - current)
 
             self._version += 1
             step = self._version
