@@ -297,6 +297,7 @@ class PSApp:
         right = ttk.Frame(self.root)
         right.grid(row=0, column=1, sticky="nsew", padx=5, pady=5)
         right.rowconfigure(1, weight=1)
+        right.rowconfigure(2, weight=1)
         right.columnconfigure(0, weight=1)
 
         # ── Workers ───────────────────────────────────────
@@ -357,11 +358,11 @@ class PSApp:
 
         # ── Log ───────────────────────────────────────────
         lf = ttk.LabelFrame(right, text="Log", padding=4)
-        lf.grid(row=2, column=0, sticky="ew", pady=(6, 0))
+        lf.grid(row=2, column=0, sticky="nsew", pady=(3, 0))
         lf.columnconfigure(0, weight=1)
         self._log_txt = tk.Text(
             lf,
-            height=5,
+            height=2,
             state=tk.DISABLED,
             font=("Courier", 9),
             bg="#1e1e1e",
@@ -404,7 +405,7 @@ class PSApp:
             ax.set_ylabel(ylabel)
             ax.grid(True, alpha=0.3)
         self._ax_acc.set_ylim(0, 100)
-        self._fig.tight_layout(rect=(0, 0, 1, 0.93))
+        self._fig.tight_layout(rect=(0, 0, 1, 0.98))
 
     # ================================================================
     # BOTONES
