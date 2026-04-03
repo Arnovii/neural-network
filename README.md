@@ -655,11 +655,6 @@ neural-network/
 │   ├── logging_util.py                ← FormattedLogger con colorización ANSI
 │   └── results_exporter.py            ← Export de históricos a JSON
 │
-├── Data/                              ← Directorio de datos (ignorado por .gitignore)
-│   ├── cifar-10-batches-py/           ← CIFAR-10 (para testing legacy, no usado aquí)
-│   ├── cifar10_train_nchw.npz
-│   └── feature_cache/                 ← Cache de features (unused)
-│
 └── Docs/                              ← Documentación técnica exhaustiva
     ├── 00_Resumen_General.md
     ├── 01_Arquitectura.md

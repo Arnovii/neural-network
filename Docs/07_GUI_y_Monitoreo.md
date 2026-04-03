@@ -181,6 +181,141 @@ Accuracy: 2.34%          → Last metric
 Staleness: 2             → version - version_read del último UPDATES
 ```
 
+### Entendiendo Accuracy: 3 Fuentes Distintas
+
+**Confusión común**: El Accuracy que ves en 3 lugares es **DIFERENTE en cada uno**, porque se calcula de forma distinta:
+
+#### 1. **Terminal Worker (Batch Individual)** — MUY RUIDOSO
+
+```
+[W0] batch=500 | loss=4.5306 | acc=18.75% | v=499
+                                  ↑ Este accuracy
+```
+
+**Qué es**: Accuracy del batch individual que acaba de entrenar el Worker
+- **Tamaño**: 64 imágenes (batch_size)
+- **Actualización**: Cada batch (~0.1-1 segundo)
+- **Variabilidad**: Muy alta (puede ser 0% o 100% por suerte)
+- **Fórmula**: `acc = (predictions.argmax(-1) == labels).float().mean()`
+
+**Por qué es ruidoso**:
+- 64 imágenes al azar pueden ser easy o hard
+- Accuracy = 0 si todos fallan, 25% si 16/64 acierta
+
+**Ejemplo**: 3 batches consecutivos podrían dar 18.75%, 0%, 12.5%
+
+---
+
+#### 2. **GUI Encima de Gráfica (Ventana Deslizante)** — SUAVIZADO MEDIO
+
+```
+Acc: 14.06%  ← En la etiqueta encima del gráfico de precisión
+```
+
+**Qué es**: Promedió de Accuracy de los últimos N steps (ventana deslizante)
+- **Tamaño ventana**: 50 o 200 (configurable en GUI)
+- **Actualización**: Cada `on_step()` callback (~cada paso del PS)
+- **Latencia**: Demora porque deber llenar la ventana completamente
+- **Fórmula**: `acc_ventana = mean([acc_step_1, acc_step_2, ..., acc_step_N])`
+
+**Implementación** (en parameter_server.py):
+```python
+class RunningMetrics:
+    def __init__(self, window=200):
+        self._accs = collections.deque(maxlen=window)
+    
+    def update(self, loss, acc):
+        self._accs.append(acc)
+    
+    def snapshot(self):
+        return float(np.mean(self._accs)) if self._accs else 0.0
+```
+
+**Por qué demora en actualizarse**:
+- Con ventana=200: Necesita 200 steps (unos 3-5 min en CPU) antes de ser estable
+- Con ventana=50: Necesita 50 steps (30-60 seg)
+- Mientras se llena: Accuracy fluctúa bastante
+- Una vez lleno: Accuracy es muy estable
+
+**Ventaja**: Suavizado pero no es ruido puro
+
+---
+
+#### 3. **Puntos en Gráfica (Promedio por Reporte)** — MÁS ESTABLE
+
+```
+[Step 515] loss=4.6308 | acc=12.66%
+                             ↑ Este es el que se grafica
+```
+
+**Qué es**: Promedio de Accuracy del último reporte (múltiples steps)
+- **Intervalo reporte**: Cada 500 steps (default, configurable)
+- **Actualización**: Solo cada 500 steps (mucho más lento)
+- **Estabilidad**: Muy alta porque promedia muchos batches
+- **Fórmula**: `acc_reporte = mean([últimos 500 steps de acc])`
+
+**Implementación** (en parameter_server.py):
+```python
+if self.current_step % self.steps_per_report == 0:
+    loss_avg, acc_avg = self._metrics.snapshot()
+    self.on_report(self.current_step, loss_avg, acc_avg)  # Callback → GUI
+    # GUI recibe esto y lo grafica
+```
+
+**Ventaja**: Muy estable, sin ruido, fácil de ver tendencia
+
+**Desventaja**: Demora ~500 steps antes de ver valor nuevo
+
+---
+
+#### Comparación Lado a Lado
+
+| Métrica | Dónde Aparece | Actualización | Ventana | Volatilidad |
+|---------|---|---|---|---|
+| **Batch** | `Terminal` | Cada batch (~0.1s) | 1 batch (64 imgs) | ⚠️⚠️⚠️ Muy alta |
+| **Ventana deslizante** | `GUI encima gráfica` | Cada step (~1s) | Últimos 50/200 steps | ⚠️⚠️ Media |
+| **Puntos gráfica** | `Línea azul con puntos` | Cada 500 steps (~5-10 min) | Promedio últimos 500 steps | ✓ Baja |
+
+---
+
+#### ¿Por qué son tan diferentes?
+
+**Ejemplo real** (de tus logs):
+
+```
+TERMINAL (batch 500):      acc = 18.75%  ← Batch tuvo suerte
+GUI actual (step 513):     acc = 14.06%  ← Promedio últimos 200 steps
+Gráfica punto:             acc = 12.66%  ← Promedio últimos 500 steps
+
+Tendencia: 18.75% > 14.06% > 12.66%
+              ↑ Ruido alto    ↑ Real     ↑ Más real
+```
+
+El batch salió con accuracy alta por suerte, pero el verdadero accuracy del modelo es:
+- Ventana=200: 14.06%
+- Ventana=500: 12.66% (mejor estimador)
+
+---
+
+#### Recomendación Práctica
+
+**Durante entrenamiento**:
+- **Ignora** el accuracy del batch individual (muy ruidoso)
+- **Monitor** la gráfica de puntos azules (más estable)
+- **Verifica** que la tendencia general baje o suba según esperado
+
+**Ejemplo patrón normal**:
+```
+step=100:   acc=0.5%   ← Inicio, casi random
+step=500:   acc=3.2%   ← Empieza a aprender
+step=1000:  acc=7.8%   ← Tendencia clara
+step=5000:  acc=25%    ← Convergencia real
+```
+
+Si ves que los **puntos azules bajan** (en lugar de subir), hay problemas.
+
+---
+
 ### Tabla de Workers Conectados
 
 ```

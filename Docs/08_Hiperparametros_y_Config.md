@@ -130,31 +130,73 @@ if current_step % steps_per_report == 0:
 - Debugging → reducir a 100
 - Producción → hasta 1000
 
-### Metrics Window
+### Metrics Window (Ventana Deslizante)
 
 **Default**: 200  
-**Efecto**: Tamaño de ventana deslizante para promedios
+**Rango**: (10, 5000)  
+**Efecto**: Tamaño de la ventana deslizante para calcular promedios de loss/accuracy
 
 ```python
-# Últimas 200 métricas
-metrics_window = deque(maxlen=200)
-
-avg_loss = np.mean(metrics_window._losses)
+# Implementación (en parameter_server.py)
+class RunningMetrics:
+    def __init__(self, window=200):
+        self._losses = deque(maxlen=window)  # Últimos 200 valores
+        self._accs = deque(maxlen=window)
+    
+    def update(self, loss, acc):
+        self._losses.append(loss)
+        self._accs.append(acc)
+    
+    def snapshot(self):
+        avg_loss = mean(self._losses)  # Promedio de los últimos 200
+        avg_acc = mean(self._accs)
+        return avg_loss, avg_acc
 ```
 
-**Impacto**:
+**Impacto en GUI**:
 
-| Window | Suavizado | Responsividad |
-|---|---|---|
-| 50 | Bajo (ruidoso) | Muy responsivo |
-| 100 | Medio | Bueno |
-|200 | Alto (suave) | Estándar |
-| 500 | MuyAlto | Lento (demora visibilidad) |
+| Window | Suavizado | Responsividad | Latencia | Uso |
+|---|---|---|---|---|
+| 10 | Bajo (ruidoso) | Muy rpdo (0.1s) | Casi inmediato | DEBUG |
+| 50 | Medio (bueno) | Responsivo (5s) | Minutos | ✅ **RECOMENDADO** |
+| 200 | Alto (suave) | Lento (20s) | Varios min | PRODUCCIÓN |
+| 500 | MuyAlto | Muy lento (50s) | 5-10 min | LARGA DURACIÓN |
 
-**Recomendación**:
-- **200** es balance recomendado
-- Rápida convergencia (few metrics) → reducir a 50-100
-- Mucho ruido → aumentar a 300
+**Relación con Steps Per Report**:
+
+```
+ventana=50, steps_per_report=500:
+  - Accuracy GUI (encima gráfica) se actualiza cada step (~1s)
+  - Accuracy en gráfica se actualiza cada 500 steps (~5-10 min)
+  - Demora visible pero responsivo
+
+ventana=200, steps_per_report=500:
+  - Accuracy GUI demora más en estabilizarse
+  - Accuracy en gráfica es muy suave
+  - Menos volatilidad pero tardío
+```
+
+**¿Cuándo cambiar?**
+
+- **Baja ventana (10-50)**: 
+  - ✓ Ves cambios casi en tiempo real
+  - ✓ Debugging y experimentación  
+  - ✗ Ruidoso (accuracy fluctúa)
+
+- **Alta ventana (200-500)**:
+  - ✓ Muy suavizado
+  - ✓ Tendencia clara
+  - ✗ Demora ~200-500 steps antes de cambios visibles (~5-10 minutos)
+
+**Recomendación operacional**:
+- **50** para experimentación rápida (ves resultados cada minuto)
+- **200** para entrenamiento largo estable (tendencia clara)
+
+**Nota**: Esta ventana SOLO afecta el promedio mostrado. No afecta el entrenamiento real.
+
+---
+
+### Steps per Report
 
 ---
 
