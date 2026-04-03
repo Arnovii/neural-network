@@ -392,3 +392,262 @@ Para más Workers:
 - **Gradiente Compression** (reducir tamaño msgs)
 - **Comunicación directa Worker-Worker** (gossip protocol)
 
+---
+
+# Fundamentos de Inicialización y SGD
+
+## 1. ¿Por Qué Kaiming Initialize es Necesario?
+
+### Problema: Vanishing Gradients sin Inicialización Cuidadosa
+
+Imaginemos un MLP con 2 capas ReLU sin inicialización cuidadosa:
+
+```
+Setup incorrecto: Pesos ~ N(0, 1.0)
+
+Layer 1 entrada: x_0 ~ N(0, 1)  (feature map del CNN, normalizado)
+
+z_1 = W_1 @ x_0 + b_1
+
+Si W_1 ∈ ℝ^(1024 × 512) ~ N(0, 1.0):
+
+Var[z_1[i]] = Σ_j Var[W_1[i,j] * x_0[j]]
+            = Σ_j 1.0 * 1.0    [cada peso tiene var 1, cada input var 1]
+            = 512              [¡ENORME!]
+
+Std[z_1[i]] = √512 ≈ 22.6      [mucha varianza]
+
+x_1 = ReLU(z_1)                 [mucha saturación]
+
+Este fenómeno se propaga: cada capa multiplica la varianza
+→ Output logits ~ N(0, σ²_enorme)
+→ Gradientes también enormes
+→ Learning rate debe ser minúsculo para evitar divergencia
+```
+
+### Solución: Kaiming Uniform
+
+Para una capa con fan_in entradas y ReLU:
+
+```python
+bound = √(6 / fan_in)
+W ~ U[-bound, bound]
+```
+
+**Matemática**:
+
+```
+Var[U[-bound, bound]] = bound² / 3
+
+Si bound = √(6 / fan_in):
+  Var[U] = (6 / fan_in) / 3 = 2 / fan_in
+
+Forward:
+  z_1[i] = Σ_j W_1[i,j] * x_0[j]
+  Var[z_1[i]] = Σ_j Var[W] * Var[x]
+               = 512 * (2/512) * 1.0
+               = 2.0    [¡Controlado!]
+
+Backward:
+  ∂L/∂W ~ similar análisis
+  Varianza constante en todas las capas
+```
+
+**Resultado**:
+- Loss inicial ≈ log(1000) ≈ 6.9 (lógico para 1000 clases equiprobables)
+- Entrenamiento estable desde el primer batch
+- No necesita learning rate "ajustado manualmente"
+
+---
+
+## 2. Stochastic Gradient Descent: Por Qué Funciona
+
+### Definición Matemática
+
+```
+OBJETIVO: Minimizar L(θ) = E_x [ℓ(f(x; θ), y)]
+
+donde:
+  θ        = parámetros del modelo
+  f(x; θ)  = predicción del modelo
+  ℓ        = loss function (ej: cross-entropy)
+  E_x      = expectativa sobre TODOS los datos (imposible!)
+
+SOLUCIÓN: SGD = aproximación estocástica
+
+Iteración t:
+  1. Sample mini-batch (x_1, ..., x_B) ~ data distribution
+  2. Compute gradient en el mini-batch:
+     g_t = (1/B) * Σ ∇ℓ(f(x_i; θ_t), y_i)
+  3. Actualizar:
+     θ_{t+1} = θ_t - η * g_t
+
+Propiedad clave: E[g_t] = ∇L(θ_t)  [es una aproximación insesgada!]
+```
+
+### Convergencia de SGD (Teoría Simple)
+
+Para función convexa L:
+
+```
+TEOREMA (versión simplificada):
+
+Si:
+  - L es Lipschitz smooth: ||∇L(a) - ∇L(b)|| ≤ G||a - b||
+  - Varianza de gradientes bounded: E[||g_t - ∇L(θ_t)||²] ≤ σ²
+  - Learning rate η = O(1/√T)
+
+ENTONCES:
+
+  E[L(θ_T) - L(θ*)] = O(log(T)/√T) + O(σ²/√T)
+
+Interpretación:
+  - Primer término: convergencia a óptimo (O(1/√T))
+  - Segundo término: ruido residual por mini-batch
+  - Con batch size B grande: σ² ↓ (menos ruido)
+  - Con T grande: O(1/√T) ↓ (converge aunque sea lenta)
+```
+
+### Por Qué Mini-Batches en lugar de SGD puro (B=1)
+
+```
+Comparación:
+
+| Propiedad            | B=1 | B=32 | B=256 |
+|----------------------|-----|------|-------|
+| Varianza grad        | σ² | σ²/32| σ²/256|
+| Ruido en actualizació | ALTO | MED | BAJO  |
+| Convergencia         | O(1/√T + σ²) | O(1/√T + σ²/32) | O(1/√T + σ²/256)|
+| Compute efficiency   | LENTO | MED | RÁPIDO|
+| Memoria              | BAJO | MED | ALTO  |
+
+En la práctica: B=32-256 es óptimo (balanqueo ruido vs eficiencia)
+```
+
+---
+
+## 3. Adam, Momentum y Otras Variantes
+
+### ¿Por Qué Este Proyecto Usa SGD Vanilla?
+
+Este proyecto usa **SGD vanilla** (sin momentum, sin adaptación):
+
+```python
+for param in [mlp, cnn]:
+    param -= lr * param.grad    # ← Simple!
+```
+
+**Razones**:
+
+1. **Teoría más simple**: Análisis de convergencia straightforward
+2. **Escalabilidad**: Menos estado para comunicar entre Workers
+3. **Robustez**: Menos hiperparámetros que tunear
+4. **Histórico**: Async-SGD papers clásicos usaban vanilla
+
+**Alternativas (no usadas aquí)**:
+
+```
+Momentum SGD:
+  v_t = β * v_{t-1} + g_t
+  θ_{t+1} = θ_t - η * v_t
+  [Acumula dirección de gradientes recientes]
+  Ventaja: Convergencia más rápida
+  Desventaja: Un parámetro extra (β)
+
+Adam:
+  m_t = β1 * m_{t-1} + (1-β1) * g_t
+  v_t = β2 * v_{t-1} + (1-β2) * g_t²
+  θ_{t+1} = θ_t - η * m_t / (√v_t + ε)
+  [Adaptación per-parámetro y momentum]
+  Ventaja: Convergencia muy rápida
+  Desventaja: 2 vectores de estado por parámetro → comunicación x3
+```
+
+Con Async-SGD distribuido, **SGD vanilla es mejor** porque:
+- Menos datos para enviar por red
+- Menos hiperparámetros
+- Teoría más clara para staleness
+
+---
+
+## 4. Epocas vs Steps en Streaming
+
+### Concepto: ¿Qué es una "Época"?
+
+**En dataset finito**:
+```
+Epoch = una pasada sobre todos los datos
+Ejemplo: CIFAR-10 ha 50k imágenes, batch=64
+  → 50k / 64 ≈ 781 steps = 1 epoch
+  → Training va 100 epochs = 78.1k steps
+```
+
+**En streaming infinito (ImageNet-1k streaming)**:
+```
+No hay "final" de datos
+Dataset es generador infinito: next(stream) siempre da nuevo batch
+→ NO EXISTE concepto de "Epoch"
+→ Solo "Steps": contar iteraciones
+
+Nuestro proyecto:
+  - Entrenar "indefinidamente" hasta CTRL+C
+  - Metrics más significativas: "steps" no "epochs"
+  - "After 1k steps, loss = 5.2"  ← forma natural de reportar
+```
+
+**Beneficio teórico del streaming**:
+```
+Ventaja: No hay repetición de datos
+  - En CIFAR-10 con 50k imgs: después de 781 steps, repite
+  - Modelo ve exactamente los mismos datos cada epoch
+  - Riesgo: overfitting rápido, memorización
+  
+En ImageNet-1k streaming:
+  - 1.2M imágenes disponeibles, descarga on-demand
+  - Probabil muy baja de ver imagen repetida en primeros 100k steps
+  - Distribución de datos más "realista" para cada step
+```
+
+---
+
+## Resumen: Convergencia Garantizada
+
+```
+COMPONENTES DEL SISTEMA:
+════════════════════════════════════════════════════════════════
+
+1. INICIALIZACIÓN (Kaiming Uniform):
+   ✓ Varianza controlada en todas las capas
+   ✓ Loss inicial racional ≈ log(1000)
+   ✓ No hay vanishing/exploding gradients
+
+2. SGD VANILLA:
+   ✓ Teoría de convergencia clara
+   ✓ Bajo overhead de comunicación
+   ✓ Hiperparámetros mínimos
+
+3. STALENESS CORRECTION α(s):
+   ✓ Atenuación de updates viejos
+   ✓ Estabilidad teórica garantizada
+   ✓ Escalable a múltiples Workers
+
+4. STREAMING INFINITO:
+   ✓ Sin repetición de datos (beneficio IID)
+   ✓ Métricas por Steps (no Epochs)
+   ✓ Distribución más realista
+
+GARANTÍA FINAL:
+───────────────────────────────────────────────────────────────
+Si (Learning_Rate) × (Staleness_Lambda) × (Initialization)
+están bien tuneados,
+
+El sistema CONVERGE SIN DIVERGENCIA
+a óptimos locales de la función de loss,
+tolerando múltiples Workers distribuidos.
+
+Convergence rate: O(1/√T + s_max/T)
+                = algo más lento que SGD sincrónico
+                = pero N veces más throughput
+═════════════════════════════════════════════════════════════════
+```
+
