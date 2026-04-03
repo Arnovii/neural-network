@@ -6,24 +6,21 @@ Worker asíncrono para entrenamiento distribuido E2E en ImageNet.
 DISEÑO:
   - Streaming puro desde HuggingFace: nunca más de `prefetch_batches`
     batches en RAM simultáneamente.
-  - Loop completamente autónomo: el Worker no espera a ningún otro Worker.
-  - Formato PyTorch state_dict nativo en todo el pipeline:
-      PS → Worker: mlp_state (fc1.weight / fc1.bias / …) + cnn_state
-      Worker → PS: los mismos keys, sin conversión alguna
-    Esto elimina el mapping W1↔fc1.weight del sistema anterior.
-  - El MLP PyTorch se reutiliza entre batches (sin reconstruir el módulo),
-    reduciendo el overhead de inicialización.
+  - Loop completamente autónomo: no espera a ningún otro Worker.
+  - Formato PyTorch state_dict nativo en todo el pipeline.
+  - Sin fallbacks silenciosos: cualquier inconsistencia lanza RuntimeError.
 
 FLUJO POR ITERACIÓN:
     1. REQUEST_PARAMS  → PS responde con PARAMS
-    2. _sync_model()   → carga CNN + MLP con el estado global
-    3. _train_batch()  → forward E2E + backward + SGD local
-    4. UPDATES         → enviar pesos actualizados + métricas al PS
+    2. _sync_cnn()     → carga estado global CNN (BN running stats incluidos)
+    3. _sync_mlp()     → carga estado global MLP
+    4. _train_batch()  → forward E2E + backward + SGD local
+    5. UPDATES         → enviar pesos actualizados + métricas al PS
 
-GRADIENT ACCUMULATION:
-    Si accum_steps > 1, el Worker acumula N batches antes de enviar
-    UPDATES. Reduce la frecuencia de comunicación a costa de mayor staleness.
-    Recomendado: 1–4 para redes de alta velocidad.
+LOGGING:
+  verbose=True imprime una línea cada 10 batches. Los logs de debug
+  por iteración/paso están desactivados por defecto para no degradar
+  el rendimiento de la GUI.
 """
 
 import socket
@@ -48,21 +45,21 @@ class WorkerNode:
     """
     Worker asíncrono para entrenamiento E2E distribuido en ImageNet.
 
-    :param server_host:    IP del Parameter Server.
-    :param server_port:    Puerto TCP.
-    :param dataset_name:   Dataset en HF Hub (e.g. 'ILSVRC/imagenet-1k').
-    :param worker_rank:    Índice de este Worker (0-based, para sharding).
-    :param num_workers:    Total de Workers (para sharding del stream).
-    :param batch_size:     Imágenes por batch de entrenamiento.
-    :param hidden1:        Neuronas capa oculta 1 del MLP.
-    :param hidden2:        Neuronas capa oculta 2 del MLP.
-    :param device:         Dispositivo PyTorch ('cpu', 'cuda', 'cuda:0', 'mps').
-    :param shuffle_buffer: Imágenes en el buffer de shuffle del stream HF.
-    :param prefetch_batches: Batches pre-cargados en hilo background.
-    :param image_size:     Tamaño de imagen tras crop (224 estándar).
-    :param hf_token:       Token HuggingFace para datasets con licencia.
-    :param accum_steps:    Batches a acumular antes de enviar UPDATES al PS.
-    :param verbose:        Imprimir progreso cada batch.
+    :param server_host:      IP del Parameter Server.
+    :param server_port:      Puerto TCP.
+    :param dataset_name:     Dataset HF Hub.
+    :param worker_rank:      Índice de este Worker (0-based, para sharding).
+    :param num_workers:      Total de Workers.
+    :param batch_size:       Imágenes por batch.
+    :param hidden1:          Neuronas capa oculta 1 del MLP (usado solo como fallback).
+    :param hidden2:          Neuronas capa oculta 2 del MLP (usado solo como fallback).
+    :param device:           Dispositivo PyTorch ('cpu', 'cuda', 'cuda:0', 'mps').
+    :param shuffle_buffer:   Imágenes en buffer de shuffle.
+    :param prefetch_batches: Batches pre-cargados en background.
+    :param image_size:       Tamaño de imagen tras crop (224 estándar).
+    :param hf_token:         Token HuggingFace.
+    :param accum_steps:      Batches a acumular antes de enviar UPDATES.
+    :param verbose:          Imprimir progreso cada 10 batches.
     """
 
     def __init__(
@@ -169,16 +166,21 @@ class WorkerNode:
         )
         self._stream.start()
         self._log(
-            f"Stream iniciado: {self.dataset_name} | shard {self.worker_rank}/{self.num_workers}"
+            f"Stream iniciado: {self.dataset_name} | "
+            f"shard {self.worker_rank}/{self.num_workers}"
         )
 
     # ================================================================
-    # HANDSHAKE + LOOP PRINCIPAL
+    # HANDSHAKE
     # ================================================================
 
     def _handshake_loop(self) -> None:
         """
-        Espera CNN_WEIGHTS, confirma CNN_ACK, espera START, entra en training loop.
+        Espera CNN_WEIGHTS del PS, confirma con CNN_ACK,
+        espera START y entra en el loop de entrenamiento.
+
+        El PS solo envía CNN_WEIGHTS cuando tiene CNN+MLP configurados,
+        por lo que no hay race condition en este lado.
         """
         assert self._sock is not None
 
@@ -187,7 +189,7 @@ class WorkerNode:
             t = msg["type"]
 
             if t == MsgType.STOP:
-                self._log("STOP recibido.")
+                self._log("STOP recibido durante handshake.")
                 return
 
             elif t == MsgType.CNN_WEIGHTS:
@@ -199,19 +201,68 @@ class WorkerNode:
                 return
 
     def _load_cnn(self, payload: dict) -> None:
-        """Carga la CNN recibida del PS y confirma con CNN_ACK."""
+        """
+        Carga la CNN enviada por el PS y verifica su integridad.
+
+        Envía CNN_ACK con la arquitectura confirmada para que el PS
+        pueda detectar cualquier inconsistencia.
+        """
         arch = payload["arch"]
         weights_bytes = payload["weights_bytes"]
-        assert self._sock is not None
+        mlp_keys = payload.get("mlp_keys", [])
+        cnn_key_count = payload.get("cnn_key_count", 0)
+
+        if arch not in ("simple", "resnet18"):
+            raise RuntimeError(
+                f"[W{self._worker_id}] Arquitectura desconocida del PS: '{arch}'. "
+                "Valores válidos: 'simple', 'resnet18'."
+            )
 
         if self._cnn is None or self._cnn.arch != arch:
+            self._log(f"Instanciando CNN arch={arch} en {self.device}")
             self._cnn = CNNExtractor(arch=arch, device=str(self.device), seed=42)
 
         self._cnn.load_weights_from_bytes(weights_bytes)
         self._cnn._model.eval()
 
-        self._log(f"CNN cargada: arch={arch}, feature_dim={self._cnn.feature_dim}")
-        send_message(self._sock, MsgType.CNN_ACK, {"worker_id": self._worker_id})
+        # Verificar que el número de parámetros coincide
+        actual_keys = len(self._cnn._model.state_dict())
+        if cnn_key_count > 0 and actual_keys != cnn_key_count:
+            raise RuntimeError(
+                f"[W{self._worker_id}] Mismatch CNN params: "
+                f"PS={cnn_key_count}, Worker={actual_keys}"
+            )
+
+        # Verificar que las claves MLP son las esperadas
+        expected_mlp = {
+            "fc1.weight",
+            "fc1.bias",
+            "fc2.weight",
+            "fc2.bias",
+            "fc3.weight",
+            "fc3.bias",
+        }
+        if mlp_keys and set(mlp_keys) != expected_mlp:
+            raise RuntimeError(
+                f"[W{self._worker_id}] MLP keys inesperadas del PS: {set(mlp_keys)}. "
+                f"Esperadas: {expected_mlp}"
+            )
+
+        self._log(
+            f"CNN cargada ✓ arch={arch} | feature_dim={self._cnn.feature_dim} | "
+            f"cnn_params={actual_keys}"
+        )
+
+        assert self._sock is not None
+        send_message(
+            self._sock,
+            MsgType.CNN_ACK,
+            {
+                "worker_id": self._worker_id,
+                "arch": arch,
+                "feature_dim": self._cnn.feature_dim,
+            },
+        )
 
     # ================================================================
     # LOOP DE ENTRENAMIENTO ASÍNCRONO
@@ -219,30 +270,37 @@ class WorkerNode:
 
     def _training_loop(self) -> None:
         """
-        Loop continuo: REQUEST_PARAMS → entrenar → UPDATES.
+        Loop continuo: REQUEST_PARAMS → sincronizar → entrenar → UPDATES.
 
-        No hay barrera con otros Workers. Cada iteración es completamente
-        independiente. El PS aplica las actualizaciones inmediatamente.
+        Sin barrera con otros Workers. El PS aplica las actualizaciones
+        inmediatamente al recibirlas.
+
+        Precondiciones (garantizadas por _handshake_loop):
+          - self._cnn fue cargado y verificado
+          - self._stream fue iniciado
+          - self._sock está activo
         """
-        # Si la CNN no fue proporcionada por el PS, usar una por defecto
         if self._cnn is None:
-            self._cnn = CNNExtractor(arch="resnet18", device=str(self.device), seed=42)
-            self._log("⚠  CNN no recibida del PS — usando ResNet18 por defecto")
+            raise RuntimeError(
+                f"[W{self._worker_id}] _training_loop sin CNN inicializada. "
+                "El PS debe enviar CNN_WEIGHTS antes de START."
+            )
 
         assert self._sock is not None
         assert self._cnn is not None
         assert self._stream is not None
 
-        self._log(f"Inicializando iterador del stream...")
-        stream_iter = iter(self._stream)
-        self._log(f"✓ Stream iterator listo")
+        self._log(
+            f"Entrenamiento E2E | arch={self._cnn.arch} | "
+            f"feature_dim={self._cnn.feature_dim} | device={self.device}"
+        )
+
+        stream_iter = self._stream.__iter__()
         version_read = 0
-        iter_count = 0
+        first_params_logged = False
 
         while True:
-            iter_count += 1
             # ── 1. Pedir parámetros globales ──
-            self._log(f"[iter {iter_count}] REQUEST_PARAMS...")
             try:
                 send_message(self._sock, MsgType.REQUEST_PARAMS, {})
                 msg = receive_message(self._sock)
@@ -257,44 +315,46 @@ class WorkerNode:
                 continue
 
             payload = msg["payload"]
-            mlp_state = payload["mlp_state"]  # Dict[str, np.ndarray] PyTorch keys
-            cnn_state = payload["cnn_state"]  # Dict[str, np.ndarray] state_dict
+            mlp_state = payload["mlp_state"]
+            cnn_state = payload["cnn_state"]
             version_read = payload["version"]
             lr = payload["lr"]
 
-            # ── 2. Sincronizar modelo local con el estado global ──
+            # Validar que el PS tiene parámetros configurados
+            if not mlp_state:
+                raise RuntimeError(
+                    f"[W{self._worker_id}] PS devolvió mlp_state vacío. "
+                    "Verifica que ps.set_mlp() fue llamado antes de ps.listen()."
+                )
+            if not cnn_state:
+                raise RuntimeError(
+                    f"[W{self._worker_id}] PS devolvió cnn_state vacío. "
+                    "Verifica que ps.set_cnn() fue llamado antes de ps.listen()."
+                )
+
+            if not first_params_logged:
+                fc1_shape = mlp_state.get("fc1.weight", np.array([])).shape
+                self._log(
+                    f"Primer PARAMS recibido — v={version_read} | lr={lr} | "
+                    f"mlp fc1.weight={fc1_shape} | cnn_params={len(cnn_state)}"
+                )
+                first_params_logged = True
+
+            # ── 2. Sincronizar estado global ──
             self._sync_cnn(cnn_state)
             self._mlp = self._sync_mlp(mlp_state, self._mlp)
 
             # ── 3. Entrenar accum_steps batches ──
             total_loss, total_acc, total_n = 0.0, 0.0, 0
 
-            for step_idx in range(self.accum_steps):
-                self._log(f"[iter {iter_count}, step {step_idx}] Esperando batch...")
+            for _ in range(self.accum_steps):
                 try:
                     X_np, Y_np = next(stream_iter)
-                    self._log(
-                        f"[iter {iter_count}, step {step_idx}] ✓ Batch recibido: {X_np.shape}"
-                    )
                 except StopIteration:
-                    assert self._stream is not None
-                    self._log(
-                        f"[iter {iter_count}, step {step_idx}] Stream agotado, reiniciando..."
-                    )
-                    stream_iter = iter(self._stream)
-                    self._log(
-                        f"[iter {iter_count}, step {step_idx}] Obteniendo nuevo batch..."
-                    )
+                    stream_iter = self._stream.__iter__()
                     X_np, Y_np = next(stream_iter)
-                    self._log(
-                        f"[iter {iter_count}, step {step_idx}] ✓ Nuevo batch: {X_np.shape}"
-                    )
 
-                self._log(f"[iter {iter_count}, step {step_idx}] Entrenando batch...")
                 loss, acc, n = self._train_batch(X_np, Y_np, lr)
-                self._log(
-                    f"[iter {iter_count}, step {step_idx}] ✓ Batch entrenado: loss={loss:.4f}, acc={acc:.2f}%"
-                )
                 total_loss += loss * n
                 total_acc += acc * n
                 total_n += n
@@ -307,7 +367,6 @@ class WorkerNode:
             self._batches_done += self.accum_steps
 
             if self.verbose and self._batches_done % 10 == 0:
-                assert self._stream is not None
                 self._log(
                     f"batch={self._batches_done} | "
                     f"loss={avg_loss:.4f} | acc={avg_acc:.2f}% | "
@@ -315,7 +374,6 @@ class WorkerNode:
                 )
 
             # ── 4. Enviar actualizaciones al PS ──
-            self._log(f"[iter {iter_count}] Serializando y enviando UPDATES...")
             try:
                 send_message(
                     self._sock,
@@ -329,67 +387,42 @@ class WorkerNode:
                         "cnn_weights": self._serialize_cnn(),
                     },
                 )
-                self._log(
-                    f"[iter {iter_count}] ✓ UPDATES enviados. Avg loss={avg_loss:.4f}, acc={avg_acc:.2f}%"
-                )
             except Exception as e:
                 self._log(f"Error enviando UPDATES: {e}")
                 return
 
     # ================================================================
-    # FORWARD + BACKWARD (un batch)
+    # FORWARD + BACKWARD
     # ================================================================
 
     def _train_batch(
         self, X_np: np.ndarray, Y_np: np.ndarray, lr: float
     ) -> Tuple[float, float, int]:
         """
-        Ejecuta un paso E2E completo: imagen → CNN → features → MLP → loss → backward.
+        Paso E2E completo: imagen → CNN → features → MLP → loss → backward.
 
         :return: (loss, accuracy_pct, n_samples)
         """
         assert self._cnn is not None
         assert self._mlp is not None
 
-        X = torch.from_numpy(X_np).to(self.device)  # (N, 3, 224, 224)
+        X = torch.from_numpy(X_np).to(self.device)
         Y = torch.from_numpy(Y_np.astype(np.int64)).to(self.device)
 
-        # Activar modo entrenamiento
         self._cnn._model.train()
         for p in self._cnn._model.parameters():
             p.requires_grad_(True)
         self._mlp.train()
 
-        # Zero grad
         self._cnn._model.zero_grad()
         self._mlp.zero_grad()
 
-        # Forward E2E
         features = self._cnn._model(X)  # (N, feature_dim)
         logits = self._mlp(features)  # (N, 1000)
-        
-        # DIAGNÓSTICO: Verificar que logits no son patológicos
-        logits_mean = logits.mean().item()
-        logits_std = logits.std().item()
-        logits_max = logits.max().item()
-        if abs(logits_mean) < 0.01 and logits_std < 0.1:
-            if not hasattr(self, '_bad_logits_warn_count'):
-                self._bad_logits_warn_count = 0
-            if self._bad_logits_warn_count == 0:
-                self._log(
-                    f"⚠  [CRÍTICO] Logits patológicos: mean={logits_mean:.6f}, "
-                    f"std={logits_std:.6f}, max={logits_max:.6f}. "
-                    f"Softmax será uniforme → accuracy ≈ 0%. "
-                    f"Verifica: (1) PS.set_mlp() se llamó, (2) He init no es demasiado pequeña"
-                )
-                self._bad_logits_warn_count += 1
-        
         loss_t = nn.functional.cross_entropy(logits, Y)
 
-        # Backward
         loss_t.backward()
 
-        # SGD local (el PS promedia con FedAvg asíncrono)
         with torch.no_grad():
             for p in self._cnn._model.parameters():
                 if p.grad is not None:
@@ -398,7 +431,6 @@ class WorkerNode:
                 if p.grad is not None:
                     p.data -= lr * p.grad
 
-        # Métricas
         with torch.no_grad():
             correct = (logits.argmax(1) == Y).sum().item()
 
@@ -406,42 +438,32 @@ class WorkerNode:
         loss_val = loss_t.item()
         acc_val = 100.0 * correct / n
 
-        # Restaurar CNN a eval
         self._cnn._model.eval()
         for p in self._cnn._model.parameters():
             p.requires_grad_(False)
 
-        # Liberar tensores
         del X, Y, features, logits, loss_t
         return loss_val, acc_val, n
 
     # ================================================================
-    # SINCRONIZACIÓN CNN + MLP
+    # SINCRONIZACIÓN
     # ================================================================
 
     def _sync_cnn(self, cnn_state: Dict[str, np.ndarray]) -> None:
         """
-        Carga el estado global de la CNN (state_dict completo con BN buffers).
-        Pone la CNN en eval() después para usar running stats de BatchNorm.
+        Carga estado global CNN (state_dict completo, BN buffers incluidos).
+        Pone la CNN en eval() tras la carga para usar running stats de BN.
         """
         assert self._cnn is not None
         base = getattr(self._cnn._model, "model", self._cnn._model)
         sd = base.state_dict()
         with torch.no_grad():
             for name, arr in cnn_state.items():
-                if name in sd:
-                    # Proteger contra tipos raros o escalares
-                    if not isinstance(arr, np.ndarray):
-                        arr = np.array(arr)
-                    # Asegurar que es al menos 1-d (evitar escalares 0-d)
-                    if arr.ndim == 0:
-                        arr = arr.reshape((1,))
-                    # Convertir tipos no-float a float64 (seguro para averaging)
-                    if arr.dtype not in [np.float32, np.float64]:
-                        arr = arr.astype(np.float64)
-                    sd[name] = (
-                        torch.from_numpy(arr).to(sd[name].device).to(sd[name].dtype)
-                    )
+                if name not in sd:
+                    continue
+                if not isinstance(arr, np.ndarray):
+                    arr = np.array(arr)
+                sd[name] = torch.from_numpy(arr).to(sd[name].device).to(sd[name].dtype)
             base.load_state_dict(sd)
         self._cnn._model.eval()
 
@@ -451,78 +473,49 @@ class WorkerNode:
         existing: Optional[MLPPyTorch],
     ) -> MLPPyTorch:
         """
-        Carga el estado global del MLP (formato PyTorch state_dict nativo).
+        Carga estado global MLP (PyTorch state_dict nativo).
 
-        Si `existing` ya existe, reutiliza el objeto en lugar de crear uno nuevo.
-        Esto evita la sobrecarga de construir un nn.Module cada iteración.
-
-        Si mlp_state está vacío (PS no inicializado aún), crea un MLP con valores por defecto.
+        Si `existing` ya existe, reutiliza el objeto para evitar el
+        overhead de construir un nn.Module en cada iteración.
         """
         if existing is None:
-            # Si mlp_state está vacío, usar valores por defecto
-            if not mlp_state or "fc1.weight" not in mlp_state:
-                # CNN debe estar inicializada para obtener feature_dim
-                assert self._cnn is not None, (
-                    "CNN no inicializada, no se puede inferir feature_dim"
+            if "fc1.weight" not in mlp_state:
+                raise RuntimeError(
+                    f"[W{self._worker_id}] mlp_state no contiene fc1.weight. "
+                    "El PS no tiene MLP configurado."
                 )
-                feature_dim = self._cnn.feature_dim
-                hidden1 = self.hidden1
-                hidden2 = self.hidden2
-                existing = MLPPyTorch(
-                    feature_dim, hidden1, hidden2, _IMAGENET_CLASSES
-                ).to(self.device)
-                if not mlp_state:
-                    self._log(
-                        f"⚠  [CRÍTICO] MLP no recibido del PS (PS.set_mlp() no fue llamado?) "
-                        f"— usando random init ({feature_dim}→{hidden1}→{hidden2}→1000). "
-                        f"Esto causará loss≈{np.log(_IMAGENET_CLASSES):.1f} y acc≈0% hasta convergencia lenta."
-                    )
-            else:
-                # Inferir dimensiones del state_dict recibido
-                feature_dim = mlp_state["fc1.weight"].shape[1]
-                hidden1 = mlp_state["fc1.weight"].shape[0]
-                hidden2 = mlp_state["fc2.weight"].shape[0]
-                existing = MLPPyTorch(
-                    feature_dim, hidden1, hidden2, _IMAGENET_CLASSES
-                ).to(self.device)
-                self._log(f"✓ MLP creado del state_dict del PS: {feature_dim}→{hidden1}→{hidden2}→1000")
+            feature_dim = mlp_state["fc1.weight"].shape[1]
+            hidden1 = mlp_state["fc1.weight"].shape[0]
+            hidden2 = mlp_state["fc2.weight"].shape[0]
+            existing = MLPPyTorch(feature_dim, hidden1, hidden2, _IMAGENET_CLASSES).to(
+                self.device
+            )
+            self._log(
+                f"MLP creado desde PS state_dict: "
+                f"{feature_dim}→{hidden1}→{hidden2}→{_IMAGENET_CLASSES}"
+            )
 
         with torch.no_grad():
             for name, param in existing.named_parameters():
                 if name in mlp_state:
                     param.data.copy_(torch.from_numpy(mlp_state[name]).to(param.device))
-                    
-        # Diagnóstico: verificar que los pesos no son patológicamente pequeños
-        if existing is not None:
-            fc1_weight_mean = existing.fc1.weight.data.abs().mean().item()
-            if fc1_weight_mean < 0.001:
-                self._log(
-                    f"⚠  [DIAGNÓSTICO] fc1.weight mean abs = {fc1_weight_mean:.6f} "
-                    f"(muy pequeño, logits serán ≈0, accuracy ≈0%). "
-                    f"Verifica que PS.set_mlp() se llamó ANTES de ps.listen()"
-                )
-                    
         return existing
 
     # ================================================================
-    # SERIALIZACIÓN (modelo → numpy para transporte)
+    # SERIALIZACIÓN
     # ================================================================
 
     def _serialize_cnn(self) -> Dict[str, np.ndarray]:
-        """State_dict completo de la CNN (parámetros + BN buffers)."""
+        """State_dict completo de la CNN para transporte TCP."""
         assert self._cnn is not None
         base = getattr(self._cnn._model, "model", self._cnn._model)
-        result = {}
-        for name, tensor in base.state_dict().items():
-            arr = tensor.cpu().numpy().copy()
-            # Convertir tipos no-float a float64 (seguro para averaging y transporte)
-            if arr.dtype not in [np.float32, np.float64]:
-                arr = arr.astype(np.float64)
-            result[name] = arr
-        return result
+        return {
+            name: tensor.cpu().numpy().copy()
+            for name, tensor in base.state_dict().items()
+        }
 
     def _serialize_mlp(self) -> Dict[str, np.ndarray]:
-        """State_dict del MLP en formato PyTorch nativo (fc1.weight, …)."""
+        """State_dict del MLP en formato PyTorch nativo."""
         assert self._mlp is not None
         return {
             name: param.data.cpu().numpy().copy()
@@ -536,4 +529,4 @@ class WorkerNode:
     def _log(self, msg: str) -> None:
         if self.verbose:
             wid = self._worker_id if self._worker_id is not None else "?"
-            print(f"[W{wid}] {msg}")
+            print(f"[W{wid}] {msg}", flush=True)

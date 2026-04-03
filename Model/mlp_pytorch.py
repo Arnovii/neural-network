@@ -3,11 +3,6 @@ Model/mlp_pytorch.py
 
 MLP PyTorch para clasificación sobre features CNN en ImageNet.
 
-Este módulo es el único clasificador MLP del sistema. El MLP NumPy
-del sistema anterior ha sido eliminado: aquí todo el pipeline
-de entrenamiento usa PyTorch de principio a fin, permitiendo
-backpropagation E2E sin conversiones de framework.
-
 ARQUITECTURA:
     features (feature_dim)
         → fc1 (hidden1, ReLU)
@@ -15,30 +10,32 @@ ARQUITECTURA:
         → fc3 (n_classes)   ← sin activación (CrossEntropyLoss la incluye)
 
 INICIALIZACIÓN:
-    He initialization para capas con ReLU.
+    Kaiming uniform (He) para capas con ReLU.
+    Produce logits con varianza razonable desde el primer paso,
+    evitando softmax uniforme y accuracy≈0% en las primeras iteraciones.
 
 FORMATO DE PARÁMETROS:
-    El PS y los Workers intercambian parámetros como state_dict PyTorch:
+    PS y Workers intercambian parámetros como state_dict PyTorch:
         fc1.weight: (hidden1, feature_dim)
         fc1.bias:   (hidden1,)
         fc2.weight: (hidden2, hidden1)
         fc2.bias:   (hidden2,)
         fc3.weight: (n_classes, hidden2)
         fc3.bias:   (n_classes,)
-    No hay transposición ni conversión de keys.
 """
 
+from typing import Dict
+
+import numpy as np
 import torch
 import torch.nn as nn
-from typing import Dict
-import numpy as np
 
 
 class MLPPyTorch(nn.Module):
     """
     MLP de dos capas ocultas con ReLU para clasificación ImageNet.
 
-    :param feature_dim: Dimensión del vector de features de la CNN (512 para ResNet-18).
+    :param feature_dim: Dimensión del vector de features CNN (512 para ResNet-18).
     :param hidden1:     Neuronas en la primera capa oculta.
     :param hidden2:     Neuronas en la segunda capa oculta.
     :param n_classes:   Clases de salida (1000 para ImageNet).
@@ -59,11 +56,15 @@ class MLPPyTorch(nn.Module):
         self._init_weights()
 
     def _init_weights(self) -> None:
-        # He initialization uniforme (Kaiming uniform)
-        # Evita los extremos de inicialización muy pequeña que causa
-        # logits casi-cero y softmax uniforme
+        """
+        Kaiming uniform (He) initialization para capas con ReLU.
+
+        Produce activaciones con varianza ~1 en cada capa, lo que
+        garantiza que los logits iniciales sean distintos de cero y el
+        loss sea ≈ log(n_classes) ≈ 6.9 desde el primer batch.
+        """
         for layer in (self.fc1, self.fc2, self.fc3):
-            nn.init.kaiming_uniform_(layer.weight, mode='fan_in', nonlinearity='relu')
+            nn.init.kaiming_uniform_(layer.weight, mode="fan_in", nonlinearity="relu")
             nn.init.zeros_(layer.bias)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -74,7 +75,7 @@ class MLPPyTorch(nn.Module):
         return self.fc3(self.relu(self.fc2(self.relu(self.fc1(x)))))
 
     def state_dict_numpy(self) -> Dict[str, np.ndarray]:
-        """Devuelve el state_dict como Dict[str, np.ndarray] para transporte por TCP."""
+        """Devuelve el state_dict como Dict[str, np.ndarray] para transporte TCP."""
         return {
             name: param.data.cpu().numpy().copy()
             for name, param in self.named_parameters()

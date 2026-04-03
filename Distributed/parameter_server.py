@@ -6,24 +6,17 @@ Parameter Server asíncrono para entrenamiento distribuido en ImageNet.
 DISEÑO:
   - Un hilo TCP dedicado por Worker: sin barrera global, sin esperas inter-worker.
   - Los parámetros se actualizan inmediatamente al recibir UPDATES de cualquier Worker.
-  - Corrección de staleness: gradientes calculados sobre parámetros viejos reciben
-    un factor de atenuación α(s) = 1 / (1 + λ·s), donde s = versión_actual - versión_leída.
-  - Todo el modelo (CNN + MLP) se almacena en formato PyTorch state_dict nativo.
-    No hay conversión NumPy ↔ PyTorch en el PS: los tensores se serializan como
-    numpy arrays para el transporte (pickle eficiente) y se reconstruyen en PyTorch
-    solo cuando se necesita evaluación.
+  - Corrección de staleness: α(s) = 1 / (1 + λ·s), s = versión_actual − versión_leída.
+  - Estado interno en formato PyTorch state_dict nativo (numpy arrays para transporte).
 
-FORMATO DE PARÁMETROS INTERNOS:
-  _mlp_state:  Dict[str, np.ndarray]  — claves PyTorch: fc1.weight, fc1.bias, …
-  _cnn_state:  Dict[str, np.ndarray]  — state_dict completo incluyendo BN buffers
+HANDSHAKE SEGURO:
+  Cada Worker que conecta queda bloqueado hasta que CNN y MLP estén configurados
+  (máx 120 s). Esto elimina la race condition entre ps.listen() y ps.set_cnn().
 
-  Esto elimina el mapping W1↔fc1.weight que existía en el sistema anterior.
-  El Worker recibe y devuelve exactamente el mismo formato de claves.
-
-MÉTRICAS:
-  RunningMetrics mantiene una ventana deslizante de los últimos N batches.
-  En entrenamiento asíncrono no existe "época" — se reporta cada K steps
-  (configurable como steps_per_report).
+AVERAGING DE CNN:
+  Los pesos flotantes (convoluciones, BN running stats) se promedian con FedAvg.
+  num_batches_tracked (int64, contador interno de BN) se excluye del averaging
+  ya que su promedio no tiene sentido semántico — se mantiene el valor del PS.
 """
 
 import socket
@@ -49,30 +42,29 @@ _log = get_logger(use_colors=True)
 
 class RunningMetrics:
     """
-    Acumulador thread-safe de métricas con ventana deslizante.
+    Acumulador thread-safe con ventana deslizante.
 
-    En entrenamiento asíncrono los Workers actualizan el PS de forma
-    continua e independiente. Esta clase mantiene los últimos `window`
-    valores para calcular promedios representativos del estado reciente,
-    sin necesitar sincronización global.
+    Mantiene los últimos `window` valores de loss y accuracy para
+    calcular promedios representativos del estado reciente sin
+    sincronización global entre Workers.
     """
 
     def __init__(self, window: int = 200) -> None:
         self._lock = threading.Lock()
         self._losses: collections.deque = collections.deque(maxlen=window)
         self._accs: collections.deque = collections.deque(maxlen=window)
-        self._total_batches: int = 0
+        self._total: int = 0
 
     def update(self, loss: float, acc: float) -> None:
         with self._lock:
             self._losses.append(loss)
             self._accs.append(acc)
-            self._total_batches += 1
+            self._total += 1
 
     @property
     def total_batches(self) -> int:
         with self._lock:
-            return self._total_batches
+            return self._total
 
     def snapshot(self) -> Tuple[float, float]:
         """Devuelve (avg_loss, avg_acc) de la ventana actual."""
@@ -91,24 +83,27 @@ class ParameterServer:
     """
     Parameter Server asíncrono para entrenamiento distribuido en ImageNet.
 
-    Ciclo de vida:
+    Ciclo de vida recomendado:
         ps = ParameterServer(...)
-        ps.set_cnn(cnn)
-        ps.set_mlp(mlp_state_dict)
-        ps.listen()          # abre socket, acepta Workers en background
+        ps.set_cnn(cnn)          # ANTES de listen()
+        ps.set_mlp(mlp_state)    # ANTES de listen()
+        ps.listen()
         # ... entrenamiento continuo ...
         ps.stop()
 
+    Si listen() se llama antes de set_cnn/set_mlp, el handshake de cada
+    Worker quedará bloqueado hasta que ambos estén disponibles (máx 120 s).
+
     :param host:              IP de escucha.
     :param port:              Puerto TCP.
-    :param learning_rate:     LR base para el SGD local de cada Worker.
-    :param staleness_lambda:  Coeficiente de corrección de staleness (0.0–1.0).
-    :param steps_per_report:  Steps entre reportes de métricas (on_report callback).
-    :param metrics_window:    Tamaño de la ventana deslizante de métricas.
-    :param on_step:           Callback por cada step. Firma: (step, loss, acc, staleness).
-    :param on_report:         Callback cada steps_per_report. Firma: (step, loss, acc).
-    :param on_worker_connected:    Callback al conectar Worker. Firma: (worker_id, addr).
-    :param on_worker_disconnected: Callback al desconectar Worker. Firma: (worker_id,).
+    :param learning_rate:     LR base para SGD local de cada Worker.
+    :param staleness_lambda:  Corrección de staleness (0.0 = sin corrección).
+    :param steps_per_report:  Steps entre llamadas a on_report.
+    :param metrics_window:    Tamaño de la ventana deslizante.
+    :param on_step:           Callback por cada step: (step, loss, acc, staleness).
+    :param on_report:         Callback cada steps_per_report: (step, loss, acc).
+    :param on_worker_connected:    Callback: (worker_id, addr_str).
+    :param on_worker_disconnected: Callback: (worker_id,).
     """
 
     def __init__(
@@ -135,27 +130,25 @@ class ParameterServer:
         self.on_worker_connected = on_worker_connected
         self.on_worker_disconnected = on_worker_disconnected
 
-        # ── Estado del modelo (formato PyTorch state_dict nativo) ──
-        # Claves MLP:  fc1.weight, fc1.bias, fc2.weight, fc2.bias, fc3.weight, fc3.bias
-        # Claves CNN:  state_dict completo de la CNN base (incluye BN buffers)
+        # ── Estado del modelo ──
         self._mlp_state: Dict[str, np.ndarray] = {}
         self._cnn_state: Dict[str, np.ndarray] = {}
+        # Keys de BN que NO se promedian (contador interno, no parámetro)
+        self._no_avg_keys: set = set()
         self._params_lock = threading.Lock()
         self._version: int = 0
 
-        # ── CNN (solo para distribución inicial y evaluación) ──
+        # ── CNN (para distribución inicial y evaluación) ──
         self._cnn: Optional[CNNExtractor] = None
 
-        # ── Workers activos ──
+        # ── Workers ──
         self._sockets: Dict[int, socket.socket] = {}
         self._addrs: Dict[int, str] = {}
         self._next_id: int = 0
         self._workers_lock = threading.Lock()
 
-        # ── Métricas ──
+        # ── Métricas e historial ──
         self._metrics = RunningMetrics(window=metrics_window)
-
-        # ── Historial (para GUI) ──
         self._history: Dict[str, List] = {
             "steps": [],
             "losses": [],
@@ -165,48 +158,52 @@ class ParameterServer:
         }
         self._history_lock = threading.Lock()
 
-        # ── Control del servidor ──
+        # ── Control ──
         self._server_sock: Optional[socket.socket] = None
         self._accept_thread: Optional[threading.Thread] = None
         self._shutdown = threading.Event()
 
     # ================================================================
-    # CONFIGURACIÓN INICIAL
+    # CONFIGURACIÓN
     # ================================================================
 
     def set_cnn(self, cnn: CNNExtractor) -> None:
         """
-        Registra la CNN y serializa su estado inicial en _cnn_state.
+        Registra la CNN y serializa su estado en _cnn_state.
 
-        Debe llamarse ANTES de listen() para que los Workers que se
-        conecten reciban los pesos correctos.
+        Debe llamarse idealmente ANTES de listen() para que los Workers
+        que conecten reciban los pesos sin espera.
+
+        Los tensores int64 (num_batches_tracked de BatchNorm) se guardan
+        en _no_avg_keys y se excluyen del averaging en _apply_update.
         """
         self._cnn = cnn
         base = getattr(cnn._model, "model", cnn._model)
+        no_avg: set = set()
+        cnn_state: Dict[str, np.ndarray] = {}
+
+        for name, tensor in base.state_dict().items():
+            arr = tensor.cpu().numpy().copy()
+            if arr.dtype == np.int64 or tensor.dtype == torch.int64:
+                # num_batches_tracked: almacenar como int64, excluir del averaging
+                no_avg.add(name)
+            cnn_state[name] = arr
+
         with self._params_lock:
-            # Convertir estado a numpy, protegiendo contra tipos que causen problemas
-            # (ej: buffers int64 o bool de BatchNorm)
-            self._cnn_state = {}
-            for name, tensor in base.state_dict().items():
-                arr = tensor.cpu().numpy().copy()
-                # Convertir tipos no-float a float64 (seguro para averaging y transporte)
-                # float64 es más seguro que float32 para evitar problemas de precisión
-                if arr.dtype not in [np.float32, np.float64]:
-                    arr = arr.astype(np.float64)
-                self._cnn_state[name] = arr
-        _log.ps(f"CNN lista: arch={cnn.arch}, feature_dim={cnn.feature_dim}")
+            self._cnn_state = cnn_state
+            self._no_avg_keys = no_avg
+
+        _log.ps(
+            f"CNN lista: arch={cnn.arch} | feature_dim={cnn.feature_dim} | "
+            f"params={len(cnn_state)} ({len(no_avg)} excluidos del avg)"
+        )
 
     def set_mlp(self, mlp_state: Dict[str, np.ndarray]) -> None:
         """
         Registra el estado inicial del MLP en formato PyTorch state_dict.
 
         Claves esperadas: fc1.weight, fc1.bias, fc2.weight, fc2.bias,
-                          fc3.weight, fc3.bias
-
-        Uso desde ps_imagenet.py / ps_gui_imagenet.py:
-            from Model.mlp_pytorch import MLPPyTorch
-            mlp = MLPPyTorch(feature_dim, hidden1, hidden2, 1000)
-            ps.set_mlp({k: v.cpu().numpy() for k, v in mlp.state_dict().items()})
+                          fc3.weight, fc3.bias.
         """
         with self._params_lock:
             self._mlp_state = {k: v.copy() for k, v in mlp_state.items()}
@@ -267,7 +264,7 @@ class ParameterServer:
             return {k: list(v) for k, v in self._history.items()}
 
     # ================================================================
-    # ACEPTACIÓN DE CONEXIONES
+    # ACEPTACIÓN
     # ================================================================
 
     def _accept_loop(self) -> None:
@@ -288,17 +285,18 @@ class ParameterServer:
 
     def _handle_new_connection(self, conn: socket.socket, addr: tuple) -> None:
         """
-        Handshake + distribución CNN + loop de servicio para un Worker.
+        Handshake completo para un Worker nuevo.
 
         Secuencia:
           1. Recibir READY
           2. Enviar WORKER_ID
-          3. Enviar CNN_WEIGHTS (pesos serializados)
-          4. Esperar CNN_ACK
-          5. Enviar START
-          6. Entrar en _serve_worker (loop REQUEST_PARAMS / UPDATES)
+          3. Esperar a que CNN + MLP estén listos (máx 120 s)
+          4. Enviar CNN_WEIGHTS (siempre, nunca opcional)
+          5. Esperar CNN_ACK con verificación de arquitectura
+          6. Enviar START
+          7. Loop _serve_worker
         """
-        # ── 1. Handshake ──
+        # ── 1. READY ──
         try:
             msg = receive_message(conn)
         except Exception:
@@ -327,26 +325,90 @@ class ParameterServer:
         if self.on_worker_connected:
             self.on_worker_connected(wid, f"{addr[0]}:{addr[1]}")
 
-        # ── 2. Distribuir CNN ──
-        if self._cnn is not None:
-            try:
-                send_message(
-                    conn,
-                    MsgType.CNN_WEIGHTS,
-                    {
-                        "arch": self._cnn.arch,
-                        "weights_bytes": self._cnn._get_weights_bytes(),
-                    },
+        # ── 2. Esperar CNN + MLP (bloqueo seguro) ──
+        deadline = 120.0
+        waited = 0.0
+        poll = 0.25
+        _log.ps(
+            f"Worker {wid}: esperando configuración del modelo (máx {int(deadline)} s)..."
+        )
+
+        while True:
+            with self._params_lock:
+                ready = (
+                    self._cnn is not None
+                    and bool(self._mlp_state)
+                    and bool(self._cnn_state)
                 )
-                ack = receive_message(conn)
-                if ack["type"] == MsgType.CNN_ACK:
-                    _log.ps(f"Worker {wid}: CNN cargada ✓")
-            except Exception as e:
-                _log.error(f"Error distribuyendo CNN a Worker {wid}: {e}")
+            if ready:
+                break
+            if waited >= deadline:
+                _log.error(
+                    f"Worker {wid}: timeout ({int(deadline)} s) esperando CNN + MLP. "
+                    "Llama ps.set_cnn() y ps.set_mlp() antes de ps.listen()."
+                )
+                self._remove_worker(wid)
+                conn.close()
+                return
+            if self._shutdown.is_set():
+                self._remove_worker(wid)
+                conn.close()
+                return
+            time.sleep(poll)
+            waited += poll
+
+        assert self._cnn is not None
+
+        # ── 3. Enviar CNN_WEIGHTS (siempre) ──
+        try:
+            arch = self._cnn.arch
+            weights_bytes = self._cnn._get_weights_bytes()
+            with self._params_lock:
+                mlp_keys = list(self._mlp_state.keys())
+                cnn_key_count = len(self._cnn_state)
+
+            send_message(
+                conn,
+                MsgType.CNN_WEIGHTS,
+                {
+                    "arch": arch,
+                    "weights_bytes": weights_bytes,
+                    "mlp_keys": mlp_keys,
+                    "cnn_key_count": cnn_key_count,
+                },
+            )
+            _log.ps(
+                f"Worker {wid}: CNN enviada — arch={arch} | "
+                f"cnn_params={cnn_key_count} | mlp_keys={mlp_keys}"
+            )
+
+            ack = receive_message(conn)
+            if ack["type"] != MsgType.CNN_ACK:
+                _log.error(f"Worker {wid}: esperaba CNN_ACK, recibió {ack['type']}")
                 self._remove_worker(wid)
                 return
 
-        # ── 3. Señal de inicio ──
+            # Verificar que el Worker confirmó la misma arquitectura
+            ack_payload = ack.get("payload") or {}
+            ack_arch = (
+                ack_payload.get("arch") if isinstance(ack_payload, dict) else None
+            )
+            if ack_arch and ack_arch != arch:
+                _log.error(
+                    f"Worker {wid}: mismatch de arquitectura — "
+                    f"PS={arch}, Worker={ack_arch}. Desconectando."
+                )
+                self._remove_worker(wid)
+                return
+
+            _log.ps(f"Worker {wid}: CNN cargada ✓ arch={arch}")
+
+        except Exception as e:
+            _log.error(f"Error distribuyendo CNN a Worker {wid}: {e}")
+            self._remove_worker(wid)
+            return
+
+        # ── 4. START ──
         try:
             send_message(conn, MsgType.START, {})
         except Exception as e:
@@ -354,25 +416,15 @@ class ParameterServer:
             self._remove_worker(wid)
             return
 
-        # ── 4. Loop de servicio ──
+        # ── 5. Loop de servicio ──
         self._serve_worker(wid, conn)
 
     def _serve_worker(self, wid: int, conn: socket.socket) -> None:
         """
         Loop de servicio asíncrono para un Worker.
 
-        No hay barrera: este hilo atiende solo a `wid` de forma continua.
-        Otros Workers tienen sus propios hilos y no se bloquean entre sí.
+        Atiende solo a `wid`. Otros Workers tienen sus propios hilos.
         """
-        # VALIDACIÓN CRÍTICA: MLP DEBE ESTAR INICIALIZADO
-        with self._params_lock:
-            if not self._mlp_state:
-                _log.error(
-                    f"[CRÍTICO] MLP NO INICIALIZADO en PS. "
-                    f"Llama ps.set_mlp() ANTES de ps.listen(). "
-                    f"Worker {wid} recibirá MLP con random init → logs ≈ 0 → accuracy = 0%"
-                )
-        
         try:
             while not self._shutdown.is_set():
                 try:
@@ -386,7 +438,6 @@ class ParameterServer:
                     break
 
                 elif mtype == MsgType.REQUEST_PARAMS:
-                    # Responder inmediatamente con el estado actual
                     with self._params_lock:
                         mlp_copy = {k: v.copy() for k, v in self._mlp_state.items()}
                         cnn_copy = {k: v.copy() for k, v in self._cnn_state.items()}
@@ -419,23 +470,22 @@ class ParameterServer:
 
     def _apply_update(self, wid: int, payload: dict) -> None:
         """
-        Aplica los pesos actualizados de un Worker con corrección de staleness.
+        Aplica los pesos actualizados con corrección de staleness.
 
-        Algoritmo: promedio ponderado entre estado global y propuesta del Worker.
             θ_new = θ + α(s) · (θ_worker − θ)
             α(s)  = 1 / (1 + λ · s)
-            s     = versión_actual − versión_leída_por_worker
+            s     = versión_actual − versión_leída
 
-        El estado CNN se actualiza de la misma forma, incluyendo los buffers
-        de BatchNorm (running_mean, running_var) que forman parte del state_dict.
-        Esto es correcto: promediar running stats de Workers que vieron shards
-        distintos del mismo dataset produce una estimación global válida.
+        Los tensores marcados en _no_avg_keys (num_batches_tracked de BN)
+        no se promedian: mantienen el valor del PS. Promediar un contador
+        de batches no tiene significado semántico y puede distorsionar
+        el comportamiento de BatchNorm en eval().
         """
         loss = payload.get("loss", 0.0)
         acc = payload.get("accuracy", 0.0)
         version_read = payload.get("version_read", 0)
-        mlp_weights = payload.get("mlp_weights")  # Dict[str, np.ndarray] PyTorch keys
-        cnn_weights = payload.get("cnn_weights")  # Dict[str, np.ndarray] state_dict
+        mlp_weights = payload.get("mlp_weights")
+        cnn_weights = payload.get("cnn_weights")
 
         with self._params_lock:
             staleness = max(0, self._version - version_read)
@@ -450,25 +500,20 @@ class ParameterServer:
 
             if cnn_weights:
                 for key in self._cnn_state:
+                    if key in self._no_avg_keys:
+                        continue  # num_batches_tracked: no promediar
                     if key in cnn_weights:
-                        # Proteger contra mismatch de tipos (ej: buffer int64 de BN)
-                        # Asegurar ambos operandos son float
-                        current = self._cnn_state[key]
+                        curr = self._cnn_state[key].astype(np.float64)
                         incoming = cnn_weights[key]
-                        
-                        # Convertir a float64 si no lo son
-                        if current.dtype not in [np.float32, np.float64]:
-                            current = current.astype(np.float64)
-                        if incoming.dtype not in [np.float32, np.float64]:
+                        if incoming.dtype not in (np.float32, np.float64):
                             incoming = incoming.astype(np.float64)
-                        
-                        # Averaging seguro
-                        self._cnn_state[key] = current + alpha * (incoming - current)
+                        self._cnn_state[key] = (
+                            curr + alpha * (incoming - curr)
+                        ).astype(self._cnn_state[key].dtype)
 
             self._version += 1
             step = self._version
 
-        # Métricas y callbacks (fuera del lock para no bloquearlo)
         self._metrics.update(loss, acc)
         if self.on_step:
             self.on_step(step, loss, acc, staleness)
@@ -495,7 +540,7 @@ class ParameterServer:
             self._history["timestamps"].append(time.time())
 
     # ================================================================
-    # EVALUACIÓN EN VALIDACIÓN
+    # EVALUACIÓN
     # ================================================================
 
     def evaluate(
@@ -508,11 +553,7 @@ class ParameterServer:
         """
         Evaluación rápida en el split de validación de ImageNet.
 
-        Usa el estado CNN y MLP más reciente del PS. La CNN se pone en
-        eval() antes de extraer features para usar running stats de BN.
-
-        :param max_batches: Número de batches a evaluar (50 × 256 = 12,800 imgs).
-                            Para evaluación completa usar max_batches=None.
+        :param max_batches: 50 × 256 = 12,800 imágenes por defecto.
         :return: (accuracy_pct, mean_loss)
         """
         from Utils.imagenet_streaming import ValidationStream
@@ -522,12 +563,11 @@ class ParameterServer:
             _log.warn("[eval] CNN no configurada.")
             return 0.0, 0.0
 
-        # Tomar snapshot del estado actual
         with self._params_lock:
             mlp_copy = {k: v.copy() for k, v in self._mlp_state.items()}
             cnn_copy = {k: v.copy() for k, v in self._cnn_state.items()}
 
-        # Cargar CNN con estado global actualizado
+        # Cargar CNN con estado global
         base = getattr(self._cnn._model, "model", self._cnn._model)
         sd = base.state_dict()
         with torch.no_grad():
@@ -539,12 +579,11 @@ class ParameterServer:
             base.load_state_dict(sd)
         self._cnn._model.eval()
 
-        # Construir MLP PyTorch con estado global
-        # Las shapes se infieren directamente del state_dict
         fc1w = mlp_copy.get("fc1.weight")
         if fc1w is None:
             _log.warn("[eval] MLP no configurado.")
             return 0.0, 0.0
+
         hidden1, feature_dim = fc1w.shape
         hidden2 = mlp_copy["fc2.weight"].shape[0]
         n_classes = mlp_copy["fc3.weight"].shape[0]
@@ -556,7 +595,6 @@ class ParameterServer:
                     param.data.copy_(torch.from_numpy(mlp_copy[name]).to(param.device))
         mlp.eval()
 
-        # Iterar sobre validación
         criterion = torch.nn.CrossEntropyLoss()
         total_correct, total_loss, total_n = 0, 0.0, 0
 

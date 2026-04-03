@@ -3,13 +3,20 @@ ps_gui_imagenet.py
 
 GUI del Parameter Server asíncrono para entrenamiento distribuido en ImageNet.
 
-DIFERENCIAS CON EL SISTEMA ANTERIOR:
-  - Los parámetros del modelo se inicializan con MLPPyTorch.state_dict_numpy()
-    y se pasan al PS con ps.set_mlp() — formato PyTorch state_dict nativo.
-  - Las gráficas muestran steps (no épocas).
-  - Métrica "Workers activos en el tiempo" como tercera gráfica.
-  - Evaluación no bloqueante con botón dedicado.
-  - El entrenamiento no termina automáticamente: el usuario lo detiene.
+FLUJO CORRECTO:
+  1. "Encender servidor" → carga CNN+MLP en hilo background (sin congelar GUI)
+                         → ps.set_cnn() + ps.set_mlp() + ps.listen()
+                         → estado LISTENING
+  2. Worker conecta     → PS bloquea su handshake hasta que CNN+MLP estén listos
+                         → siempre True porque se cargaron en paso 1
+  3. "Iniciar entrenamiento" → estado TRAINING (Workers ya entrenando)
+
+MEJORAS VS VERSIÓN ANTERIOR:
+  - CNN+MLP se cargan en hilo background → la GUI no se congela (~50MB ResNet-18)
+  - Indicador visual "Cargando..." mientras descarga pesos
+  - Logging limpio: sin logs por iteración (verbose reducido)
+  - num_batches_tracked excluido del averaging en el PS
+  - Label bug corregido en imagenet_streaming.py
 """
 
 import os
@@ -93,6 +100,7 @@ class PSApp:
         "#E91E63",
     ]
     _S_OFFLINE = "OFFLINE"
+    _S_LOADING = "LOADING"  # cargando CNN+MLP (hilo background)
     _S_LISTENING = "LISTENING"
     _S_TRAINING = "TRAINING"
 
@@ -108,7 +116,7 @@ class PSApp:
         self._ps: ParameterServer | None = None
         self._state: str = self._S_OFFLINE
 
-        self._workers: dict = {}  # wid → addr
+        self._workers: dict = {}
         self._steps_hist: list = []
         self._loss_hist: list = []
         self._acc_hist: list = []
@@ -123,7 +131,7 @@ class PSApp:
         self._refresh_buttons()
 
     # ================================================================
-    # CONSTRUCCIÓN DE LA UI
+    # UI
     # ================================================================
 
     def _build_ui(self) -> None:
@@ -164,7 +172,7 @@ class PSApp:
             pady=6
         )
 
-        # ── Conexión ──────────────────────────────────────
+        # ── Conexión ──
         self._section(frm, "Conexión TCP")
         self._v_host = tk.StringVar(value="0.0.0.0")
         self._v_port = tk.IntVar(value=9999)
@@ -175,7 +183,7 @@ class PSApp:
         )
         ToolTip(ent_port, "Puerto TCP para comunicación con Workers")
 
-        # ── Dataset ───────────────────────────────────────
+        # ── Dataset ──
         self._section(frm, "Dataset")
         self._v_dataset = tk.StringVar(value="ILSVRC/imagenet-1k")
         self._v_hf_token = tk.StringVar(value=os.environ.get("HF_TOKEN", ""))
@@ -184,8 +192,7 @@ class PSApp:
         ent_token = ttk.Entry(frm, textvariable=self._v_hf_token, width=30, show="*")
         ent_token.pack(fill=tk.X, pady=2)
         ToolTip(
-            ent_dataset,
-            "Dataset de Hugging Face Hub (ej: ILSVRC/imagenet-1k, timm/imagenet-1k-wds)",
+            ent_dataset, "Dataset HF Hub (ej: ILSVRC/imagenet-1k, timm/imagenet-1k-wds)"
         )
         ToolTip(ent_token, "Token de acceso HF para datasets privados.")
         ttk.Label(
@@ -196,7 +203,7 @@ class PSApp:
             justify=tk.LEFT,
         ).pack(anchor=tk.W, pady=(2, 4))
 
-        # ── CNN ───────────────────────────────────────────
+        # ── CNN ──
         self._section(frm, "CNN Extractor")
         self._v_arch = tk.StringVar(value="resnet18")
         rb_resnet = ttk.Radiobutton(
@@ -207,28 +214,25 @@ class PSApp:
         )
         rb_resnet.pack(anchor=tk.W)
         rb_simple = ttk.Radiobutton(
-            frm, text="Simple CNN (sin pretrain)", variable=self._v_arch, value="simple"
+            frm,
+            text="Simple CNN (sin pretrain)",
+            variable=self._v_arch,
+            value="simple",
         )
         rb_simple.pack(anchor=tk.W)
-        ToolTip(
-            rb_resnet,
-            "Extractor preentrenado en ImageNet (más rápido, mejor convergencia)",
-        )
-        ToolTip(
-            rb_simple,
-            "CNN simple sin preentrenamiento (para experimentos, convergencia lenta)",
-        )
+        ToolTip(rb_resnet, "Extractor preentrenado (más rápido, mejor convergencia)")
+        ToolTip(rb_simple, "CNN simple sin preentrenamiento (convergencia lenta)")
 
-        # ── MLP ───────────────────────────────────────────
+        # ── MLP ──
         self._section(frm, "Clasificador MLP")
         self._v_h1 = tk.IntVar(value=1024)
         self._v_h2 = tk.IntVar(value=512)
         ent_h1 = self._entry(frm, "Neuronas capa 1:", self._v_h1, width=8)
         ent_h2 = self._entry(frm, "Neuronas capa 2:", self._v_h2, width=8)
-        ToolTip(ent_h1, "Tamaño de la 1ª capa oculta del MLP (features → h1)")
-        ToolTip(ent_h2, "Tamaño de la 2ª capa oculta del MLP (h1 → h2 → 1000 clases)")
+        ToolTip(ent_h1, "1ª capa oculta del MLP (features → h1)")
+        ToolTip(ent_h2, "2ª capa oculta del MLP (h1 → h2 → 1000)")
 
-        # ── Async SGD ─────────────────────────────────────
+        # ── Async SGD ──
         self._section(frm, "Async SGD")
         self._v_lr = tk.StringVar(value="0.001")
         self._v_lambda = tk.StringVar(value="0.1")
@@ -238,13 +242,10 @@ class PSApp:
         ent_lambda = self._entry(frm, "Staleness λ (0–1):", self._v_lambda, width=12)
         ent_report = self._entry(frm, "Steps por reporte:", self._v_report, width=12)
         ent_window = self._entry(frm, "Ventana métricas:", self._v_window, width=12)
-        ToolTip(ent_lr, "Tasa de aprendizaje para SGD (típicamente 0.001–0.01)")
-        ToolTip(ent_lambda, "Factor de corrección staleness")
-        ToolTip(ent_report, "Cada cuántos steps generar reporte de métricas en consola")
-        ToolTip(
-            ent_window,
-            "Cantidad de steps anteriores para promediar métricas (suaviza ruido)",
-        )
+        ToolTip(ent_lr, "Tasa de aprendizaje SGD (típicamente 0.001–0.01)")
+        ToolTip(ent_lambda, "Factor corrección staleness (0=sin corrección, 1=fuerte)")
+        ToolTip(ent_report, "Steps entre reportes de métricas")
+        ToolTip(ent_window, "Pasos para promediar métricas (suaviza ruido)")
         ttk.Label(
             frm,
             text="ℹ λ=0: sin corrección  λ=0.1: moderada  λ=1: fuerte",
@@ -252,19 +253,19 @@ class PSApp:
             foreground="#2E7D32",
         ).pack(anchor=tk.W, pady=(2, 8))
 
-        # ── Evaluación ────────────────────────────────────
+        # ── Evaluación ──
         self._section(frm, "Evaluación")
         self._v_val_batches = tk.IntVar(value=50)
-        ent_valbatches = self._entry(
+        ent_vb = self._entry(
             frm, "Batches de validación:", self._v_val_batches, width=8
         )
         self._btn_eval = ttk.Button(
             frm, text="Evaluar en validación ahora", command=self._cmd_evaluate
         )
         self._btn_eval.pack(fill=tk.X, pady=6)
-        ToolTip(self._btn_eval, "Evalúa modelo en datos de validación (no bloqueante)")
+        ToolTip(self._btn_eval, "Evalúa modelo global en validación (no bloqueante)")
 
-        # ── Botones ───────────────────────────────────────
+        # ── Botones ──
         ttk.Separator(frm, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=(18, 8))
         self._btn_listen = ttk.Button(
             frm, text="Encender servidor", command=self._cmd_listen
@@ -286,12 +287,13 @@ class PSApp:
         ):
             btn.pack(fill=tk.X, pady=3)
 
-        ToolTip(self._btn_listen, "Abre el socket TCP y espera Workers.")
-        ToolTip(self._btn_train, "Configura el modelo y activa el entrenamiento.")
-        ToolTip(self._btn_shutdown, "Envía STOP a todos los Workers y cierra el PS.")
         ToolTip(
-            self._btn_clear, "Limpia históricos de gráficas (no detiene entrenamiento)"
+            self._btn_listen,
+            "Carga CNN+MLP y abre socket TCP (puede tardar si descarga ResNet-18)",
         )
+        ToolTip(self._btn_train, "Activa el entrenamiento (Workers ya están esperando)")
+        ToolTip(self._btn_shutdown, "Envía STOP a todos los Workers y cierra el PS")
+        ToolTip(self._btn_clear, "Limpia gráficas sin detener entrenamiento")
 
     def _build_right(self) -> None:
         right = ttk.Frame(self.root)
@@ -300,7 +302,7 @@ class PSApp:
         right.rowconfigure(2, weight=1)
         right.columnconfigure(0, weight=1)
 
-        # ── Workers ───────────────────────────────────────
+        # ── Workers ──
         wf = ttk.LabelFrame(right, text="Workers conectados", padding=6)
         wf.grid(row=0, column=0, sticky="ew", pady=(0, 6))
 
@@ -328,7 +330,6 @@ class PSApp:
         )
         self._srv_lbl.pack(side=tk.LEFT, padx=8)
 
-        # Métricas en tiempo real
         m_row = ttk.Frame(wf)
         m_row.pack(fill=tk.X, pady=(4, 0))
         self._m_step = tk.StringVar(value="Step: —")
@@ -340,7 +341,7 @@ class PSApp:
                 side=tk.LEFT, padx=10
             )
 
-        # ── Gráficas ──────────────────────────────────────
+        # ── Gráficas ──
         pf = ttk.Frame(right)
         pf.grid(row=1, column=0, sticky="nsew")
         self._fig, (self._ax_loss, self._ax_acc, self._ax_wk) = plt.subplots(
@@ -356,13 +357,13 @@ class PSApp:
         self._canvas.draw()
         self._canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
 
-        # ── Log ───────────────────────────────────────────
+        # ── Log ──
         lf = ttk.LabelFrame(right, text="Log", padding=4)
         lf.grid(row=2, column=0, sticky="nsew", pady=(3, 0))
         lf.columnconfigure(0, weight=1)
         self._log_txt = tk.Text(
             lf,
-            height=2,
+            height=5,
             state=tk.DISABLED,
             font=("Courier", 9),
             bg="#1e1e1e",
@@ -375,8 +376,6 @@ class PSApp:
         self._log_txt.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         ls.pack(side=tk.RIGHT, fill=tk.Y)
 
-    # ── Helpers de construcción ───────────────────────────
-
     @staticmethod
     def _section(parent, text):
         ttk.Label(parent, text=text, font=("Helvetica", 10, "bold")).pack(
@@ -388,10 +387,10 @@ class PSApp:
     def _entry(parent, label, var, width=22):
         ttk.Label(parent, text=label).pack(anchor=tk.W)
         entry = ttk.Entry(parent, textvariable=var, width=width)
-        pack_kwargs: dict[str, str | int] = {"pady": 2}  # type: ignore
+        pack_kwargs: dict = {"pady": 2}  # type: ignore[annotation-unchecked]
         if width == 22:
-            pack_kwargs["fill"] = "x"  # type: ignore
-        entry.pack(**pack_kwargs)  # type: ignore
+            pack_kwargs["fill"] = "x"
+        entry.pack(**pack_kwargs)
         return entry
 
     def _setup_axes(self):
@@ -405,7 +404,7 @@ class PSApp:
             ax.set_ylabel(ylabel)
             ax.grid(True, alpha=0.3)
         self._ax_acc.set_ylim(0, 100)
-        self._fig.tight_layout(rect=(0, 0, 1, 0.98))
+        self._fig.tight_layout(rect=(0, 0, 1, 0.93))
 
     # ================================================================
     # BOTONES
@@ -421,7 +420,9 @@ class PSApp:
             state=tk.NORMAL if s == self._S_LISTENING and has_w else tk.DISABLED
         )
         self._btn_shutdown.configure(
-            state=tk.NORMAL if s != self._S_OFFLINE else tk.DISABLED
+            state=tk.NORMAL
+            if s not in (self._S_OFFLINE, self._S_LOADING)
+            else tk.DISABLED
         )
         self._btn_eval.configure(
             state=tk.NORMAL if s == self._S_TRAINING else tk.DISABLED
@@ -429,6 +430,7 @@ class PSApp:
 
         cfg = {
             self._S_OFFLINE: ("OFFLINE", "#607D8B"),
+            self._S_LOADING: ("CARGANDO…", "#F57F17"),
             self._S_LISTENING: ("LISTENING", "#2E7D32"),
             self._S_TRAINING: ("TRAINING", "#1565C0"),
         }
@@ -437,6 +439,10 @@ class PSApp:
         self._srv_lbl.configure(bg=color)
 
     def _cmd_listen(self) -> None:
+        """
+        Carga CNN+MLP en un hilo background (para no congelar la GUI
+        al descargar los ~50 MB de ResNet-18) y luego inicia el servidor.
+        """
         try:
             host = self._v_host.get().strip()
             port = int(self._v_port.get())
@@ -444,81 +450,80 @@ class PSApp:
             lam = float(self._v_lambda.get())
             rep = int(self._v_report.get())
             win = int(self._v_window.get())
-            
-            # CRÍTICO: Obtener parámetros de CNN + MLP AHORA (no después en _cmd_train)
             h1 = int(self._v_h1.get())
             h2 = int(self._v_h2.get())
             arch = self._v_arch.get()
-            hf_token = self._v_hf_token.get().strip() or None
-            
         except ValueError as e:
             messagebox.showerror("Parámetro inválido", str(e))
             return
 
+        hf_token = self._v_hf_token.get().strip() or None
         q = self._q
-        self._ps = ParameterServer(
-            host=host,
-            port=port,
-            learning_rate=lr,
-            staleness_lambda=lam,
-            steps_per_report=rep,
-            metrics_window=win,
-            on_step=lambda step, loss, acc, stale: q.put(
-                ("step", (step, loss, acc, stale))
-            ),
-            on_report=lambda step, loss, acc: q.put(("report", (step, loss, acc))),
-            on_worker_connected=lambda wid, addr: q.put(("connected", (wid, addr))),
-            on_worker_disconnected=lambda wid: q.put(("disconnected", (wid,))),
-        )
-        
-        # ═══════════════════════════════════════════════════════════════
-        # INICIALIZAR CNN + MLP ANTES DE LISTEN (CRÍTICO FIX)
-        # ═══════════════════════════════════════════════════════════════
-        try:
-            self._log(f"[PS] Cargando {arch}...")
-            cnn = CNNExtractor(
-                arch=arch, pretrained=(arch == "resnet18"), device="cpu", seed=42
-            )
-            self._ps.set_cnn(cnn)
-            
-            self._log(f"[PS] Inicializando MLP: {cnn.feature_dim}→{h1}→{h2}→1000")
-            mlp = MLPPyTorch(
-                feature_dim=cnn.feature_dim, hidden1=h1, hidden2=h2, n_classes=1000
-            )
-            self._ps.set_mlp(mlp.state_dict_numpy())
-            
-            self._log(f"[PS] ✓ CNN + MLP listos. Iniciando servidor...")
-        except Exception as e:
-            messagebox.showerror("Error inicializando CNN/MLP", str(e))
-            self._ps = None
-            return
-        
-        # ═══════════════════════════════════════════════════════════════
-        # AHORA escuchar a Workers (ya con CNN + MLP configurados)
-        # ═══════════════════════════════════════════════════════════════
-        try:
-            self._ps.listen()
-        except Exception as e:
-            messagebox.showerror("Error", str(e))
-            self._ps = None
-            return
 
-        self._state = self._S_LISTENING
+        # Indicar "cargando" visualmente mientras descarga/carga CNN
+        self._state = self._S_LOADING
         self._refresh_buttons()
-        self._log(f"[PS] Servidor en {host}:{port} — esperando Workers")
-        self._status.set(f"Escuchando en {host}:{port}...")
+        self._status.set(f"Cargando {arch}... (puede tardar en la primera vez)")
+        self._log(f"[PS] Cargando CNN {arch} + MLP {h1}→{h2}→1000...")
+
+        def _init():
+            try:
+                cnn = CNNExtractor(
+                    arch=arch,
+                    pretrained=(arch == "resnet18"),
+                    device="cpu",
+                    seed=42,
+                )
+                mlp = MLPPyTorch(
+                    feature_dim=cnn.feature_dim, hidden1=h1, hidden2=h2, n_classes=1000
+                )
+
+                ps = ParameterServer(
+                    host=host,
+                    port=port,
+                    learning_rate=lr,
+                    staleness_lambda=lam,
+                    steps_per_report=rep,
+                    metrics_window=win,
+                    on_step=lambda step, loss, acc, stale: q.put(
+                        ("step", (step, loss, acc, stale))
+                    ),
+                    on_report=lambda step, loss, acc: q.put(
+                        ("report", (step, loss, acc))
+                    ),
+                    on_worker_connected=lambda wid, addr: q.put(
+                        ("connected", (wid, addr))
+                    ),
+                    on_worker_disconnected=lambda wid: q.put(("disconnected", (wid,))),
+                )
+
+                # set_cnn + set_mlp ANTES de listen → handshake siempre seguro
+                ps.set_cnn(cnn)
+                ps.set_mlp(mlp.state_dict_numpy())
+                ps.listen()
+
+                q.put(("ps_ready", (ps, host, port, arch, cnn.feature_dim, h1, h2)))
+
+            except Exception as e:
+                q.put(("init_error", e))
+
+        threading.Thread(target=_init, daemon=True).start()
         self.root.after(100, self._poll)
 
     def _cmd_train(self) -> None:
-        """Inicia entrenamiento (CNN + MLP ya fueron cargados en _cmd_listen)."""
+        """
+        Transición LISTENING → TRAINING.
+
+        CNN+MLP ya están cargados y el PS ya aceptó al Worker.
+        Este botón simplemente activa el estado TRAINING en la GUI.
+        """
         if self._state != self._S_LISTENING or not self._workers:
             return
-
         self._state = self._S_TRAINING
+        self._t_start = time.perf_counter()
         self._refresh_buttons()
-        self._log("[PS] ✓ Entrenamiento iniciado. Workers activos comenzarán a entrenar.")
-        self._status.set("Entrenamiento en progreso...")
-        self.root.after(100, self._poll)
+        self._log("[PS] Entrenamiento activado. Workers entrenando.")
+        self._status.set("Entrenamiento asíncrono en progreso...")
 
     def _cmd_shutdown(self) -> None:
         if not self._ps:
@@ -543,15 +548,15 @@ class PSApp:
         hf_token = self._v_hf_token.get().strip() or None
         n_bat = int(self._v_val_batches.get())
         q = self._q
+        ps = self._ps  # captura local para el hilo
 
         def _eval():
-            assert self._ps is not None
             q.put(("log", f"[PS] Evaluando ({n_bat} batches de validación)..."))
             try:
-                acc, loss = self._ps.evaluate(
+                acc, loss = ps.evaluate(
                     dataset_name=dataset, max_batches=n_bat, hf_token=hf_token
                 )
-                step = self._ps.current_version
+                step = ps.current_version
                 q.put(("val_result", (step, loss, acc)))
             except Exception as e:
                 q.put(("log", f"[PS] Error en evaluación: {e}"))
@@ -566,7 +571,28 @@ class PSApp:
         try:
             while True:
                 kind, data = self._q.get_nowait()
-                if kind == "connected":
+
+                if kind == "ps_ready":
+                    ps, host, port, arch, fdim, h1, h2 = data
+                    self._ps = ps
+                    self._state = self._S_LISTENING
+                    self._refresh_buttons()
+                    self._log(
+                        f"[PS] ✓ Servidor en {host}:{port} | "
+                        f"arch={arch} | feature_dim={fdim} | "
+                        f"MLP {fdim}→{h1}→{h2}→1000"
+                    )
+                    self._status.set(
+                        f"Escuchando en {host}:{port} — esperando Workers..."
+                    )
+
+                elif kind == "init_error":
+                    self._state = self._S_OFFLINE
+                    self._refresh_buttons()
+                    messagebox.showerror("Error inicializando PS", str(data))
+                    self._status.set("Error. Revisa los parámetros.")
+
+                elif kind == "connected":
                     self._on_connected(*data)
                 elif kind == "disconnected":
                     self._on_disconnected(*data)
@@ -576,16 +602,16 @@ class PSApp:
                     self._on_report(*data)
                 elif kind == "val_result":
                     self._on_val(*data)
-                elif kind == "ready":
-                    self._on_ready()
                 elif kind == "log":
                     self._log(data)
                 elif kind == "error":
                     self._on_error(data)
+
         except queue.Empty:
             pass
         except Exception as e:
             self._log(f"[ERROR] {e}")
+
         if self._state != self._S_OFFLINE:
             self.root.after(100, self._poll)
 
@@ -625,7 +651,7 @@ class PSApp:
         self._acc_hist.append(acc)
         self._workers_hist.append(len(self._workers))
         self._update_plots()
-        elapsed = time.perf_counter() - self._t_start
+        elapsed = time.perf_counter() - self._t_start if self._t_start else 0.0
         self._status.set(
             f"Step {step:,} | loss={loss:.4f} | acc={acc:.2f}% | "
             f"workers={len(self._workers)} | t={elapsed:.0f}s"
@@ -639,13 +665,6 @@ class PSApp:
         self._update_plots()
         self._log(f"[Val] step={step:,} | acc={acc:.2f}% | loss={loss:.4f}")
         self._status.set(f"Validación | acc={acc:.2f}% | loss={loss:.4f}")
-
-    def _on_ready(self) -> None:
-        self._state = self._S_TRAINING
-        self._t_start = time.perf_counter()
-        self._refresh_buttons()
-        self._log("[PS] Entrenamiento asíncrono activo.")
-        self._status.set("Entrenamiento asíncrono activo — Workers pueden conectarse.")
 
     def _on_error(self, exc) -> None:
         self._log(f"[ERROR] {exc}")

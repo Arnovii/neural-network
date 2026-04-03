@@ -19,12 +19,9 @@ TRANSFORMS:
   Train: RandomResizedCrop(224) + HorizontalFlip + Normalize(ImageNet stats)
   Val:   Resize(256) + CenterCrop(224) + Normalize(ImageNet stats)
 
-USO:
-    stream = build_worker_stream(worker_rank=0, num_workers=2, batch_size=64)
-    stream.start()
-    for X_batch, Y_batch in stream:   # (64,3,224,224) float32, (64,) int64
-        ...
-    stream.stop()
+LABEL EXTRACTION:
+  Se usa is-None check (no or-chain) para evitar que label=0 (clase tench)
+  sea tratado como falsy y sustituido por el campo alternativo.
 """
 
 import io
@@ -75,6 +72,34 @@ def get_val_transform(image_size: int = 224) -> T.Compose:
 
 
 # ================================================================
+# HELPERS
+# ================================================================
+
+
+def _extract_label(sample: dict) -> int:
+    """
+    Extrae el label de un sample de forma robusta.
+
+    Usa is-None check en lugar de or-chain para evitar que label=0
+    (clase 'tench', primera clase de ImageNet-1k) sea tratado como
+    falsy y sustituido incorrectamente por el campo 'cls'.
+
+    Ejemplos:
+        label=0, cls=None → 0   ✓
+        label=0, cls=5    → 0   ✓  (sin el fix: devolvería 5)
+        label=None, cls=3 → 3   ✓
+        label=None, cls=None → 0 ✓
+    """
+    lbl = sample.get("label")
+    if lbl is not None:
+        return int(lbl)
+    cls = sample.get("cls")
+    if cls is not None:
+        return int(cls)
+    return 0
+
+
+# ================================================================
 # STREAM ITERATOR (infinito para train)
 # ================================================================
 
@@ -84,17 +109,16 @@ class ImageNetStream:
     Iterador de batches ImageNet con streaming infinito desde HF.
 
     Produce (X, Y) indefinidamente. Cuando el split se agota,
-    reinicia el stream automáticamente (comportamiento estándar
-    para entrenamiento sin épocas definidas).
+    reinicia el stream automáticamente.
 
-    :param dataset_name:  Nombre del dataset en HF Hub.
-    :param worker_rank:   Índice de este Worker (para sharding).
-    :param num_workers:   Total de Workers.
-    :param batch_size:    Imágenes por batch.
-    :param image_size:    Tamaño de crop final.
+    :param dataset_name:   Nombre del dataset en HF Hub.
+    :param worker_rank:    Índice de este Worker (para sharding).
+    :param num_workers:    Total de Workers.
+    :param batch_size:     Imágenes por batch.
+    :param image_size:     Tamaño de crop final.
     :param shuffle_buffer: Imágenes en buffer de shuffle (0 = sin shuffle).
-    :param seed:          Semilla del shuffle.
-    :param hf_token:      Token HF.
+    :param seed:           Semilla del shuffle.
+    :param hf_token:       Token HF.
     """
 
     def __init__(
@@ -160,7 +184,7 @@ class ImageNetStream:
             try:
                 for sample in self._dataset:
                     raw = sample.get("image") or sample.get("jpg") or sample.get("png")
-                    label = sample.get("label") or sample.get("cls") or 0
+                    label = _extract_label(sample)  # FIX: is-None check
                     img = self._to_pil(raw)
                     if img is None:
                         continue
@@ -169,7 +193,7 @@ class ImageNetStream:
                     except Exception:
                         continue
                     buf_X.append(tensor.numpy())
-                    buf_Y.append(int(label))
+                    buf_Y.append(label)
                     if len(buf_X) >= self.batch_size:
                         X = np.stack(buf_X[: self.batch_size])
                         Y = np.array(buf_Y[: self.batch_size], dtype=np.int64)
@@ -240,7 +264,6 @@ class PrefetchBuffer:
 
     def stop(self) -> None:
         self._stop.set()
-        # Vaciar la cola para desbloquear el hilo en put()
         while not self._q.empty():
             try:
                 self._q.get_nowait()
@@ -339,7 +362,7 @@ class ValidationStream:
             if self.max_batches and done >= self.max_batches:
                 break
             raw = sample.get("image") or sample.get("jpg")
-            label = sample.get("label") or sample.get("cls") or 0
+            label = _extract_label(sample)  # FIX: is-None check
             img = ImageNetStream._to_pil(raw)
             if img is None:
                 continue
@@ -348,7 +371,7 @@ class ValidationStream:
             except Exception:
                 continue
             buf_X.append(tensor.numpy())
-            buf_Y.append(int(label))
+            buf_Y.append(label)
             if len(buf_X) >= self.batch_size:
                 yield (
                     np.stack(buf_X[: self.batch_size]),
