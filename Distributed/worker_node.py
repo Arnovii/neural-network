@@ -105,7 +105,26 @@ class WorkerNode:
     # ================================================================
 
     def run(self) -> None:
-        """Conecta al PS y ejecuta el loop de entrenamiento asíncrono."""
+        """
+        Punto de entrada principal del Worker: conecta, entrena, y se limpia.
+        
+        Thread-safe para múltiples Workers en paralelo. Ejecuta loop autónomo
+        de entrenamiento hasta que PS envíe STOP o se produzca error fatal.
+        
+        Pasos:
+        -----
+        1. _connect(): Establece TCP con PS, recibe WORKER_ID y CONFIG
+        2. _init_stream(): Construye pipeline de descarga/prefetch desde HF
+        3. _handshake_loop(): Espera CNN_WEIGHTS, confirma, espera START
+        4. _training_loop(): Loop infinito de entrenamiento (REQUEST_PARAMS → sync → train → UPDATES)
+        5. Limpieza automática en finally block (close sockets, stop streams)
+        
+        :returns: None (ejecutor directo, llamar desde main)
+        :rtype: None
+        
+        :raises ConnectionError: Si no puede conectar al PS
+        :raises RuntimeError: Si hay inconsistencia en CNN/MLP/CONFIG recibido
+        """
         self._connect()
         self._log(
             f"Conectado | rank={self.worker_rank}/{self.num_workers} | "
@@ -123,6 +142,22 @@ class WorkerNode:
     # ================================================================
 
     def _connect(self) -> None:
+        """
+        Establece conexión TCP con Parameter Server y realiza handshake inicial.
+        
+        Secuencia de handshake (según protocol.py):
+        1. Envía READY → PS asigna Worker_ID único
+        2. Recibe WORKER_ID → guarda self._worker_id
+        3. Recibe CONFIG → obtiene batch_size, image_size
+        
+        Si PS no responde en tiempo, lanza ConnectionError.
+        Si mensajes fuera de formato, lanza ConnectionError con tipo recibido.
+        
+        :returns: None (modifica self._sock, self._worker_id, self.batch_size, self.image_size)
+        :rtype: None
+        
+        :raises ConnectionError: Si falla conexión TCP o secuencia READY/WORKER_ID/CONFIG inválida
+        """
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._sock.connect((self.server_host, self.server_port))
         send_message(self._sock, MsgType.READY, {})

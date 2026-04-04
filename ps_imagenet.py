@@ -42,6 +42,19 @@ from Model.mlp_pytorch import MLPPyTorch
 
 
 def main() -> None:
+    """
+    Punto de entrada para el Parameter Server en modo terminal.
+
+    Analiza configuración de línea de comandos, instancia modelos CNN+MLP,
+    crea ParameterServer, espera a que Workers se conecten, y ejecuta
+    el loop de entrenamiento distribuido hasta max_steps o interrupción por teclado.
+
+    Registra métricas periódicamente y muestra throughput (steps/sec).
+    Los resultados se exportan a JSON al completar o parar el servidor.
+
+    :returns: None
+    :rtype: None
+    """
     parser = argparse.ArgumentParser(
         description="Parameter Server asíncrono — ImageNet-1k"
     )

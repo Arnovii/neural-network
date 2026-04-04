@@ -105,6 +105,19 @@ class PSApp:
     _S_TRAINING = "TRAINING"
 
     def __init__(self, root: tk.Tk) -> None:
+        """
+        Inicializa la interfaz grá fica del Parameter Server.
+        
+        Configura widgets, estado interno, plots, y callbacks. Esta interfaz
+        permite:
+        - Configurar parámetros del PS (CNN, MLP, learning rate, λ, batch-size, image-size)
+        - Bloquear parámetros una vez iniciado el servidor
+        - Monitorear entrenamiento en tiempo real (loss, accuracy, workers activos)
+        - Gestionar lifecycle del servidor (inicio, parada, evaluación)
+        
+        :param root: Ventana tkinter raíz (normalmente tk.Tk())
+        :type root: tk.Tk
+        """
         self.root = root
         self.root.title("Parameter Server — ImageNet-1k Distribuido")
         self.root.state("zoomed")
@@ -464,8 +477,25 @@ class PSApp:
 
     def _cmd_listen(self) -> None:
         """
-        Carga CNN+MLP en un hilo background (para no congelar la GUI
-        al descargar los ~50 MB de ResNet-18) y luego inicia el servidor.
+        Carga CNN+MLP en hilo background e inicia servidor TCP.
+        
+        Proceso:
+        1. Lee parámetros de GUI (validación de tipos)
+        2. Cambia estado a LOADING ('Cargando...')
+        3. Lanza hilo background que:
+           - Instancia CNN desde arquitectura seleccionada (resnet18/simple)
+           - Instancia MLP con hidden1/hidden2 seleccionados
+           - Instancia ParameterServer con parámetros Async-SGD (lr, λ, windows)
+           - Llama ps.set_cnn(), ps.set_mlp(), ps.listen()
+        4. Loop principal recibe eventos (step, report, worker_connected, worker_disconnected)
+        5. Actualiza gráficas y status en tiempo real
+        
+        GUI no se congela durante descarga de ResNet-18 (~50MB) gracias a threading.
+        
+        :returns: None
+        :rtype: None
+        
+        :raises messagebox.showerror: Si parámetros inválidos (no son int/float)
         """
         try:
             host = self._v_host.get().strip()
@@ -538,10 +568,19 @@ class PSApp:
 
     def _cmd_train(self) -> None:
         """
-        Transición LISTENING → TRAINING.
-
-        CNN+MLP ya están cargados y el PS ya aceptó al Worker.
-        Este botón simplemente activa el estado TRAINING en la GUI.
+        Inicia el entrenamiento en los Workers (envía START a todos).
+        
+        Requisitos:
+        - Servidor en estado LISTENING (Workers conectados y en standby)
+        - Al menos 1 Worker debe estar conectado
+        
+        Envía mensaje START a todos los Workers. Ellos entran en loop
+        de entrenamiento indefinido (REQUEST_PARAMS → sync → train → UPDATES).
+        
+        Cambio de estado: LISTENING → TRAINING.
+        
+        :returns: None
+        :rtype: None
         """
         if self._state != self._S_LISTENING or not self._workers:
             return
@@ -552,6 +591,21 @@ class PSApp:
         self._status.set("Entrenamiento asíncrono en progreso...")
 
     def _cmd_shutdown(self) -> None:
+        """
+        Detiene el servidor PS y todos los Workers.
+        
+        Proceso:
+        1. Cambia estado a OFFLINE
+        2. Envía STOP a cada Worker (interrumpe training loop)
+        3. Cierra sockets TCP
+        4. Limpia thread daemon de listening
+        5. Resetea interfaz a estado inicial
+        
+        Cambio de estado: LOADING/LISTENING/TRAINING → OFFLINE.
+        
+        :returns: None
+        :rtype: None
+        """
         if not self._ps:
             return
         if self._state == self._S_TRAINING:

@@ -33,12 +33,17 @@ import torch.nn as nn
 
 class MLPPyTorch(nn.Module):
     """
-    MLP de dos capas ocultas con ReLU para clasificación ImageNet.
-
-    :param feature_dim: Dimensión del vector de features CNN (512 para ResNet-18).
-    :param hidden1:     Neuronas en la primera capa oculta.
-    :param hidden2:     Neuronas en la segunda capa oculta.
-    :param n_classes:   Clases de salida (1000 para ImageNet).
+    Clasificador MLP de 2 capas ocultas para ImageNet (1000 clases).
+    
+    Arquitectura:
+    - Input: vector de features CNN (feature_dim, ej 512 de ResNet-18)
+    - Capa 1: feature_dim → hidden1 (ej 1024) + ReLU
+    - Capa 2: hidden1 → hidden2 (ej 512) + ReLU  
+    - Output: hidden2 → 1000 (logits sin activación)
+    
+    Thread-safe: Múltiples Workers cargan state_dict sin conflictos.
+    Serialización: state_dict_numpy() para transporte por TCP (numpy arrays).
+    Inicialización: Kaiming uniform (He) para producir logits con varianza razonable.
     """
 
     def __init__(
@@ -48,6 +53,20 @@ class MLPPyTorch(nn.Module):
         hidden2: int,
         n_classes: int = 1000,
     ) -> None:
+        """
+        Inicializa el MLP con arquitectura configurable.
+        
+        :param feature_dim: Dimensión del vector de entrada CNN (ej: 512 para ResNet-18)
+        :type feature_dim: int
+        :param hidden1: Unidades de la 1ª capa oculta (defecto config PS: 1024).
+                       Distribuida por PS a todos los Workers via CONFIG.
+        :type hidden1: int
+        :param hidden2: Unidades de la 2ª capa oculta (defecto config PS: 512).
+                       Distribuida por PS a todos los Workers via CONFIG.
+        :type hidden2: int
+        :param n_classes: Número de clases (defecto: 1000 para ImageNet)
+        :type n_classes: int
+        """
         super().__init__()
         self.fc1 = nn.Linear(feature_dim, hidden1)
         self.fc2 = nn.Linear(hidden1, hidden2)
@@ -69,8 +88,15 @@ class MLPPyTorch(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
-        :param x: Tensor (N, feature_dim).
-        :return:  Logits (N, n_classes) — sin softmax.
+        Ejecuta forward pass a través del MLP (3 capas totalmente conectadas).
+
+        Aplica transformación lineal + ReLU en capas ocultas, sin activación en salida.
+
+        :param x: Tensor de entrada con features CNN (batch_size, feature_dim)
+        :type x: torch.Tensor
+
+        :returns: Logits sin softmax (batch_size, n_classes)
+        :rtype: torch.Tensor
         """
         return self.fc3(self.relu(self.fc2(self.relu(self.fc1(x)))))
 

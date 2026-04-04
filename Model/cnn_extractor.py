@@ -47,6 +47,25 @@ class _SimpleCNN(nn.Module):
     """
 
     def __init__(self) -> None:
+        """
+        Inicializa el codificador CNN de 3 bloques (Conv→BN→ReLU→MaxPool).
+
+        Construye capas de extracción de características convolucionales seguidas de
+        pooling adaptativo y cabeza de proyección produciendo 512 características dimensionales.
+        Imágenes de entrada de cualquier tamaño soportado debido a AdaptiveAvgPool2d.
+
+        Arquitectura:
+          - Bloque 1: Conv2d(3,64) → BN → ReLU → MaxPool2d(2)
+          - Bloque 2: Conv2d(64,128) → BN → ReLU → MaxPool2d(2)
+          - Bloque 3: Conv2d(128,256) → BN → ReLU → MaxPool2d(2)
+          - AdaptiveAvgPool2d((1,1))
+          - Cabeza FC: Flatten → Linear(256,512) → ReLU
+
+        :returns: None
+        :rtype: None
+
+        :raises None
+        """
         super().__init__()
 
         def _block(in_ch: int, out_ch: int) -> nn.Sequential:
@@ -70,6 +89,20 @@ class _SimpleCNN(nn.Module):
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Extrae características de 512 dimensiones del batch de imágenes.
+
+        Pasa batch de entrada a través de capas de extracción de características
+        convolucionales y cabeza totalmente conectada.
+
+        :param x: Tensor batch de imágenes (batch_size, 3, height, width) en rango [0, 1] o [0, 255]
+        :type x: torch.Tensor
+
+        :returns: Tensores de características (batch_size, 512) float32
+        :rtype: torch.Tensor
+
+        :raises RuntimeError: Si ancho/alto de entrada < 8 (incompatible con strides de MaxPool)
+        """
         return self.fc(self.features(x))
 
 
@@ -105,6 +138,25 @@ class CNNExtractor:
         device: str = "cpu",
         seed: Optional[int] = 42,
     ) -> None:
+        """
+        Inicializa el extractor CNN para feature extraction desde ImageNet.
+        
+        :param arch: Arquitectura CNN ('resnet18' preentrenado o 'simple' aleatorio).
+                     - 'resnet18': ResNet-18 con pesos IMAGENET1K_V1 si pretrained=True
+                     - 'simple': CNN de 3 bloques Conv2d sin pretrain (experimentación)
+        :type arch: str
+        :param pretrained: Si True, carga pesos ImageNet para resnet18 (recomendado).
+                          Si False, inicializa con pesos aleatorios (convergencia más lenta).
+        :type pretrained: bool
+        :param device: Dispositivo PyTorch ('cpu', 'cuda', 'cuda:0', 'mps').
+                      Modelos congelados: se copian a este device y se cargaán una sola vez.
+        :type device: str
+        :param seed: Semilla RNG para PyTorch (solo afecta 'simple').
+                    Si None, no se fija ningún seed.
+        :type seed: Optional[int]
+        
+        :raises ValueError: Si arch no está en ARCHITECTURES.
+        """
         if arch not in self.ARCHITECTURES:
             raise ValueError(f"arch debe ser {self.ARCHITECTURES}, recibido: {arch!r}")
 
@@ -123,6 +175,23 @@ class CNNExtractor:
 
     @staticmethod
     def _build(arch: str, pretrained: bool) -> nn.Module:
+        """
+        Construye y retorna la arquitectura CNN solicitada.
+
+        Instancia ResNet-18 con opción de preentrenamiento ImageNet o
+        la CNN personalizada SimpleCNN. Ambas arquitecturas producen 512 características.
+
+        :param arch: Nombre de arquitectura ('resnet18' o 'simple')
+        :type arch: str
+        :param pretrained: Si True y arch='resnet18', carga pesos IMAGENET1K_V1. \
+                          Si arch='simple', parámetro ignorado (sin pesos preentrenados disponibles).
+        :type pretrained: bool
+
+        :returns: Módulo PyTorch inicializado
+        :rtype: nn.Module
+
+        :raises ValueError: Si arch no está en ['resnet18', 'simple']
+        """
         if arch == "simple":
             return _SimpleCNN()
 
@@ -135,25 +204,76 @@ class CNNExtractor:
 
     @property
     def feature_dim(self) -> int:
+        """
+        Obtiene dimensión de característica de salida de este CNN.
+
+        Siempre retorna 512 (fijo por ambas arquitecturas ResNet-18 y SimpleCNN).
+
+        :returns: Dimensionalidad del vector de características
+        :rtype: int
+
+        :raises None
+        """
         return FEATURE_DIM
 
     # ── Serialización de pesos (para distribuir por TCP) ─────────
 
     def _get_weights_bytes(self) -> bytes:
-        """Serializa el state_dict a bytes para enviar por TCP."""
+        """
+        Serializa pesos del modelo CNN a bytes para distribución por TCP.
+
+        Exporta el state_dict completo del modelo usando torch.save() a buffer BytesIO,
+        produciendo string de bytes para transmisión por red a Workers. Usado por
+        ParameterServer para empaquetar y difundir pesos CNN actualizados.
+
+        Formato: torch.save(state_dict, BytesIO) → bytes
+
+        :returns: State_dict serializado (formato PyTorch)
+        :rtype: bytes
+
+        :raises RuntimeError: Si serialización de state_dict falla (modelo corrupto)
+        """
         buf = io.BytesIO()
         torch.save(self._model.state_dict(), buf)
         return buf.getvalue()
 
     def load_weights_from_bytes(self, weights_bytes: bytes) -> None:
-        """Carga pesos desde bytes recibidos del PS por TCP."""
+        """
+        Carga pesos del modelo CNN desde bytes serializados (del ParameterServer).
+
+        Deserializa state_dict recibido por TCP (formato torch.save) y aplica
+        al modelo local. Usado durante loop de entrenamiento del Worker cuando
+        se sincroniza pesos CNN globales del ParameterServer para cómputo de gradientes.
+
+        Establece modelo a modo eval después de cargar para deshabilitar actualizaciones
+        de dropout/batch norm.
+
+        :param weights_bytes: State_dict serializado de ParameterServer._get_weights_bytes()
+        :type weights_bytes: bytes
+
+        :returns: None
+        :rtype: None
+
+        :raises RuntimeError: Si pesos incompatibles con arquitectura actual
+        :raises pickle.UnpicklingError: Si stream de bytes corrupto o formato inválido
+        """
         buf = io.BytesIO(weights_bytes)
         state = torch.load(buf, map_location=self.device, weights_only=True)
         self._model.load_state_dict(state)
         self._model.eval()
 
     def _weights_hash(self) -> str:
-        """Hash MD5 (8 hex) de los pesos actuales — para logging."""
+        """
+        Computa hash MD5 de pesos actuales del modelo (primeros 8 caracteres hex).
+
+        Úsin para logging y debugging para verificar sincronización de pesos entre
+        ParameterServer y Workers. Mismo pesos producen mismo hash.
+
+        :returns: Primeros 8 caracteres del digest hex MD5 de tensores de pesos concatenados
+        :rtype: str
+
+        :raises None
+        """
         h = hashlib.md5()
         for t in self._model.state_dict().values():
             h.update(t.cpu().numpy().tobytes())
@@ -162,7 +282,21 @@ class CNNExtractor:
     # ── Extracción de features ────────────────────────────────────
 
     def set_trainable(self, trainable: bool) -> None:
-        """Activa o desactiva gradientes y modo train/eval."""
+        """
+        Habilita o deshabilita cómputo de gradientes y modo train/eval para el CNN.
+
+        Establece requires_grad en todos los parámetros e intercambia modelo entre train()
+        (habilita dropout, actualizaciones de batch norm) y eval() (inferencia determinista).
+
+        :param trainable: Si True, habilita gradientes y modo train. Si False, deshabilita \
+                         gradientes e intercambia a modo eval (solo-inferencia).
+        :type trainable: bool
+
+        :returns: None
+        :rtype: None
+
+        :raises None
+        """
         for p in self._model.parameters():
             p.requires_grad_(trainable)
         self._model.train() if trainable else self._model.eval()
@@ -174,16 +308,9 @@ class CNNExtractor:
         verbose: bool = False,
     ) -> np.ndarray:
         """
-        Extrae features en mini-batches.
+        Extrae caracter\u00edsticas de CNN en mini-batches para gestionar memoria eficientemente.
 
-        Usado por el PS durante la evaluación de validación para
-        procesar el split completo sin agotar la VRAM.
-
-        :param X:          Imágenes (N, 3, H, W) float32.
-        :param batch_size: Imágenes por batch.
-        :param verbose:    Imprimir progreso.
-        :return:           Features (N, feature_dim) float32.
-        """
+        Usado por ParameterServer durante evaluaci\u00f3n de validaci\u00f3n para procesar splits\n        de validaci\u00f3n grandes sin agotar VRAM. Procesa array de entrada en chunks\n        configurables, acumulando resultados.\n\n        :param X: Batch de imagen de entrada (N, 3, height, width) float32 en [0,1] o [0,255]\n        :type X: np.ndarray\n        :param batch_size: Im\u00e1genes por forward pass (default: 512, ajustar para VRAM)\n        :type batch_size: int\n        :param verbose: Si True, imprime progreso a stdout\n        :type verbose: bool\n\n        :returns: Caracter\u00edsticas extra\u00eddas (N, 512) float32\n        :rtype: np.ndarray\n\n        :raises RuntimeError: Si modelo en modo training (llamar set_trainable(False) primero)\n        :raises OutOfMemoryError: Si batch_size demasiado grande para VRAM disponible\n        """
         N = len(X)
         parts = []
         starts = range(0, N, batch_size)

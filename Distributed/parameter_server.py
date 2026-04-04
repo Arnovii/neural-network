@@ -121,6 +121,50 @@ class ParameterServer:
         on_worker_connected: Optional[Callable] = None,
         on_worker_disconnected: Optional[Callable] = None,
     ) -> None:
+        """
+        Inicializa el Parameter Server para entrenamiento Async-SGD distribuido.
+        
+        Crea el servidor de parámetros que coordina múltiples Workers sin barrera
+        global. Los Workers entrenan de forma asíncrona, y el PS actualiza el modelo
+        global inmediatamente al recibir gradientes. Aplica corrección de staleness
+        usando factor α(s) = 1/(1+λ·s) para atenuar gradientes antiguos.
+        
+        :param host: IP donde escucha el servidor (ej: '0.0.0.0' o '127.0.0.1')
+        :type host: str
+        :param port: Puerto TCP para conexión de Workers (ej: 9999)
+        :type port: int
+        :param learning_rate: Tasa de aprendizaje para SGD (defecto: 0.001)
+        :type learning_rate: float
+        :param staleness_lambda: Factor de corrección staleness λ en [0,1] (defecto: 0.1).
+                                  λ=0 sin corrección, λ=1 fuerte corrección
+        :type staleness_lambda: float
+        :param steps_per_report: Pasos para agregar y reportar métricas (defecto: 500)
+        :type steps_per_report: int
+        :param metrics_window: Tamaño ventana deslizante para promedios (defecto: 200)
+        :type metrics_window: int
+        :param batch_size: Imágenes por batch en entrenamiento (defecto: 64).
+                          Se distribuye a todos los Workers via CONFIG
+        :type batch_size: int
+        :param image_size: Tamaño de crop final post-descarga (defecto: 224).
+                          Se distribuye a todos los Workers via CONFIG
+        :type image_size: int
+        :param on_step: Callback tras cada step de gradiente.
+                       Firma: Callable[[int, float, float, float], None]
+                       Args: (step, loss, acc, staleness_factor)
+        :type on_step: Optional[Callable]
+        :param on_report: Callback tras agregación de métricas.
+                         Firma: Callable[[int, float, float], None]
+                         Args: (step, avg_loss, avg_acc)
+        :type on_report: Optional[Callable]
+        :param on_worker_connected: Callback cuando Worker conecta.
+                                   Firma: Callable[[int, str], None]
+                                   Args: (worker_id, address)
+        :type on_worker_connected: Optional[Callable]
+        :param on_worker_disconnected: Callback cuando Worker desconecta.
+                                      Firma: Callable[[int], None]
+                                      Args: (worker_id,)
+        :type on_worker_disconnected: Optional[Callable]
+        """
         self.host = host
         self.port = port
         self.learning_rate = learning_rate

@@ -51,12 +51,14 @@ from Distributed.worker_node import WorkerNode
 
 def get_default_device() -> str:
     """
-    Detecta el dispositivo disponible con prioridad: CUDA > MPS > CPU.
+    Detecta dispositivo disponible con prioridad: CUDA > MPS > CPU.
 
-    Retorna:
-        - 'cuda' si hay GPU NVIDIA disponible
-        - 'mps' si hay accelerador Apple Metal Performance Shaders
-        - 'cpu' como fallback
+    Selecciona automáticamente el mejor dispositivo PyTorch disponible para cómputo.
+    Esto asegura que workers puedan ejecutarse en hardware heterogéneo sin configuración.
+
+    :returns: Identificador del dispositivo ('cuda' para GPU NVIDIA, 'mps' para Apple Metal,
+              'cpu' como fallback)
+    :rtype: str
     """
     if torch.cuda.is_available():
         return "cuda"
@@ -66,6 +68,16 @@ def get_default_device() -> str:
 
 
 def main() -> None:
+    """
+    Punto de entrada para el proceso worker asincrónico.
+
+    Analiza argumentos de línea de comandos, muestra configuración, e inicializa
+    una instancia WorkerNode para conectar con Parameter Server e iniciar
+    entrenamiento distribuido de ImageNet-1k.
+
+    :returns: None
+    :rtype: None
+    """
     parser = argparse.ArgumentParser(
         description="Worker asíncrono — Entrenamiento distribuido ImageNet-1k"
     )
