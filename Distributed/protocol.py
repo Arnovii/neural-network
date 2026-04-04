@@ -44,6 +44,7 @@ from typing import Any, Dict
 class MsgType(str, Enum):
     READY = "READY"
     WORKER_ID = "WORKER_ID"
+    CONFIG = "CONFIG"  # PS → Worker: parámetros globales
     CNN_WEIGHTS = "CNN_WEIGHTS"
     CNN_ACK = "CNN_ACK"
     START = "START"

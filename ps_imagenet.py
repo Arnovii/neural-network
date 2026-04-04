@@ -14,11 +14,11 @@ OPCIONES:
     --staleness-lambda  Factor de corrección de staleness      (default: 0.1)
     --hidden1           Neuronas capa oculta 1 del MLP         (default: 1024)
     --hidden2           Neuronas capa oculta 2 del MLP         (default: 512)
+    --batch-size        Batch size (enviado a todos Workers)   (default: 64)
+    --image-size        Resolución imágenes (enviado a Workers) (default: 224)
     --cnn-arch          resnet18 | simple                      (default: resnet18)
     --steps-per-report  Steps entre reportes de métricas       (default: 500)
     --max-steps         Detener tras N steps (0 = indefinido)  (default: 0)
-    --dataset           Dataset HF Hub                         (default: ILSVRC/imagenet-1k)
-    --hf-token          Token HuggingFace
     --metrics-window    Tamaño ventana deslizante de métricas  (default: 200)
 
 EJEMPLO — 2 Workers, parar tras 50k steps:
@@ -52,13 +52,13 @@ def main() -> None:
     parser.add_argument("--staleness-lambda", type=float, default=0.1)
     parser.add_argument("--hidden1", type=int, default=1024)
     parser.add_argument("--hidden2", type=int, default=512)
+    parser.add_argument("--batch-size", type=int, default=64)
+    parser.add_argument("--image-size", type=int, default=224)
     parser.add_argument(
         "--cnn-arch", type=str, default="resnet18", choices=["resnet18", "simple"]
     )
     parser.add_argument("--steps-per-report", type=int, default=500)
     parser.add_argument("--max-steps", type=int, default=0)
-    parser.add_argument("--dataset", type=str, default="ILSVRC/imagenet-1k")
-    parser.add_argument("--hf-token", type=str, default=None)
     parser.add_argument("--metrics-window", type=int, default=200)
     args = parser.parse_args()
 
@@ -69,16 +69,14 @@ def main() -> None:
     print("=" * 68)
     print(f"  Host              : {args.host}:{args.port}")
     print(f"  Esperando Workers : {args.wait_workers}")
-    print(f"  Dataset           : {args.dataset}")
     print(f"  CNN               : {args.cnn_arch}")
     print(f"  MLP               : feature_dim → {args.hidden1} → {args.hidden2} → 1000")
+    print(f"  Batch size        : {args.batch_size}  (enviado a Workers)")
+    print(f"  Image size        : {args.image_size}  (enviado a Workers)")
     print(f"  LR                : {args.lr}")
     print(f"  Staleness λ       : {args.staleness_lambda}")
     print(f"  Steps/reporte     : {args.steps_per_report}")
     print(f"  Max steps         : {args.max_steps or '∞'}")
-    print(
-        f"  HF Token          : {'✓ configurado' if hf_token else '✗ no configurado'}"
-    )
     print("=" * 68)
 
     # ── Evento de conexión ──
@@ -124,6 +122,8 @@ def main() -> None:
         staleness_lambda=args.staleness_lambda,
         steps_per_report=args.steps_per_report,
         metrics_window=args.metrics_window,
+        batch_size=args.batch_size,
+        image_size=args.image_size,
         on_step=on_step,
         on_report=on_report,
         on_worker_connected=on_connected,

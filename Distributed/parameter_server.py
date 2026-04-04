@@ -114,6 +114,8 @@ class ParameterServer:
         staleness_lambda: float = 0.1,
         steps_per_report: int = 500,
         metrics_window: int = 200,
+        batch_size: int = 64,
+        image_size: int = 224,
         on_step: Optional[Callable] = None,
         on_report: Optional[Callable] = None,
         on_worker_connected: Optional[Callable] = None,
@@ -124,6 +126,8 @@ class ParameterServer:
         self.learning_rate = learning_rate
         self.staleness_lambda = staleness_lambda
         self.steps_per_report = steps_per_report
+        self.batch_size = batch_size
+        self.image_size = image_size
 
         self.on_step = on_step
         self.on_report = on_report
@@ -314,6 +318,15 @@ class ParameterServer:
 
         try:
             send_message(conn, MsgType.WORKER_ID, {"worker_id": wid})
+            # Enviar configuración global inmediatamente
+            send_message(
+                conn,
+                MsgType.CONFIG,
+                {
+                    "batch_size": self.batch_size,
+                    "image_size": self.image_size,
+                },
+            )
         except Exception:
             with self._workers_lock:
                 self._sockets.pop(wid, None)

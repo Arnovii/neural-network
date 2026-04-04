@@ -50,16 +50,15 @@ class WorkerNode:
     :param dataset_name:     Dataset HF Hub.
     :param worker_rank:      Índice de este Worker (0-based, para sharding).
     :param num_workers:      Total de Workers.
-    :param batch_size:       Imágenes por batch.
-    :param hidden1:          Neuronas capa oculta 1 del MLP (usado solo como fallback).
-    :param hidden2:          Neuronas capa oculta 2 del MLP (usado solo como fallback).
     :param device:           Dispositivo PyTorch ('cpu', 'cuda', 'cuda:0', 'mps').
     :param shuffle_buffer:   Imágenes en buffer de shuffle.
     :param prefetch_batches: Batches pre-cargados en background.
-    :param image_size:       Tamaño de imagen tras crop (224 estándar).
     :param hf_token:         Token HuggingFace.
     :param accum_steps:      Batches a acumular antes de enviar UPDATES.
     :param verbose:          Imprimir progreso cada 10 batches.
+
+    NOTA: batch_size, hidden1, hidden2, image_size se reciben del PS
+          mediante CONFIG inmediatamente después de WORKER_ID.
     """
 
     def __init__(
@@ -69,13 +68,9 @@ class WorkerNode:
         dataset_name: str = "ILSVRC/imagenet-1k",
         worker_rank: int = 0,
         num_workers: int = 1,
-        batch_size: int = 64,
-        hidden1: int = 1024,
-        hidden2: int = 512,
         device: str = "cpu",
         shuffle_buffer: int = 1000,
         prefetch_batches: int = 4,
-        image_size: int = 224,
         hf_token: Optional[str] = None,
         accum_steps: int = 1,
         verbose: bool = True,
@@ -85,16 +80,18 @@ class WorkerNode:
         self.dataset_name = dataset_name
         self.worker_rank = worker_rank
         self.num_workers = num_workers
-        self.batch_size = batch_size
-        self.hidden1 = hidden1
-        self.hidden2 = hidden2
         self.device = torch.device(device)
         self.shuffle_buffer = shuffle_buffer
         self.prefetch_batches = prefetch_batches
-        self.image_size = image_size
         self.hf_token = hf_token
         self.accum_steps = accum_steps
         self.verbose = verbose
+
+        # Inicializados por CONFIG mensaje del PS
+        self.batch_size: Optional[int] = None
+        self.hidden1: Optional[int] = None
+        self.hidden2: Optional[int] = None
+        self.image_size: Optional[int] = None
 
         self._worker_id: Optional[int] = None
         self._sock: Optional[socket.socket] = None
@@ -129,10 +126,23 @@ class WorkerNode:
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._sock.connect((self.server_host, self.server_port))
         send_message(self._sock, MsgType.READY, {})
+
+        # Recibir WORKER_ID
         msg = receive_message(self._sock)
         if msg["type"] != MsgType.WORKER_ID:
             raise ConnectionError(f"Esperaba WORKER_ID, recibí {msg['type']}")
         self._worker_id = msg["payload"]["worker_id"]
+
+        # Recibir CONFIG (batch_size, image_size desde PS)
+        msg = receive_message(self._sock)
+        if msg["type"] != MsgType.CONFIG:
+            raise ConnectionError(f"Esperaba CONFIG, recibí {msg['type']}")
+        config = msg["payload"]
+        self.batch_size = config["batch_size"]
+        self.image_size = config["image_size"]
+        self._log(
+            f"CONFIG recibida: batch_size={self.batch_size}, image_size={self.image_size}"
+        )
 
     def _cleanup(self) -> None:
         if self._stream:
@@ -153,6 +163,10 @@ class WorkerNode:
 
     def _init_stream(self) -> None:
         """Construye el pipeline de streaming con prefetching en background."""
+        # Garantizar que batch_size e image_size fueron recibidos en CONFIG
+        assert self.batch_size is not None, "batch_size debe ser configurado por CONFIG"
+        assert self.image_size is not None, "image_size debe ser configurado por CONFIG"
+
         self._stream = build_worker_stream(
             worker_rank=self.worker_rank,
             num_workers=self.num_workers,

@@ -127,6 +127,9 @@ class PSApp:
         self._t_start: float = 0.0
         self._status = tk.StringVar(value="Listo.")
 
+        # Widgets de parámetros a bloquear/desbloquear según estado
+        self._param_widgets: list = []
+
         self._build_ui()
         self._refresh_buttons()
 
@@ -182,9 +185,10 @@ class PSApp:
             ent_host, "IP donde escuchará el servidor (0.0.0.0 = todas las interfaces)"
         )
         ToolTip(ent_port, "Puerto TCP para comunicación con Workers")
+        self._param_widgets.extend([ent_host, ent_port])
 
-        # ── Dataset ──
-        self._section(frm, "Dataset")
+        # ── Evaluación (PS) ──
+        self._section(frm, "Evaluación (PS)")
         self._v_dataset = tk.StringVar(value="ILSVRC/imagenet-1k")
         self._v_hf_token = tk.StringVar(value=os.environ.get("HF_TOKEN", ""))
         ent_dataset = self._entry(frm, "Dataset HF Hub:", self._v_dataset, width=30)
@@ -192,16 +196,17 @@ class PSApp:
         ent_token = ttk.Entry(frm, textvariable=self._v_hf_token, width=30, show="*")
         ent_token.pack(fill=tk.X, pady=2)
         ToolTip(
-            ent_dataset, "Dataset HF Hub (ej: ILSVRC/imagenet-1k, timm/imagenet-1k-wds)"
+            ent_dataset,
+            "Dataset HF Hub para validación (ej: ILSVRC/imagenet-1k, timm/imagenet-1k-wds)",
         )
-        ToolTip(ent_token, "Token de acceso HF para datasets privados.")
+        ToolTip(ent_token, "Token HF para autenticarse (ps.evaluate usa estos valores)")
         ttk.Label(
             frm,
-            text="ℹ ILSVRC/imagenet-1k requiere token con\n  licencia aceptada en HF.",
+            text="ℹ Estos valores son SOLO para evaluación del PS.\n  Workers usan dataset + token propios via CLI.",
             font=("Helvetica", 8),
             foreground="#1565C0",
             justify=tk.LEFT,
-        ).pack(anchor=tk.W, pady=(2, 4))
+        ).pack(anchor=tk.W, pady=(2, 8))
 
         # ── CNN ──
         self._section(frm, "CNN Extractor")
@@ -222,6 +227,17 @@ class PSApp:
         rb_simple.pack(anchor=tk.W)
         ToolTip(rb_resnet, "Extractor preentrenado (más rápido, mejor convergencia)")
         ToolTip(rb_simple, "CNN simple sin preentrenamiento (convergencia lenta)")
+        self._param_widgets.extend([rb_resnet, rb_simple])
+
+        # ── Batch-Size & Image-Size ──
+        self._section(frm, "Streaming")
+        self._v_batch_size = tk.IntVar(value=64)
+        self._v_image_size = tk.IntVar(value=224)
+        ent_bs = self._entry(frm, "Batch size:", self._v_batch_size, width=8)
+        ent_is = self._entry(frm, "Image size:", self._v_image_size, width=8)
+        ToolTip(ent_bs, "Imágenes por batch (se envía a todos los Workers)")
+        ToolTip(ent_is, "Tamaño de crop final (se envía a todos los Workers)")
+        self._param_widgets.extend([ent_bs, ent_is])
 
         # ── MLP ──
         self._section(frm, "Clasificador MLP")
@@ -231,6 +247,7 @@ class PSApp:
         ent_h2 = self._entry(frm, "Neuronas capa 2:", self._v_h2, width=8)
         ToolTip(ent_h1, "1ª capa oculta del MLP (features → h1)")
         ToolTip(ent_h2, "2ª capa oculta del MLP (h1 → h2 → 1000)")
+        self._param_widgets.extend([ent_h1, ent_h2])
 
         # ── Async SGD ──
         self._section(frm, "Async SGD")
@@ -252,6 +269,7 @@ class PSApp:
             font=("Helvetica", 8),
             foreground="#2E7D32",
         ).pack(anchor=tk.W, pady=(2, 8))
+        self._param_widgets.extend([ent_lr, ent_lambda, ent_report, ent_window])
 
         # ── Evaluación ──
         self._section(frm, "Evaluación")
@@ -264,6 +282,7 @@ class PSApp:
         )
         self._btn_eval.pack(fill=tk.X, pady=6)
         ToolTip(self._btn_eval, "Evalúa modelo global en validación (no bloqueante)")
+        self._param_widgets.append(ent_vb)
 
         # ── Botones ──
         ttk.Separator(frm, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=(18, 8))
@@ -428,6 +447,11 @@ class PSApp:
             state=tk.NORMAL if s == self._S_TRAINING else tk.DISABLED
         )
 
+        # Bloquear/desbloquear widgets de parámetros según estado
+        is_offline = s == self._S_OFFLINE
+        for widget in self._param_widgets:
+            widget.configure(state=tk.NORMAL if is_offline else tk.DISABLED)
+
         cfg = {
             self._S_OFFLINE: ("OFFLINE", "#607D8B"),
             self._S_LOADING: ("CARGANDO…", "#F57F17"),
@@ -452,12 +476,12 @@ class PSApp:
             win = int(self._v_window.get())
             h1 = int(self._v_h1.get())
             h2 = int(self._v_h2.get())
+            batch_size = int(self._v_batch_size.get())
+            image_size = int(self._v_image_size.get())
             arch = self._v_arch.get()
         except ValueError as e:
             messagebox.showerror("Parámetro inválido", str(e))
             return
-
-        hf_token = self._v_hf_token.get().strip() or None
         q = self._q
 
         # Indicar "cargando" visualmente mientras descarga/carga CNN
@@ -485,6 +509,8 @@ class PSApp:
                     staleness_lambda=lam,
                     steps_per_report=rep,
                     metrics_window=win,
+                    batch_size=batch_size,
+                    image_size=image_size,
                     on_step=lambda step, loss, acc, stale: q.put(
                         ("step", (step, loss, acc, stale))
                     ),
