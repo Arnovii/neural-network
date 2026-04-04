@@ -192,7 +192,7 @@ def _serve_worker(wid, conn):
                 })
             
             elif mtype == MsgType.UPDATES:
-                # Aplicar gradientes con corrección staleness
+                # Aplicar actualización de parámetros con corrección staleness
                 self._apply_update(wid, msg["payload"])
     
     finally:

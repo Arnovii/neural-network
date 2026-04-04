@@ -205,12 +205,22 @@ send_message(sock, MsgType.PARAMS, {
 
 ### 9. UPDATES (Worker → PS)
 
-**Propósito**: Enviar gradientes acumulados + métricas
+**Propósito**: Enviar pesos actualizados tras SGD local + métricas
+
+**Algoritmo**:
+1. Worker recibe θ_global vía PARAMS
+2. Worker calcula ∇L con backward
+3. Worker aplica SGD local: θ_local = θ_global - lr·∇L
+4. Worker ENVÍA en UPDATES: θ_local (no ∇L puro)
+5. PS calcula cambio: Δθ = θ_local - θ_global  
+6. PS aplica con corrección de staleness: θ_global ← θ_global + α(s)·Δθ
+
+Esta es la esencia de **Federated Averaging**.
 
 ```python
 send_message(sock, MsgType.UPDATES, {
-    "mlp_weights": { ... },      # MLP actualizado tras entrenar
-    "cnn_weights": { ... },      # CNN actualizado (se ignora)
+    "mlp_weights": { ... },      # MLP con pesos nuevos: θ_local después de SGD
+    "cnn_weights": { ... },      # CNN con pesos nuevos: θ_local después de backward
     "loss": 8.374,
     "accuracy": 0.0,
     "batch_size": 64,
@@ -219,14 +229,16 @@ send_message(sock, MsgType.UPDATES, {
 ```
 
 **Payload**:
-- `mlp_weights` (Dict[str, np.ndarray]): 6 arrays actualizado
-- `cnn_weights` (Dict[str, np.ndarray]): ~49 arrays (actualizado pero se ignora en PS)
+- `mlp_weights` (Dict[str, np.ndarray]): 6 arrays con parámetros **actualizados** (MLP local tras SGD)
+- `cnn_weights` (Dict[str, np.ndarray]): ~49 arrays con parámetros **actualizados** (CNN local tras backward)
+  - IMPORTANTE: PS los promedia con Async-FedAvg, no los ignora
+  - Este es el mecanismo por el cual CNN se entrena GLOBALMENTE
 - `loss` (float): Loss promedio de los batches acumulados
-- `accuracy` (float): Accuracy (%) promedio
+- `accuracy` (float): Accuracy (%) promedio  
 - `batch_size` (int): Número de samples procesados
-- `version_read` (int): Versión leída en REQUEST_PARAMS (para staleness calc)
+- `version_read` (int): Versión leída en REQUEST_PARAMS (para cálculo de staleness)
 
-**Tamaño total**: ~50 MB → ~500ms/10Gbps
+**Tamaño total**: ~50 MB (CNN ~44MB + MLP ~6MB) → ~500ms/10Gbps
 
 ---
 
@@ -344,17 +356,17 @@ t=1450ms [Worker receives PARAMS]
      ├─ send(UPDATES) ← ~50 MB
 
 t=1950ms PS receive(UPDATES)
-     ├─ Calculate staleness = ver - version_read = 1 - 0 = 1
-     ├─ alpha = 1 / (1 + 0.1 * 1) = 0.91
-     ├─ Apply update with α=0.91
+     ├─ Extract θ_local (pesos actualizados del Worker)
+     ├─ Calculate staleness s = 1 - 0 = 1
+     ├─ Calculate Δθ = θ_local - θ_PS (cambio realizado)
+     ├─ Calculate alpha = 1 / (1 + 0.1 * 1) = 0.91
+     ├─ Apply: θ_PS ← θ_PS + 0.91·Δθ
      ├─ version++
      └─ [Callback: on_step(loss, acc, staleness=1)]
 
 t=2050ms [Worker REQUEST_PARAMS again]
      ├─ send(REQUEST_PARAMS)
      ← VUELVA AL LOOP
-
-[Throughput: ~1 iteration per 500ms = ~2 iter/sec]
 ```
 
 ---

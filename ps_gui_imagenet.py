@@ -242,6 +242,14 @@ class PSApp:
         ToolTip(rb_simple, "CNN simple sin preentrenamiento (convergencia lenta)")
         self._param_widgets.extend([rb_resnet, rb_simple])
 
+        # ── Semilla RNG ──
+        self._v_seed = tk.StringVar(value="")
+        ent_seed = self._entry(
+            frm, "Semilla RNG (vacío=aleatorio):", self._v_seed, width=12
+        )
+        ToolTip(ent_seed, "Semilla para reproducibilidad (None o vacío = aleatorio)")
+        self._param_widgets.append(ent_seed)
+
         # ── Batch-Size & Image-Size ──
         self._section(frm, "Streaming")
         self._v_batch_size = tk.IntVar(value=64)
@@ -509,6 +517,9 @@ class PSApp:
             batch_size = int(self._v_batch_size.get())
             image_size = int(self._v_image_size.get())
             arch = self._v_arch.get()
+            # Leer seed: si está vacío, es None (aleatorio)
+            seed_str = self._v_seed.get().strip()
+            seed = int(seed_str) if seed_str else None
         except ValueError as e:
             messagebox.showerror("Parámetro inválido", str(e))
             return
@@ -526,7 +537,7 @@ class PSApp:
                     arch=arch,
                     pretrained=(arch == "resnet18"),
                     device="cpu",
-                    seed=42,
+                    seed=seed,
                 )
                 mlp = MLPPyTorch(
                     feature_dim=cnn.feature_dim, hidden1=h1, hidden2=h2, n_classes=1000

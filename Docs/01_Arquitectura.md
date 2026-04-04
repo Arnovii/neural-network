@@ -18,8 +18,8 @@
 │  │  └───────────────────────┘    │          │ (ResNet-18)     │    │ │
 │  │          │                    │          ├─────────────────┤    │ │
 │  │          │                    │          │ MLP Classifier  │    │ │
-│  │          │                    │          │ (2 capas)       │    │ │
-│  │   Asyncs SGD                  │          │                 │    │ │
+│  │          │                    │          │ (2 capas trn.)       │    │ │
+│  │   Async-FedAvg                  │          │                 │    │ │
 │  │  ┌───────▼───────────────────┐│          │ Forward+Backward│    │ │
 │  │  │ α(s) = 1/(1+λ·s)          ││          │ SGD local       │    │ │
 │  │  │ θ_new = θ + α·Δθ          ││          └─────────────────┘────┘ │ 
@@ -53,12 +53,12 @@
 **Archivo**: `Distributed/parameter_server.py`
 
 **Responsabilidades**:
-- Almacenar y mantener sincronizados los parámetros globales del modelo
+- Almacenar y mantener sincronizados los parámetros globales (CNN + MLP) mediante Async-FedAvg
 - Establecer conexión TCP y aceptar Workers
-- Ejecutar handshake de inicialización (distribuir CNN, start signal)
+- Ejecutar handshake de inicialización (distribuir CNN + MLP iniciales, batch_size)
 - Servir Workers en hilos independientes (sin bloqueos inter-worker)
-- Recibir gradientes acumulados de cada Worker
-- Aplicar actualizaciones con Async-SGD y corrección de staleness
+- Recibir parámetros (CNN + MLP) actualizados de cada Worker bajo el ciclo REQUEST_PARAMS
+- Promediar AMBOS (CNN + MLP) con Async-FedAvg + corrección de staleness
 - Rastrear métricas (loss, accuracy, staleness)
 - Mantener historial para visualización en GUI
 
@@ -81,7 +81,7 @@
 - `set_cnn()`, `set_mlp()`: Inicializa modelos
 - `_handle_new_connection()`: Handshake per-worker
 - `_serve_worker()`: Loop de servicio por worker (asincrónico)
-- `_apply_update()`: Aplica gradientes con corrección staleness
+- `_apply_update()`: Aplica parámetros de CNN + MLP con corracción staleness (ambos se promedian con Async-FedAvg)
 - `stop()`: Apagado limpio
 
 ### 2. Worker (Nodo de Trabajo)
@@ -90,13 +90,15 @@
 
 **Responsabilidades**:
 - Conectarse al PS y obtener ID
-- Recibir CNN y parámetros MLP iniciales
+- Recibir CNN y MLP iniciales desde PS
 - Sincronizar stream de datos desde HuggingFace
-- Ejecutar loop de entrenamiento asincrónico indefinidamente
-- Cargar batches bajo demanda
-- Ejecutar forward + backward E2E
-- Aplicar SGD local
-- Enviar gradientes acumulados al PS
+- Ejecutar loop asincrónico E2E indefinidamente (ciclo REQUEST_PARAMS):
+  - **REQUEST_PARAMS**: Pide parámetros globales (CNN + MLP)
+  - **_sync_cnn()**: Carga CNN global desde PS (SOBRESCRIBE CNN local)
+  - **FOR accum_steps**: Entrena localmente
+    - _train_batch(): CNN descongela → entrena → se vuelve a congelar (cambios locales)
+    - MLP entrena (cambios locales)
+  - **UPDATES**: Envía CNN + MLP entrenados al PS (cambios locales se envian, luego se descartan en siguiente ciclo)
 - Registrar métricas locales
 
 **Estado Interno**:
@@ -128,18 +130,28 @@
 **Archivo**: `Model/cnn_extractor.py`
 
 **Responsabilidades**:
-- Mantener una CNN (ResNet-18 o Simple CNN)
-- Extraer features (vectores de 512D)
-- Serializar/deserializar pesos para transporte por TCP
-- Evaluar en modo inference (validación)
-- Permitir entrenamiento selectivo
+- Mantener CNN (ResNet-18 o SimpleCNN) entrenable durante _train_batch()
+- Durante cada batch por Worker:
+  - Se DESCONGELA: `requires_grad_(True)`
+  - Se ENTRENA: gradientes propagados en backward
+  - Se SGD local (cambios ephemeral de ~accum_steps batches)
+  - Se VUELVE A CONGELAR: `requires_grad_(False)` + eval()
+- Se ENVÍA al PS en UPDATES (cambios locales de accum_steps batches)
+- Se SOBRESCRIBE en siguiente REQUEST_PARAMS con CNN global del PS
+- **EFECTO**: CNN cambios locales NO PERSISTEN (duran un ciclo REQUEST_PARAMS)
+- **GLOBAL**: PS promedia CNN recibida de todos Workers → CNN entrena globalmente
+
+**Dinzmica Especial**:
+- CNN local: congelada en PRÁCTICA (cambios se descartan cada ciclo REQUEST_PARAMS)
+- CNN global (PS): se entrena mediante Async-FedAvg (acumula cambios promediados)
+- Resultado: CNN efectívamente no aprende localmente, pero sí globalmente
 
 **Arquitecturas Soportadas**:
 
 | Arquitectura | feature_dim | Parámetros | Pesos | Caso de Uso |
 |---|---|---|---|---|
 | `resnet18` | 512 | ~11M | ImageNet1K_V1 | Producción (convergencia rápida) |
-| `simple` | 512 | ~1.5M | Random init | Experimentación / Testing |
+| `simple` | 512 | ~1.5M | Random init | Experimentación / Testing (NO congelada) |
 
 **Interfaz Pública**:
 ```python
@@ -238,7 +250,7 @@ num_workers=3, worker_rank=2
 6. `START`: PS → Worker (inicia training loop)
 7. `REQUEST_PARAMS`: Worker → PS (pide parámetros actuales)
 8. `PARAMS`: PS → Worker (envía estado global)
-9. `UPDATES`: Worker → PS (envía gradientes)
+9. `UPDATES`: Worker → PS (envía pesos actualizados tras SGD local)
 10. `STOP`: PS → Worker (apagado)
 
 ### 7. GUI y Monitoreo
@@ -321,10 +333,10 @@ num_workers=3, worker_rank=2
 - Evita mapping de índices confusos
 
 ### 3. **Staleness Correction**
-- Factor α(s) = 1/(1 + λ·s) reduce impacto de gradientes viejos
+- Factor α(s) = 1/(1 + λ·s) reduce impacto de pesos viejos
 - λ (lambda) es hiperparámetro de **trade-off**:
-  - λ=0: Sin corrección (puro Async-SGD)
-  - λ muy alto: Casi como Sync-SGD
+  - λ=0: Sin corrección (puro Async-FedAvg asincrónico)
+  - λ muy alto: Casi como Sync-FedAvg
 
 ### 4. **Prefetching en Thread Separado**
 - Training loop nunca espera I/O
@@ -335,4 +347,5 @@ num_workers=3, worker_rank=2
 - Solo se optimiza MLP
 - CNN aporta features preentrenadas (ResNet-18)
 - Reduce overhead computacional (ResNet-18 >> MLP)
+
 

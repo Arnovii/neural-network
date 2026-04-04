@@ -17,6 +17,7 @@ OPCIONES:
     --batch-size        Batch size (enviado a todos Workers)   (default: 64)
     --image-size        Resolución imágenes (enviado a Workers) (default: 224)
     --cnn-arch          resnet18 | simple                      (default: resnet18)
+    --seed              Semilla RNG (None = aleatorio)         (default: None)
     --steps-per-report  Steps entre reportes de métricas       (default: 500)
     --max-steps         Detener tras N steps (0 = indefinido)  (default: 0)
     --metrics-window    Tamaño ventana deslizante de métricas  (default: 200)
@@ -70,6 +71,9 @@ def main() -> None:
     parser.add_argument(
         "--cnn-arch", type=str, default="resnet18", choices=["resnet18", "simple"]
     )
+    parser.add_argument(
+        "--seed", type=int, default=None, help="Semilla RNG (None = aleatorio)"
+    )
     parser.add_argument("--steps-per-report", type=int, default=500)
     parser.add_argument("--max-steps", type=int, default=0)
     parser.add_argument("--metrics-window", type=int, default=200)
@@ -86,6 +90,7 @@ def main() -> None:
     print(f"  MLP               : feature_dim → {args.hidden1} → {args.hidden2} → 1000")
     print(f"  Batch size        : {args.batch_size}  (enviado a Workers)")
     print(f"  Image size        : {args.image_size}  (enviado a Workers)")
+    print(f"  Semilla           : {args.seed or 'aleatorio'}")
     print(f"  LR                : {args.lr}")
     print(f"  Staleness λ       : {args.staleness_lambda}")
     print(f"  Steps/reporte     : {args.steps_per_report}")
@@ -149,7 +154,7 @@ def main() -> None:
         arch=args.cnn_arch,
         pretrained=(args.cnn_arch == "resnet18"),
         device="cpu",
-        seed=42,
+        seed=args.seed,
     )
     ps.set_cnn(cnn)
 

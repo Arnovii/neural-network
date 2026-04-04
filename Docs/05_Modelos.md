@@ -48,9 +48,15 @@ Output: (N, 512)
 
 **Desventajas**:
 - ⚠️ Descarga ~45 MB de pesos en primera ejecución
-- ⚠️ Menos flexible que arquitecturas custom
+- ⚠️ SGD puro sin momentum en backprop hace convergencia lenta
 
-### Simple CNN (Para Experimentación)
+**Estado en el Sistema**:
+- ✅ **ENTRENABLE LOCALMENTE**: Se descongela en cada _train_batch() durante accum_steps
+- ✅ Recibe gradientes en backward E2E completo (120+ capas)
+- ⚠️ Cambios locales NO PERSISTEN: se resincroniza con CNN global (PS) cada REQUEST_PARAMS
+- ⚠️ Dinámica: CNN local se descarta periódicamente (cada ciclo REQUEST_PARAMS) y se sobrescribe con promedio global
+
+### SimpleCNN (Para Experimentación)
 
 **Archivo**: `Model/cnn_extractor.py` → `_SimpleCNN`
 
@@ -98,8 +104,16 @@ class _SimpleCNN(nn.Module):
 
 **Desventajas**:
 - ⚠️ Sin preentrenamiento → convergencia lenta
-- ⚠️ Features poco informativas inicialmente
-- ⚠️ Peor generalization
+- ⚠️ Features iniciales aleatorias → ruido puro primeros centenares de batches
+- ⚠️ Peor generalización
+- ⚠️ SGD puro sin momentum + resincronización = convergencia muy lenta
+
+**Estado en el Sistema**:
+- ✅ **ENTRENABLE**: Se descongela en cada batch durante training
+- ✅ Recibe gradientes en backward E2E completo
+- ⚠️ Cambios locales NO PERSISTEN: se resincroniza con CNN global (PS) cada REQUEST_PARAMS
+- ⚠️ Dinámica: CNN local se descarta periódicamente y se sobrescribe con promedio global
+- ❌ **NO RECOMENDADA**: Features aleatorias + resincronización = learning inestable
 
 ---
 
@@ -229,16 +243,18 @@ He init garantiza:
 ```
 Input Images: (64, 3, 224, 224)
        ↓
-┌──────────────────┐
-│ CNN.forward()    │  Extrae features de ResNet-18
-│  (congelada)     │  No se entrena, solo propaga
-└──────┬───────────┘
+┌──────────────────────────────┐
+│ CNN.forward()                │  Extrae features de ResNet-18
+│ (se entrena localmente,      │  Backward durante accum_steps
+│  se resincroniza globalmente)│  Cambios locales no persisten
+└──────┬───────────────────────┘
        │
 Features: (64, 512)
        ↓
 ┌──────────────────┐
 │ MLP.forward()    │  Clasifica features
-│  (entrenamientos)│  Se optimizan parámetros
+│ (entrenamientos) │  Se optimizan parámetros
+│ (resincronizados)│  Se resincronizandel PS
 └──────┬───────────┘
        │
 Logits: (64, 1000)
@@ -249,24 +265,32 @@ Loss: scalar (≈6.9-0.1 durante entrenamiento)
        ↓
   Backward()
        ↓
-Gradients en MLP params (fc1, fc2, fc3)
-Gradients en CNN params (pero se ignoran/descartan)
+Gradients en MLP params (fc1, fc2, fc3) ✓ SE COMPUTAN Y SE USAN
+Gradients en CNN params (120+ capas) ✓ SE COMPUTAN Y SE USAN
 ```
 
-### ¿Por qué CNN Congelada?
+### Dinámicas de Entrenamiento CNN: Local vs Global
 
-| Aspecto | Implicación |
+**CNN SÍ se entrena en el código, pero con dinámicas especiales:**
+
+| Aspecto | Realidad |
 |---|---|
-| **Computational** | 90% del tiempo en CNN → congelarla = 10x speedup |
-| **Memory** | Evitar almacenar intermediates grandes |
-| **Comunicación** | CNN 44MB vs MLP 4.5MB →10x less bandwidth  |
-| **Convergencia** | Features ResNet-18 ya son buenas → MLP converge rápido |
+| **Backward E2E** | Gradientes llegan a CNN (120+ capas convolucionales) |
+| **SGD local** | CNN se actualiza: `cnn_param.data -= lr * cnn_param.grad` |
+| **Duración** | Cambios CNN locales duran accum_steps batches (ej: 5 batches) |
+| **Resincronización** | Cada REQUEST_PARAMS, CNN local se SOBRESCRIBE con CNN global del PS |
+| **Persistencia** | CNN cambios locales se DESCARTAN cuando sincroniza (NO persisten) |
+| **Global** | PS recibe CNN de cada Worker, la promedia con Async-FedAvg → CNN global SÍ aprende |
+| **Comunicación** | CNN 44MB + MLP 4.5MB = 50MB total intercambiados (AMBAS se sincronizan) |
 
-**Alternativa**: Fine-tuning de CNN (no implementado, futuro)
+**Dinámicas Especiales**:
+- A nivel **local**: CNN aparenta estar congelada (cambios no persisten)
+- A nivel **global**: CNN entrena su entrenamiento distribuido vía Async-FedAvg
+- **Efecto**: CNN global converge lentamente (no hay momentum persistente a nivel local)
 
 ---
 
-## Qué se Entrena Realmente
+## Cómo se Entrena Realmente
 
 ```
 Forward Pass:
@@ -275,13 +299,17 @@ Forward Pass:
   logits → Loss
 
 Backward Pass:
-  dLoss/d(logits) → MLP gradient ✓ (se computa)
-  d(logits)/d(features) →gradient ✓ (se computa)
-  d(features)/dCNN_weights → CNN gradient ✗ (se computa pero se descarta)
+  dLoss/d(logits) → MLP gradient ✓ (se computa y se ACTUALIZA MLP)
+  d(logits)/d(features) → gradient ✓ (se propaga a CNN)
+  d(features)/dCNN_weights → CNN gradient ✓ (se computa y se ACTUALIZA CNN localmente)
 
-Update:
-  mlp.parameters() -= lr * mlp.grad  ✓ ACTUALIZADO
-  cnn.parameters() -= lr * cnn.grad  ✗ IGNORADO (gradientes descartados)
+SGD Local (ambas redes SE ACTUALIZAN):
+  mlp.parameters() -= lr * mlp.grad  ✓ MLP SE ACTUALIZA LOCALMENTE
+  cnn.parameters() -= lr * cnn.grad  ✓ CNN SE ACTUALIZA LOCALMENTE
+
+Sincronización (ambas se RESINCRONIZIFAN del PS):
+  mlp_global = recv(PARAMS).mlp_state  → MLP se SOBRESCRIBE
+  cnn_global = recv(PARAMS).cnn_state  → CNN se SOBRESCRIBE (cambios locales se pierden)
 ```
 
 ### Estado Dict Intercambiado
@@ -325,18 +353,21 @@ loss.backward()
 #   mlp.fc3.weight.grad: (1000, 512)
 #   mlp.fc3.bias.grad: (1000,)
 #
-#   cnn._model[...].weight.grad: (muchos) ← Se ignoran
+#   cnn._model[...].weight.grad: (many) ← SÍ se USAN para actualizar CNN
 
-# SGD local
+# SGD local (AMBAS redes se actualizan)
 lr = 0.001
 with torch.no_grad():
     for name, param in mlp.named_parameters():
-        param.data -= lr * param.grad  # Update
+        param.data -= lr * param.grad  # Update MLP ✓
 
-    # CNN congelada → no se actualiza
+    for param in cnn._model.parameters():
+        if param.grad is not None:
+            param.data -= lr * param.grad  # Update CNN ✓ (cambios duran accum_steps batches)
 
-# Resultado: MLP tiene pesos nuevos, CNN tiene pesos viejos
-# Próxima iter: Worker solicita CNN+MLP actualizados del PS
+# Resultado: MLP tiene pesos nuevos, CNN tiene pesos nuevos (localmente)
+# Cambios CNN persisten EN ESTE CICLO (accum_steps batches), pero se descartan
+# después de enviar UPDATES y recibir REQUEST_PARAMS (se resincroniza con CNN global del PS)
 ```
 
 ---

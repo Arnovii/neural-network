@@ -6,7 +6,7 @@ Sistema de entrenamiento distribuido con arquitectura **Parameter Server** que i
 
 ### ¿Qué es este sistema?
 
-Este proyecto implementa un framework completo para entrenamiento distribuido de redes neuronales profundas sobre ImageNet-1k sin sincronización global entre Workers. Cada Worker opera de forma autónoma, descargando datos de HuggingFace en streaming, entrenando localmente, y compartiendo actualizaciones de gradientes con un Parameter Server central.
+Este proyecto implementa un framework completo para **entrenamiento distribuido asincrónico de CNN + MLP** en ImageNet-1k. El sistema realiza entrenamiento E2E donde ambas redes se entrenan: localmente en cada Worker mediante SGD puro, y globalmente en el Parameter Server mediante promediado de pesos (Async-FedAvg). La dinámica especial es que cambios CNN locales no persisten (se resincronizar cada ciclo con promedio global), resultando en CNN "congelada" LOCALMENTE pero "entrenada" GLOBALMENTE.
 
 ### ¿Qué problema resuelve?
 
@@ -17,9 +17,12 @@ Este proyecto implementa un framework completo para entrenamiento distribuido de
 
 ### Enfoque técnico
 
+- **Estrategia**: Entrenamiento E2E distribuido: CNN + MLP entrenan localmente por Worker, se sincronizan globalmente por PS
 - **Arquitectura**: Parameter Server + N Workers independientes
 - **Comunicación**: TCP/IP con serialización Pickle, 10 tipos de mensaje
-- **Modelos**: CNN extractor (ResNet-18 preentrenado o SimpleCNN) + MLP clasificador
+- **Modelos**: 
+  - **CNN Extractor** (resincronizada): ResNet-18 preentrenado ImageNet1K_V1 o SimpleCNN entrenan localmente pero se resincromzan globalmente
+  - **MLP Clasificador** (entrenado): 2-3 capas ocultas que también se resincronizanDesde PS
 - **Datos**: Streaming desde ILSVRC/imagenet-1k o timm/imagenet-1k-wds
 - **Hardware**: Soporte automático para CUDA, MPS (Apple Metal), CPU
 

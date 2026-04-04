@@ -15,6 +15,7 @@ OPCIONES:
     --dataset         Dataset HF Hub                     (default: ILSVRC/imagenet-1k)
     --shuffle-buffer  Imágenes en buffer de shuffle      (default: 1000)
     --prefetch        Batches pre-cargados en background  (default: 4)
+    --seed            Semilla RNG (None = aleatorio)     (default: None)
     --hf-token        Token HuggingFace
     --accum-steps     Batches a acumular antes de enviar  (default: 1)
     --quiet           Suprimir mensajes de progreso
@@ -89,6 +90,9 @@ def main() -> None:
     parser.add_argument("--dataset", type=str, default="ILSVRC/imagenet-1k")
     parser.add_argument("--shuffle-buffer", type=int, default=1000)
     parser.add_argument("--prefetch", type=int, default=4)
+    parser.add_argument(
+        "--seed", type=int, default=None, help="Semilla RNG (None = aleatorio)"
+    )
     parser.add_argument("--hf-token", type=str, default=None)
     parser.add_argument("--accum-steps", type=int, default=1)
     parser.add_argument("--quiet", action="store_true")
@@ -110,6 +114,7 @@ def main() -> None:
     print(f"  Device         : {device_str}")
     print(f"  Shuffle buffer : {args.shuffle_buffer}")
     print(f"  Prefetch       : {args.prefetch} batches")
+    print(f"  Seed           : {args.seed or 'aleatorio'}")
     print(f"  Accum steps    : {args.accum_steps}")
     print(f"  HF Token       : {'✓ configurado' if hf_token else '✗ no configurado'}")
     print("=" * 68)
@@ -130,6 +135,7 @@ def main() -> None:
         device=args.device,
         shuffle_buffer=args.shuffle_buffer,
         prefetch_batches=args.prefetch,
+        seed=args.seed,
         hf_token=hf_token,
         accum_steps=args.accum_steps,
         verbose=not args.quiet,

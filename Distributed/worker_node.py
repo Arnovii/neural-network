@@ -53,6 +53,7 @@ class WorkerNode:
     :param device:           Dispositivo PyTorch ('cpu', 'cuda', 'cuda:0', 'mps').
     :param shuffle_buffer:   Imágenes en buffer de shuffle.
     :param prefetch_batches: Batches pre-cargados en background.
+    :param seed:             Semilla RNG (None = aleatorio). Se suma worker_rank para diversidad.
     :param hf_token:         Token HuggingFace.
     :param accum_steps:      Batches a acumular antes de enviar UPDATES.
     :param verbose:          Imprimir progreso cada 10 batches.
@@ -71,6 +72,7 @@ class WorkerNode:
         device: str = "cpu",
         shuffle_buffer: int = 1000,
         prefetch_batches: int = 4,
+        seed: Optional[int] = None,
         hf_token: Optional[str] = None,
         accum_steps: int = 1,
         verbose: bool = True,
@@ -83,6 +85,7 @@ class WorkerNode:
         self.device = torch.device(device)
         self.shuffle_buffer = shuffle_buffer
         self.prefetch_batches = prefetch_batches
+        self.seed = seed
         self.hf_token = hf_token
         self.accum_steps = accum_steps
         self.verbose = verbose
@@ -210,7 +213,7 @@ class WorkerNode:
             image_size=self.image_size,
             shuffle_buffer=self.shuffle_buffer,
             prefetch_batches=self.prefetch_batches,
-            seed=42 + self.worker_rank,
+            seed=(self.seed + self.worker_rank) if self.seed is not None else None,
             hf_token=self.hf_token,
         )
         self._stream.start()
@@ -269,7 +272,7 @@ class WorkerNode:
 
         if self._cnn is None or self._cnn.arch != arch:
             self._log(f"Instanciando CNN arch={arch} en {self.device}")
-            self._cnn = CNNExtractor(arch=arch, device=str(self.device), seed=42)
+            self._cnn = CNNExtractor(arch=arch, device=str(self.device), seed=self.seed)
 
         self._cnn.load_weights_from_bytes(weights_bytes)
         self._cnn._model.eval()

@@ -251,7 +251,7 @@ def _train_batch(self, X_np, Y_np, lr) -> Tuple[float, float, int]:
     with torch.no_grad():
         for p in self._cnn._model.parameters():
             if p.grad is not None:
-                p.data -= lr * p.grad  # Aunque CNN está congelada
+                p.data -= lr * p.grad  # SGD en CNN descongela temporal (cambios no persisten)
         for p in self._mlp.parameters():
             if p.grad is not None:
                 p.data -= lr * p.grad

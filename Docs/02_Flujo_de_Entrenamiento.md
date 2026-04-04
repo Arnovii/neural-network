@@ -224,8 +224,8 @@ donde:
 | s=100 | α=1.00 | α=0.09 | α=0.02 | α=0.01 |
 
 **Interpretación**:
-- λ=0: Sin corrección (puro Async-SGD, más rápido pero inestable)
-- λ grande: Gradientes viejos contribuyen menos (más estable pero lento)
+- λ=0: Sin corrección (puro Async-FedAvg asincrónico, más rápido pero inestable)
+- λ grande: Parámetros viejos contribuyen menos (más estable pero lento)
 
 ### Aplicación en el PS
 
@@ -439,7 +439,7 @@ ITERACIÓN t (POR WORKER, INDEFINIDAMENTE):
 **Propiedades**:
 - ✅ **Throughput alto**: No hay sincronización, máxima utilización
 - ✅ **Escalable**: Agregar workers acelera (no espera al más lento)
-- ⚠️ **Inestable**: Gradientes viejos pueden diverger
+- ⚠️ **Inestable**: Parámetros viejos pueden diverger (Async-FedAvg sin corrección staleness)
 - ⚠️ **No determinístico**: Orden depende de timings de red
 
 **El Problema Clave: Staleness**
