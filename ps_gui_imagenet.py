@@ -107,14 +107,14 @@ class PSApp:
     def __init__(self, root: tk.Tk) -> None:
         """
         Inicializa la interfaz grá fica del Parameter Server.
-        
+
         Configura widgets, estado interno, plots, y callbacks. Esta interfaz
         permite:
         - Configurar parámetros del PS (CNN, MLP, learning rate, λ, batch-size, image-size)
         - Bloquear parámetros una vez iniciado el servidor
         - Monitorear entrenamiento en tiempo real (loss, accuracy, workers activos)
         - Gestionar lifecycle del servidor (inicio, parada, evaluación)
-        
+
         :param root: Ventana tkinter raíz (normalmente tk.Tk())
         :type root: tk.Tk
         """
@@ -478,7 +478,7 @@ class PSApp:
     def _cmd_listen(self) -> None:
         """
         Carga CNN+MLP en hilo background e inicia servidor TCP.
-        
+
         Proceso:
         1. Lee parámetros de GUI (validación de tipos)
         2. Cambia estado a LOADING ('Cargando...')
@@ -489,12 +489,12 @@ class PSApp:
            - Llama ps.set_cnn(), ps.set_mlp(), ps.listen()
         4. Loop principal recibe eventos (step, report, worker_connected, worker_disconnected)
         5. Actualiza gráficas y status en tiempo real
-        
+
         GUI no se congela durante descarga de ResNet-18 (~50MB) gracias a threading.
-        
+
         :returns: None
         :rtype: None
-        
+
         :raises messagebox.showerror: Si parámetros inválidos (no son int/float)
         """
         try:
@@ -569,16 +569,16 @@ class PSApp:
     def _cmd_train(self) -> None:
         """
         Inicia el entrenamiento en los Workers (envía START a todos).
-        
+
         Requisitos:
         - Servidor en estado LISTENING (Workers conectados y en standby)
         - Al menos 1 Worker debe estar conectado
-        
+
         Envía mensaje START a todos los Workers. Ellos entran en loop
         de entrenamiento indefinido (REQUEST_PARAMS → sync → train → UPDATES).
-        
+
         Cambio de estado: LISTENING → TRAINING.
-        
+
         :returns: None
         :rtype: None
         """
@@ -593,16 +593,16 @@ class PSApp:
     def _cmd_shutdown(self) -> None:
         """
         Detiene el servidor PS y todos los Workers.
-        
+
         Proceso:
         1. Cambia estado a OFFLINE
         2. Envía STOP a cada Worker (interrumpe training loop)
         3. Cierra sockets TCP
         4. Limpia thread daemon de listening
         5. Resetea interfaz a estado inicial
-        
+
         Cambio de estado: LOADING/LISTENING/TRAINING → OFFLINE.
-        
+
         :returns: None
         :rtype: None
         """

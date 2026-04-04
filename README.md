@@ -18,7 +18,7 @@ Este proyecto implementa un framework completo para entrenamiento distribuido de
 ### Enfoque técnico
 
 - **Arquitectura**: Parameter Server + N Workers independientes
-- **Comunicación**: TCP/IP con serialización Pickle, 9 tipos de mensaje
+- **Comunicación**: TCP/IP con serialización Pickle, 10 tipos de mensaje
 - **Modelos**: CNN extractor (ResNet-18 preentrenado o SimpleCNN) + MLP clasificador
 - **Datos**: Streaming desde ILSVRC/imagenet-1k o timm/imagenet-1k-wds
 - **Hardware**: Soporte automático para CUDA, MPS (Apple Metal), CPU
@@ -37,7 +37,7 @@ El repositorio incluye documentación exhaustiva en el subdirectorio `./Docs/`:
 | `03_Parameter_Server.md` | Funcionamiento del PS, inicialización, async SGD, corrección de staleness |
 | `04_Worker.md` | Ciclo de vida del Worker, conexión, streaming, training loop |
 | `05_Modelos.md` | Arquitecturas CNN (ResNet-18 vs SimpleCNN), diseño de MLP |
-| `06_Comunicacion.md` | Protocolo TCP, 9 tipos de mensaje, serialización |
+| `06_Comunicacion.md` | Protocolo TCP, 10 tipos de mensaje, serialización |
 | `07_GUI_y_Monitoreo.md` | GUI tkinter, configuración de parámetros, visualización de métricas |
 | `08_Hiperparametros_y_Config.md` | Learning rate, staleness λ, batch size, impacto en convergencia |
 | `09_Streaming.md` | Pipeline HuggingFace, sharding per-Worker, PrefetchBuffer async, I/O optimization |
@@ -146,7 +146,7 @@ El repositorio incluye documentación exhaustiva en el subdirectorio `./Docs/`:
 
 #### **Comunicación**
 - Protocolo TCP con serialización Pickle
-- 9 tipos de mensaje (READY, WORKER_ID, CNN_WEIGHTS, START, etc.)
+- 10 tipos de mensaje (READY, WORKER_ID, CONFIG, CNN_WEIGHTS, START, etc.)
 - Handshake seguro: Workers bloqueados hasta que PS esté listo
 
 #### **Datos**
@@ -674,7 +674,7 @@ neural-network/
 |---------|--------|----------|
 | `Distributed/parameter_server.py` | ~400 | ParameterServer: TCP server, FedAvg asíncrono, staleness correction, aggregation |
 | `Distributed/worker_node.py` | ~350 | WorkerNode: streaming + training loop, sincronización de modelo, SGD local |
-| `Distributed/protocol.py` | ~100 | Protocolo TCP: 9 tipos de mensaje, serialización Pickle |
+| `Distributed/protocol.py` | ~110 | Protocolo TCP: 10 tipos de mensaje, serialización Pickle |
 | `Model/cnn_extractor.py` | ~150 | CNNExtractor con ResNet-18 / SimpleCNN, serialización para red |
 | `Model/mlp_pytorch.py` | ~100 | MLPPyTorch clasificador, inicialización He, conversión numpy ↔ torch |
 | `Utils/imagenet_streaming.py` | ~400 | ImageNetStream (infinite), PrefetchBuffer (async), transforms, sharding |

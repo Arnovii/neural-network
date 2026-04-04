@@ -12,6 +12,7 @@ FLUJO COMPLETO POR WORKER:
     ──────                          ────────────────
     READY ────────────────────────► asigna ID
           ◄─────────────────────── WORKER_ID
+          ◄─────────────────────── CONFIG  (batch_size, image_size)
           ◄─────────────────────── CNN_WEIGHTS  (pesos iniciales)
     CNN_ACK ──────────────────────►  (Worker cargó CNN)
           ◄─────────────────────── START
@@ -22,9 +23,10 @@ FLUJO COMPLETO POR WORKER:
     [repetir indefinidamente]
           ◄─────────────────────── STOP
 
-MENSAJES (7 — exactamente los necesarios):
+MENSAJES (10 — exactamente los necesarios):
     READY          Worker → PS    Handshake inicial
     WORKER_ID      PS → Worker    ID asignado
+    CONFIG         PS → Worker    batch_size e image_size para el Worker
     CNN_WEIGHTS    PS → Worker    Pesos CNN iniciales (bytes serializados)
     CNN_ACK        Worker → PS    CNN cargada y lista
     START          PS → Worker    Señal de inicio del loop de entrenamiento
@@ -72,20 +74,20 @@ def send_message(sock: socket.socket, msg_type: MsgType, payload: Any) -> None:
 def receive_message(sock: socket.socket) -> Dict[str, Any]:
     """
     Lee exactamente un mensaje completo desde socket TCP (bloqueante).
-    
+
     Decodificación:
     1. Lee 4 bytes big-endian para obtener longitud
     2. Lee exactamente 'longitud' bytes con _recv_exact (maneja recv parciales)
     3. Deserializa con pickle.loads
-    
+
     Thread-safe para múltiples sockets (cada Worker tiene el suyo).
-    
+
     :param sock: Socket TCP conectado en modo bloqueante
     :type sock: socket.socket
-    
+
     :returns: Dict con "type" (MsgType) y "payload" (datos)
     :rtype: Dict[str, Any]
-    
+
     :raises ConnectionError: Si socket se cierra antes de recibir mensaje completo
     :raises pickle.UnpicklingError: Si datos no son pickle válido
     """
@@ -96,18 +98,18 @@ def receive_message(sock: socket.socket) -> Dict[str, Any]:
 def _recv_exact(sock: socket.socket, n: int) -> bytes:
     """
     Recibe exactamente n bytes del socket (maneja recv() parciales).
-    
+
     Útil porque socket.recv() puede devolver menos bytes que n,
     especialmente en redes lentas. Esta función acumula hasta tener n bytes.
-    
+
     :param sock: Socket TCP conectado
     :type sock: socket.socket
     :param n: Número exacto de bytes a recibir
     :type n: int
-    
+
     :returns: Exactamente n bytes
     :rtype: bytes
-    
+
     :raises ConnectionError: Si socket se cierra antes de recibir n bytes
     """
     buf = b""

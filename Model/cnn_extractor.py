@@ -140,7 +140,7 @@ class CNNExtractor:
     ) -> None:
         """
         Inicializa el extractor CNN para feature extraction desde ImageNet.
-        
+
         :param arch: Arquitectura CNN ('resnet18' preentrenado o 'simple' aleatorio).
                      - 'resnet18': ResNet-18 con pesos IMAGENET1K_V1 si pretrained=True
                      - 'simple': CNN de 3 bloques Conv2d sin pretrain (experimentación)
@@ -154,7 +154,7 @@ class CNNExtractor:
         :param seed: Semilla RNG para PyTorch (solo afecta 'simple').
                     Si None, no se fija ningún seed.
         :type seed: Optional[int]
-        
+
         :raises ValueError: Si arch no está en ARCHITECTURES.
         """
         if arch not in self.ARCHITECTURES:
@@ -310,7 +310,7 @@ class CNNExtractor:
         """
         Extrae caracter\u00edsticas de CNN en mini-batches para gestionar memoria eficientemente.
 
-        Usado por ParameterServer durante evaluaci\u00f3n de validaci\u00f3n para procesar splits\n        de validaci\u00f3n grandes sin agotar VRAM. Procesa array de entrada en chunks\n        configurables, acumulando resultados.\n\n        :param X: Batch de imagen de entrada (N, 3, height, width) float32 en [0,1] o [0,255]\n        :type X: np.ndarray\n        :param batch_size: Im\u00e1genes por forward pass (default: 512, ajustar para VRAM)\n        :type batch_size: int\n        :param verbose: Si True, imprime progreso a stdout\n        :type verbose: bool\n\n        :returns: Caracter\u00edsticas extra\u00eddas (N, 512) float32\n        :rtype: np.ndarray\n\n        :raises RuntimeError: Si modelo en modo training (llamar set_trainable(False) primero)\n        :raises OutOfMemoryError: Si batch_size demasiado grande para VRAM disponible\n        """
+        Usado por ParameterServer durante evaluaci\u00f3n de validaci\u00f3n para procesar splits\n        de validaci\u00f3n grandes sin agotar VRAM. Procesa array de entrada en chunks\n        configurables, acumulando resultados.\n\n        :param X: Batch de imagen de entrada (N, 3, height, width) float32 en [0,1] o [0,255]\n        :type X: np.ndarray\n        :param batch_size: Im\u00e1genes por forward pass (default: 512, ajustar para VRAM)\n        :type batch_size: int\n        :param verbose: Si True, imprime progreso a stdout\n        :type verbose: bool\n\n        :returns: Caracter\u00edsticas extra\u00eddas (N, 512) float32\n        :rtype: np.ndarray\n\n        :raises RuntimeError: Si modelo en modo training (llamar set_trainable(False) primero)\n        :raises OutOfMemoryError: Si batch_size demasiado grande para VRAM disponible\n"""
         N = len(X)
         parts = []
         starts = range(0, N, batch_size)

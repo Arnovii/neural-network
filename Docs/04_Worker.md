@@ -5,7 +5,7 @@
 ```
 START
   ↓
-_connect()            → socket.connect() al PS, send(READY), recv(WORKER_ID)
+_connect()            → socket.connect() al PS, send(READY), recv(WORKER_ID), recv(CONFIG)
   ↓
 _init_stream()        → build_worker_stream(), stream.start()
   ↓
@@ -24,7 +24,7 @@ END
 
 ```python
 def _connect(self) -> None:
-    """Conectar al PS y obtener WORKER_ID."""
+    """Conectar al PS y obtener WORKER_ID y CONFIG."""
     self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     self._sock.connect((self.server_host, self.server_port))
     
@@ -37,7 +37,15 @@ def _connect(self) -> None:
         raise ConnectionError(f"Esperaba WORKER_ID, recibí {msg['type']}")
     self._worker_id = msg["payload"]["worker_id"]
     
-    self._log(f"Conectado con ID={self._worker_id}")
+    # 3. Recibir CONFIG (batch_size, image_size)
+    msg = receive_message(self._sock)
+    if msg["type"] != MsgType.CONFIG:
+        raise ConnectionError(f"Esperaba CONFIG, recibí {msg['type']}")
+    config = msg["payload"]
+    self.batch_size = config["batch_size"]
+    self.image_size = config["image_size"]
+    
+    self._log(f"Conectado con ID={self._worker_id}, batch_size={self.batch_size}, image_size={self.image_size}")
 ```
 
 **Tiempo**: ~100-500 ms (depende de latencia red)

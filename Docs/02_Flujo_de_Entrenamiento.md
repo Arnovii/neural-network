@@ -13,8 +13,16 @@ t=0      [Esperando conexión de Workers]             [Conectando]
 t=1      Asigna wid=0
          send(WORKER_ID=0)
          ────► WORKER_ID
+                                                      recv(WORKER_ID)
 
-t=2      Distribuye CNN
+t=2   Envía configuración
+         send(CONFIG={batch_size=64, image_size=224})
+         ────► CONFIG
+                                                      recv(CONFIG)
+                                                      batch_size = 64
+                                                      image_size = 224
+
+t=3      Distribuye CNN
          send(CNN_WEIGHTS)
          ────► CNN_WEIGHTS
                                                       recv(CNN_WEIGHTS)
@@ -22,7 +30,7 @@ t=2      Distribuye CNN
                                                       send(CNN_ACK)
          ◄──── CNN_ACK
 
-t=3      send(START)
+t=4    send(START)
          ────► START
                                                       recv(START)
                                                       enter _training_loop()
@@ -33,7 +41,7 @@ t=3      send(START)
          _serve_worker(wid=0):                     ║ send(REQUEST_PARAMS)
          while True:                               ║ ────►
          recv(REQUEST_PARAMS)      ◄───────────────╝
-t=4      
+t=5    
          copy mlp_state (thread-safe)
          copy cnn_state
          ver = version (0)
@@ -42,14 +50,14 @@ t=4
                                                      cnn_state = {...}
                                                      version_read = 0
 
-t=5                                                  _train_batch():
+t=6                                                  _train_batch():
                                                      X, Y = next(stream)  # (64, 3, 224, 224)
                                                      # Forward
                                                      features = CNN(X)    # (64, 512)
                                                      logits = MLP(feats)  # (64, 1000)
                                                      loss = CrossEntropy(logits, Y)
                                                      
-t=6                                                  # Backward
+t=7                                                  # Backward
                                                      loss.backward()
                                                      
                                                      # SGD local (lr=0.001)
@@ -59,13 +67,13 @@ t=6                                                  # Backward
                                                      # Métricas
                                                      acc = compute_accuracy(logits, Y)
 
-t=7                                                  Serializar pesos:
+t=8                                                  Serializar pesos:
                                                      mlp_dict = mlp.state_dict_numpy()
                                                      cnn_dict = cnn.state_dict_numpy()
                                                      
                                                      send(UPDATES)
          recv(UPDATES) ◄────────────────────────────
-t=8      
+t=9    
          payload = {
            'mlp_weights': {...},
            'cnn_weights': {...},
@@ -101,7 +109,7 @@ t=8
                                                      iter=2
                                                      REQUEST_PARAMS
          ◄────────────────────────────────────────────
-t=9      
+t=10      
          version=1, mlp_state=<updated>
          send(PARAMS)
          ────►

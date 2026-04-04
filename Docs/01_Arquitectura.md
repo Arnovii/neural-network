@@ -229,16 +229,17 @@ num_workers=3, worker_rank=2
 - Manejar errores de conexión
 - Garantizar integridad (length prefix)
 
-**Mensajes Soportados** (9 total):
+**Mensajes Soportados** (10 total):
 1. `READY`: Worker → PS (solicita conexión)
 2. `WORKER_ID`: PS → Worker (asigna ID)
-3. `CNN_WEIGHTS`: PS → Worker (distribuye pesos)
-4. `CNN_ACK`: Worker → PS (confirma carga)
-5. `START`: PS → Worker (inicia training loop)
-6. `REQUEST_PARAMS`: Worker → PS (pide parámetros actuales)
-7. `PARAMS`: PS → Worker (envía estado global)
-8. `UPDATES`: Worker → PS (envía gradientes)
-9. `STOP`: PS → Worker (apagado)
+3. `CONFIG`: PS → Worker (distribuye batch_size, image_size)
+4. `CNN_WEIGHTS`: PS → Worker (distribuye pesos)
+5. `CNN_ACK`: Worker → PS (confirma carga)
+6. `START`: PS → Worker (inicia training loop)
+7. `REQUEST_PARAMS`: Worker → PS (pide parámetros actuales)
+8. `PARAMS`: PS → Worker (envía estado global)
+9. `UPDATES`: Worker → PS (envía gradientes)
+10. `STOP`: PS → Worker (apagado)
 
 ### 7. GUI y Monitoreo
 

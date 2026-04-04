@@ -34,13 +34,13 @@ import torch.nn as nn
 class MLPPyTorch(nn.Module):
     """
     Clasificador MLP de 2 capas ocultas para ImageNet (1000 clases).
-    
+
     Arquitectura:
     - Input: vector de features CNN (feature_dim, ej 512 de ResNet-18)
     - Capa 1: feature_dim → hidden1 (ej 1024) + ReLU
-    - Capa 2: hidden1 → hidden2 (ej 512) + ReLU  
+    - Capa 2: hidden1 → hidden2 (ej 512) + ReLU
     - Output: hidden2 → 1000 (logits sin activación)
-    
+
     Thread-safe: Múltiples Workers cargan state_dict sin conflictos.
     Serialización: state_dict_numpy() para transporte por TCP (numpy arrays).
     Inicialización: Kaiming uniform (He) para producir logits con varianza razonable.
@@ -55,7 +55,7 @@ class MLPPyTorch(nn.Module):
     ) -> None:
         """
         Inicializa el MLP con arquitectura configurable.
-        
+
         :param feature_dim: Dimensión del vector de entrada CNN (ej: 512 para ResNet-18)
         :type feature_dim: int
         :param hidden1: Unidades de la 1ª capa oculta (defecto config PS: 1024).

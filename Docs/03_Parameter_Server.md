@@ -138,7 +138,14 @@ PASOS:
    ├─ Guardar en diccionario _sockets[wid] = conn
    └─ send(WORKER_ID, {"worker_id": wid})
 
-3. Distribuir CNN
+3. Enviar CONFIG (batch_size, image_size)
+   ├─ send(CONFIG, {
+   │    "batch_size": self.batch_size,
+   │    "image_size": self.image_size
+   │  })
+   └─ Sincroniza todos los Workers a parámetros globales
+
+4. Distribuir CNN
    ├─ if self._cnn is None → no enviar (falla de inicialización)
    ├─ send(CNN_WEIGHTS, {
    │    "arch": "resnet18",
@@ -147,11 +154,11 @@ PASOS:
    ├─ Esperar CNN_ACK (bloqueo en recv, timeout implícito)
    └─ if no CNN_ACK → desconectar Worker
 
-4. Enviar START
+5. Enviar START
    ├─ send(START, {})  # Señal de inicio del training loop
    └─ if error → desconectar
 
-5. Entrar en _serve_worker()
+6. Entrar en _serve_worker()
    └─ Loop indefinido: recv → procesar → responder
 ```
 

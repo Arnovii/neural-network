@@ -8,7 +8,7 @@
 - TCP/IP confiable (no hay pérdida de paquetes)
 - Serialización con `pickle` (preserva tipos Python)
 - Longitud-prefijo para delimitar mensajes (garantiza sincronización)
-- 9 tipos de mensajes (enum MsgType)
+- 10 tipos de mensajes (enum MsgType)
 
 ---
 
@@ -47,7 +47,7 @@ data = struct.pack(">I", 50) + body
 
 ---
 
-## Tipos de Mensajes (9 Total)
+## Tipos de Mensajes (10 Total)
 
 ### 1. READY (Worker → PS)
 
@@ -80,7 +80,35 @@ send_message(sock, MsgType.WORKER_ID, {
 
 ---
 
-### 3. CNN_WEIGHTS (PS → Worker)
+### 3. CONFIG (PS → Worker)
+
+**Propósito**: Distribuir parámetros globales de configuración
+
+```python
+send_message(sock, MsgType.CONFIG, {
+    "batch_size": 64,
+    "image_size": 224
+})
+```
+
+**Payload**:
+- `batch_size` (int): Tamaño del batch para streaming de imágenes
+- `image_size` (int): Tamaño de imagen (224 típicamente)
+
+**Rango**:
+- batch_size: 1-1024 típicamente
+- image_size: 224 (ResNet-18 estándar)
+
+**Frecuencia**: Enviado una sola vez durante handshake, inmediatamente después de WORKER_ID
+
+**Impacto**: Worker utiliza estos parámetros para:
+- Configurar streaming de imágenes (image_size para transforms)
+- Establecer tamaño de batch para training loop
+- Asegurar sincronización global (todos los workers usan batch_size desde PS)
+
+---
+
+### 4. CNN_WEIGHTS (PS → Worker)
 
 **Propósito**: Distribuir arquitectura e pesos CNN
 
@@ -99,7 +127,7 @@ send_message(sock, MsgType.CNN_WEIGHTS, {
 
 ---
 
-### 4. CNN_ACK (Worker → PS)
+### 5. CNN_ACK (Worker → PS)
 
 **Propósito**: Confirmar carga de CNN
 
@@ -114,7 +142,7 @@ send_message(sock, MsgType.CNN_ACK, {
 
 ---
 
-### 5. START (PS → Worker)
+### 6. START (PS → Worker)
 
 **Propósito**: Señal para iniciar training loop
 
@@ -126,7 +154,7 @@ send_message(sock, MsgType.START, {})
 
 ---
 
-### 6. REQUEST_PARAMS (Worker → PS)
+### 7. REQUEST_PARAMS (Worker → PS)
 
 **Propósito**: Solicitar parámetros globales actuales
 
@@ -142,7 +170,7 @@ send_message(sock, MsgType.REQUEST_PARAMS, {})
 
 ---
 
-### 7. PARAMS (PS → Worker)
+### 8. PARAMS (PS → Worker)
 
 **Propósito**: Enviar estado global actual
 
@@ -175,7 +203,7 @@ send_message(sock, MsgType.PARAMS, {
 
 ---
 
-### 8. UPDATES (Worker → PS)
+### 9. UPDATES (Worker → PS)
 
 **Propósito**: Enviar gradientes acumulados + métricas
 
@@ -202,7 +230,7 @@ send_message(sock, MsgType.UPDATES, {
 
 ---
 
-### 9. STOP (PS → Worker)
+### 10. STOP (PS → Worker)
 
 **Propósito**: Apagado limpio
 
@@ -277,6 +305,7 @@ def _recv_exact(sock, n):
 
 ```
 TIMELINE:
+Los tiempos mostrados son solo ilustrativos.
 
 t=0  Worker CONNECT → PS listen()
      send(READY)
@@ -285,38 +314,43 @@ t=100ms receive(WORKER_ID)
      ├─ Extrae {"worker_id": 0}
      └─ store self._worker_id = 0
 
+t=150ms receive(CONFIG)
+     ├─ Extrae {"batch_size": 64, "image_size": 224}
+     ├─ store self.batch_size = 64
+     └─ store self.image_size = 224
+
 t=200ms receive(CNN_WEIGHTS) ← ~44 MB
      ├─ Extrae CNN state_dict
      ├─ cnn.load_weights_from_bytes()
      └─ send(CNN_ACK)
 
-t=600ms PS receive(CNN_ACK)
+t=650ms PS receive(CNN_ACK)
 
-t=700ms PS send(START)
+t=750ms PS send(START)
      receive(START) ← Worker
 
-t=800ms [Worker enters _training_loop()]
+t=850ms [Worker enters _training_loop()]
      send(REQUEST_PARAMS)
      
-t=900ms PS receive(REQUEST_PARAMS)
+t=950ms PS receive(REQUEST_PARAMS)
      ├─ copy mlp_state, cnn_state, version
      ├─ send(PARAMS) ← ~50 MB
 
-t=1400ms [Worker receives PARAMS]
+t=1450ms [Worker receives PARAMS]
      ├─ Parse mlp_state, cnn_state, version_read=0
      ├─ _sync_cnn(), _sync_mlp()
      ├─ _train_batch() ← ~50-100ms
      ├─ _serialize_cnn(), _serialize_mlp()
      ├─ send(UPDATES) ← ~50 MB
 
-t=1900ms PS receive(UPDATES)
+t=1950ms PS receive(UPDATES)
      ├─ Calculate staleness = ver - version_read = 1 - 0 = 1
      ├─ alpha = 1 / (1 + 0.1 * 1) = 0.91
      ├─ Apply update with α=0.91
      ├─ version++
      └─ [Callback: on_step(loss, acc, staleness=1)]
 
-t=2000ms [Worker REQUEST_PARAMS again]
+t=2050ms [Worker REQUEST_PARAMS again]
      ├─ send(REQUEST_PARAMS)
      ← VUELVA AL LOOP
 

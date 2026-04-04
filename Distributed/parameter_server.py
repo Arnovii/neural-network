@@ -123,12 +123,12 @@ class ParameterServer:
     ) -> None:
         """
         Inicializa el Parameter Server para entrenamiento Async-SGD distribuido.
-        
+
         Crea el servidor de parámetros que coordina múltiples Workers sin barrera
         global. Los Workers entrenan de forma asíncrona, y el PS actualiza el modelo
         global inmediatamente al recibir gradientes. Aplica corrección de staleness
         usando factor α(s) = 1/(1+λ·s) para atenuar gradientes antiguos.
-        
+
         :param host: IP donde escucha el servidor (ej: '0.0.0.0' o '127.0.0.1')
         :type host: str
         :param port: Puerto TCP para conexión de Workers (ej: 9999)
