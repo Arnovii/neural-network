@@ -76,16 +76,16 @@ PERO: CNN GLOBAL entrena (PS promedia CNN de todos Workers) → Async-FedAvg en 
 └──────────┬──────────┘
            │ (streaming)
     ┌──────▼──────────┐
-    │ Worker 0        │        ┌──────────────────────────────┐
-    │ CNN+MLP train   │        │ Parameter Server             │
-    │ (E2E)           │──┐     │ • CNN state (promediada)     │
-    │ Sync+Train+Send │  │ ────► • MLP state (promediada)    │
-    └─────────────────┘  │     │ • version                    │
-                         │     │ • staleness correction       │
+    │ Worker 0        │         ┌──────────────────────────────┐
+    │ CNN+MLP train   │         │ Parameter Server             │
+    │ (E2E)           │──┐      │ • CNN state (promediada)     │
+    │ Sync+Train+Send │  │ ─────► • MLP state (promediada)     │
+    └─────────────────┘  │      │ • version                    │
+                         │      │ • staleness correction       │
     ┌─────────────────┐  │ ◄────│                              │
     │ Worker 1        │──┤ PARAMS                              │
-    │ CNN+MLP train   │  │ +UPDATES                           │
-    │ (E2E)           │  │     └──────────────────────────────┘
+    │ CNN+MLP train   │  │ +UPDATES                            │
+    │ (E2E)           │  │      └──────────────────────────────┘
     │ Sync+Train+Send │  │
     └─────────────────┘  │
                          │

@@ -794,20 +794,20 @@ Significado: Promediar últimos 50 steps para graficar
 ### Tabla: Impacto Relativo en Convergencia
 
 ```
-╔═══════════════════════╦══════════════╦════════════════════════════════════╗
-║ Hiperparámetro        ║ Rango Recom. ║ Impacto en Convergencia            ║
-╠═══════════════════════╬══════════════╬════════════════════════════════════╣
-║ Learning Rate η       ║ 0.001-0.01   ║ CRÍTICO (alta sensibilidad)        ║
-║                       ║              ║ Diverge si > 0.1, muy lento si < 10^-5║
-║ Staleness Lambda λ    ║ 0.05-1.0     ║ IMPORTANTE (estabilidad con N>4)   ║
-║                       ║              ║ λ=0 falla con múltiples workers    ║
-║ Batch Size B          ║ 32-256       ║ MODERADO (varianza de gradientes)  ║
-║                       ║              ║ B=64: standard, B>256: overhead red║
-║ MLP Hidden Units      ║ 512-2048     ║ BAJO (arquitectura, no convergencia)║
-║                       ║              ║ Afecta capacidad, no velocidad     ║
-║ Prefetch Buffer       ║ 2-8          ║ BAJO (throughput, no loss)         ║
-║                       ║              ║ Más data paralela = menos espera   ║
-╚═══════════════════════╩══════════════╩════════════════════════════════════╝
+╔═══════════════════════╦══════════════╦════════════════════════════════════════╗
+║ Hiperparámetro        ║ Rango Recom. ║ Impacto en Convergencia                ║
+╠═══════════════════════╬══════════════╬════════════════════════════════════════╣
+║ Learning Rate η       ║ 0.001-0.01   ║ CRÍTICO (alta sensibilidad)            ║
+║                       ║              ║ Diverge si > 0.1, muy lento si < 10^-5 ║
+║ Staleness Lambda λ    ║ 0.05-1.0     ║ IMPORTANTE (estabilidad con N>4)       ║
+║                       ║              ║ λ=0 falla con múltiples workers        ║
+║ Batch Size B          ║ 32-256       ║ MODERADO (varianza de gradientes)      ║
+║                       ║              ║ B=64: standard, B>256: overhead red    ║
+║ MLP Hidden Units      ║ 512-2048     ║ BAJO (arquitectura, no convergencia)   ║
+║                       ║              ║ Afecta capacidad, no velocidad         ║
+║ Prefetch Buffer       ║ 2-8          ║ BAJO (throughput, no loss)             ║
+║                       ║              ║ Más data paralela = menos espera       ║
+╚═══════════════════════╩══════════════╩════════════════════════════════════════╝
 ```
 
 ---
@@ -838,9 +838,9 @@ Significado: Promediar últimos 50 steps para graficar
    - B: Trade-off ruido vs throughput (moderado)
 
 RESULTADO:
-═══════════════════════════════════════════════════════════════
+══════════════════════════════════════════════════════════════════════
 El sistema converge sin divergencia, tolerando múltiples workers
 simultáneos con latencias de red, logrando throughput Y estabilidad.
-═══════════════════════════════════════════════════════════════
+══════════════════════════════════════════════════════════════════════
 ```
 

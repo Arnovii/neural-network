@@ -3,9 +3,9 @@
 ## Arquitectura General del Streaming
 
 ```
-┌─ HuggingFace Datasets ─┐
-│   ILSVRC/imagenet-1k   │
-│   timm/imagenet-1k-wds │
+┌─ HuggingFace Datasets ──┐
+│   ILSVRC/imagenet-1k    │
+│   timm/imagenet-1k-wds  │
 └────────┬────────────────┘
          │  Descarga chunks bajo demanda
          ▼

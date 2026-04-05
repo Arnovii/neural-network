@@ -322,9 +322,9 @@ Si ves que los **puntos azules bajan** (en lugar de subir), hay problemas.
 ┌───────────────────────────────────────┐
 │ ID │ Dirección        │ Estado        │
 ├────┼──────────────────┼───────────────┤
-│ 0  │ 127.0.0.1:41234  │ Activo  [🟢] │
-│ 1  │ 192.168.1.2:9876 │ Activo  [🟢] │
-└────────────────────────────────  ─────┘
+│ 0  │ 127.0.0.1:41234  │ Activo  [🟢]  │
+│ 1  │ 192.168.1.2:9876 │ Activo  [🟢]  │
+└───────────────────────────────────────┘
 ```
 
 **Color-coded**: Cada Worker con color distinto en gráficas

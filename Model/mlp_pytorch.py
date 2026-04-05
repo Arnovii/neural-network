@@ -4,6 +4,7 @@ Model/mlp_pytorch.py
 MLP PyTorch para clasificación sobre features CNN en ImageNet.
 
 ARQUITECTURA:
+    fc = Fully Connected
     features (feature_dim)
         → fc1 (hidden1, ReLU)
         → fc2 (hidden2, ReLU)
@@ -58,17 +59,22 @@ class MLPPyTorch(nn.Module):
 
         :param feature_dim: Dimensión del vector de entrada CNN (ej: 512 para ResNet-18)
         :type feature_dim: int
+
         :param hidden1: Unidades de la 1ª capa oculta (defecto config PS: 1024).
                        Distribuida por PS a todos los Workers via CONFIG.
         :type hidden1: int
+
         :param hidden2: Unidades de la 2ª capa oculta (defecto config PS: 512).
                        Distribuida por PS a todos los Workers via CONFIG.
         :type hidden2: int
+
         :param n_classes: Número de clases (defecto: 1000 para ImageNet)
         :type n_classes: int
         """
         super().__init__()
-        self.fc1 = nn.Linear(feature_dim, hidden1)
+        self.fc1 = nn.Linear(
+            feature_dim, hidden1
+        )  # nn.Linear = Capa totalmente conectada
         self.fc2 = nn.Linear(hidden1, hidden2)
         self.fc3 = nn.Linear(hidden2, n_classes)
         self.relu = nn.ReLU()
@@ -82,7 +88,9 @@ class MLPPyTorch(nn.Module):
         garantiza que los logits iniciales sean distintos de cero y el
         loss sea ≈ log(n_classes) ≈ 6.9 desde el primer batch.
         """
+        # Itera sobre las 3 capas lineales del modelo
         for layer in (self.fc1, self.fc2, self.fc3):
+            # El modo fan_in hace que los pesos se escalen según cuántas entradas tiene la capa.
             nn.init.kaiming_uniform_(layer.weight, mode="fan_in", nonlinearity="relu")
             nn.init.zeros_(layer.bias)
 
@@ -112,4 +120,6 @@ class MLPPyTorch(nn.Module):
         with torch.no_grad():
             for name, param in self.named_parameters():
                 if name in state:
-                    param.data.copy_(torch.from_numpy(state[name]).to(param.device))
+                    param.data.copy_(
+                        torch.from_numpy(state[name]).to(param.device)
+                    )  # Convierte el array NumPy a tensor PyTorch y mueve al dispositivo correcto
