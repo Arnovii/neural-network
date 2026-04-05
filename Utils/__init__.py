@@ -2,7 +2,11 @@
 Utils — Utilidades para streaming de datos, logging y exportación de resultados.
 
 Proporciona funcionalidades esenciales para el pipeline de entrenamiento distribuido
-asíncrono sobre ImageNet-1k:
+asíncrono sobre ImageNet-1k que soporta DOS MODOS:
+  1. SimpleCNN E2E: CNN + MLP entrenables (E2E backprop)
+  2. ResNet-18 MLP-only: CNN congelada, solo MLP entrenable
+
+Streaming y logging funcionan idénticamente en ambos modos:
 
 1. **Streaming de ImageNet-1k**: Descarga bajo demanda desde HuggingFace con:
 

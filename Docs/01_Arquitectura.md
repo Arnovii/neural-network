@@ -92,13 +92,12 @@
 - Conectarse al PS y obtener ID
 - Recibir CNN y MLP iniciales desde PS
 - Sincronizar stream de datos desde HuggingFace
-- Ejecutar loop asincrónico E2E indefinidamente (ciclo REQUEST_PARAMS):
+- Ejecutar loop asincrónico indefinidamente (ciclo REQUEST_PARAMS):
   - **REQUEST_PARAMS**: Pide parámetros globales (CNN + MLP)
   - **_sync_cnn()**: Carga CNN global desde PS (SOBRESCRIBE CNN local)
   - **FOR accum_steps**: Entrena localmente
-    - _train_batch(): CNN descongela → entrena → se vuelve a congelar (cambios locales)
-    - MLP entrena (cambios locales)
-  - **UPDATES**: Envía CNN + MLP entrenados al PS (cambios locales se envian, luego se descartan en siguiente ciclo)
+    - _train_batch(): CNN entrenable (SimpleCNN) o congelada (ResNet-18), MLP se entrena siempre
+  - **UPDATES**: Envía CNN (si SimpleCNN) + MLP entrenados al PS
 - Registrar métricas locales
 
 **Estado Interno**:
@@ -130,28 +129,32 @@
 **Archivo**: `Model/cnn_extractor.py`
 
 **Responsabilidades**:
-- Mantener CNN (ResNet-18 o SimpleCNN) entrenable durante _train_batch()
-- Durante cada batch por Worker:
-  - Se DESCONGELA: `requires_grad_(True)`
+- Mantener CNN (ResNet-18 congelada o SimpleCNN entrenable) según arquitectura
+- Durante cada batch por Worker (ResNet-18):
+  - CNN congelada: `requires_grad=False` (permanente)
+  - Solo forward pass para extracción de features
+  - SGD local NO se aplica a CNN
+- Durante cada batch por Worker (SimpleCNN):
+  - CNN entrenable: `requires_grad=True` (permanente)
   - Se ENTRENA: gradientes propagados en backward
   - Se SGD local (cambios ephemeral de ~accum_steps batches)
-  - Se VUELVE A CONGELAR: `requires_grad_(False)` + eval()
-- Se ENVÍA al PS en UPDATES (cambios locales de accum_steps batches)
+- Se ENVÍA al PS en UPDATES (cambios locales de accum_steps batches si SimpleCNN, None si ResNet-18)
 - Se SOBRESCRIBE en siguiente REQUEST_PARAMS con CNN global del PS
-- **EFECTO**: CNN cambios locales NO PERSISTEN (duran un ciclo REQUEST_PARAMS)
-- **GLOBAL**: PS promedia CNN recibida de todos Workers → CNN entrena globalmente
+- **EFECTO CNN LocalResNet-18**: Congelada permanente, no cambia
+- **EFECTO CNN Local SimpleCNN**: cambios NO PERSISTEN (duran un ciclo REQUEST_PARAMS)
+- **GLOBAL**: PS promedia CNN recibida de SimpleCNN Workers → CNN entrena globalmente
 
-**Dinzmica Especial**:
-- CNN local: congelada en PRÁCTICA (cambios se descartan cada ciclo REQUEST_PARAMS)
-- CNN global (PS): se entrena mediante Async-FedAvg (acumula cambios promediados)
-- Resultado: CNN efectívamente no aprende localmente, pero sí globalmente
+**Dinámica Especial**:
+- ResNet-18: CNN congelada localmente, fija permanentemente
+- SimpleCNN: CNN congelada en PRÁCTICA localmente (cambios se descartan cada ciclo REQUEST_PARAMS)
+- CNN global (PS via SimpleCNN Workers): se entrena mediante Async-FedAvg (acumula cambios promediados)
 
 **Arquitecturas Soportadas**:
 
-| Arquitectura | feature_dim | Parámetros | Pesos | Caso de Uso |
-|---|---|---|---|---|
-| `resnet18` | 512 | ~11M | ImageNet1K_V1 | Producción (convergencia rápida) |
-| `simple` | 512 | ~1.5M | Random init | Experimentación / Testing (NO congelada) |
+| Arquitectura | feature_dim | Parámetros | Pesos | requires_grad | Caso de Uso |
+|---|---|---|---|---|---|
+| `resnet18` | 512 | ~11M | ImageNet1K_V1 | False (congelada) | Producción (convergencia rápida, MLP-only) |
+| `simple` | 512 | ~1.5M | Random init | True (entrenable) | Experimentación / Testing (E2E training) |
 
 **Interfaz Pública**:
 ```python

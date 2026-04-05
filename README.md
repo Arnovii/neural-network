@@ -6,7 +6,7 @@ Sistema de entrenamiento distribuido con arquitectura **Parameter Server** que i
 
 ### ¿Qué es este sistema?
 
-Este proyecto implementa un framework completo para **entrenamiento distribuido asincrónico de CNN + MLP** en ImageNet-1k. El sistema realiza entrenamiento E2E donde ambas redes se entrenan: localmente en cada Worker mediante SGD puro, y globalmente en el Parameter Server mediante promediado de pesos (Async-FedAvg). La dinámica especial es que cambios CNN locales no persisten (se resincronizar cada ciclo con promedio global), resultando en CNN "congelada" LOCALMENTE pero "entrenada" GLOBALMENTE.
+Este proyecto implementa un framework completo para **entrenamiento distribuido asincrónico de CNN + MLP** en ImageNet-1k. El sistema ofrece **entrenamiento E2E de SimpleCNN + MLP** o **entrenamiento MLP-only con ResNet-18 congelada**. En SimpleCNN: ambas redes se entrenan localmente en cada Worker. En ResNet-18: solo MLP se entrena (CNN congelada permanentemente). Ambas arquitecturas se sincronizan globalmente via Async-FedAvg.
 
 ### ¿Qué problema resuelve?
 
@@ -17,11 +17,11 @@ Este proyecto implementa un framework completo para **entrenamiento distribuido 
 
 ### Enfoque técnico
 
-- **Estrategia**: Entrenamiento E2E distribuido: CNN + MLP entrenan localmente por Worker, se sincronizan globalmente por PS
+- **Estrategia**: Entrenamiento distribuido asincrónico: SimpleCNN+MLP (E2E) O ResNet-18 MLP-only. Localmente por Worker, sincronizan globalmente por PS via Async-FedAvg
 - **Arquitectura**: Parameter Server + N Workers independientes
 - **Comunicación**: TCP/IP con serialización Pickle, 10 tipos de mensaje
 - **Modelos**: 
-  - **CNN Extractor** (resincronizada): ResNet-18 preentrenado ImageNet1K_V1 o SimpleCNN entrenan localmente pero se resincromzan globalmente
+  - **CNN Extractor**: ResNet-18 preentrenado (CONGELADA) O SimpleCNN (ENTRENABLE E2E)
   - **MLP Clasificador** (entrenado): 2-3 capas ocultas que también se resincronizanDesde PS
 - **Datos**: Streaming desde ILSVRC/imagenet-1k o timm/imagenet-1k-wds
 - **Hardware**: Soporte automático para CUDA, MPS (Apple Metal), CPU

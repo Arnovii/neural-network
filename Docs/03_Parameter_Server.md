@@ -23,7 +23,7 @@ cnn = CNNExtractor(
     arch="resnet18",        # Opciones: "resnet18" o "simple"
     pretrained=True,        # Si True: ImageNet1K_V1 weights
     device="cpu",           # PS siempre en CPU (optimización)
-    seed=42
+    seed=None               # None = aleatorio, int = reproducible
 )
 ps.set_cnn(cnn)
 ```

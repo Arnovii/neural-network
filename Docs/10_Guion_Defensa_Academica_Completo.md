@@ -10,12 +10,19 @@ Basado en análisis del código fuente completo (sin especulaciones)
 
 ### 1.1 El Problema: Entrenamiento de Redes Profundas en Datos Masivos
 
-Imaginemos que necesitamos entrenar un clasificador de 1000 categorías en ImageNet-1k, que contiene 1.2 millones de imágenes. ResNet-18, nuestra arquitectura de extractor de características, tiene más de 120 capas convolucionales. El proceso de entrenamiento e2e requiere:
+Imaginemos que necesitamos entrenar un clasificador de 1000 categorías en ImageNet-1k, que contiene 1.2 millones de imágenes. Disponemos de dos arquitecturas: **ResNet-18** (120+ capas convolucionales, congelada) o **SimpleCNN** (entrenable E2E).
 
+Opcción 1 (SimpleCNN E2E):
 - Descargar 1.2 millones de imágenes (~150 gigabytes)
-- Procesar cada imagen forward a través de 120+ capas
-- Retropropagar el gradiente a través de esas 120+ capas
-- Actualizar once millones de parámetros CNN y dos millones de parámetros MLP
+- Procesar cada imagen forward a través de CNN + MLP
+- Retropropagar el gradiente a través de AMBAS redes
+- Actualizar 6 millones de parámetros CNN E2E + 2 millones de parámetros MLP
+
+Opción 2 (ResNet-18, MLP-only):
+- Descargar 1.2 millones de imágenes (~150 gigabytes)
+- Usar CNN como extractor de características (congelada, NO se entrena)
+- Retropropagar gradiente solo a través del MLP
+- Actualizar SOLO 2 millones de parámetros MLP (CNN permanece congelada)
 - Ejecutar cientos de épocas sobre el dataset completo
 
 En una sola máquina con una única GPU, esto típicamente toma semanas. El cambio es que interrupciones de energía, fallos de hardware o un simple error de código pierden todo el progreso. Además, una sola GPU no es suficiente para experimentar rápidamente: probar distintas configuraciones de red requeriría nuevamente semanas.
@@ -94,7 +101,9 @@ El sistema tiene dos componentes de red neuronal entrenables:
 - **CNN Extractor** (`Model/cnn_extractor.py`): ResNet-18 preentrenada en ImageNet-1k (por defecto) o SimpleCNN (esquema de investigación). Tiene 512 neuronas de salida que constituyen el vector de características.
 - **MLP Pytorch** (`Model/mlp_pytorch.py`): Clasificador de 3 capas completamente conectadas (512 → 1024 → 512 → 1000). Las primeras dos capas tienen ReLU, la última es lineal (sin activación porque CrossEntropyLoss la maneja internamente).
 
-Tanto CNN como MLP se entrenan juntas E2E. Aunque la CNN se inicializa preentrenada, sus pesos se ajustan durante el entrenamiento. Se descongela localmente en cada batch, recibe gradientes, se actualiza con SGD, y luego se resincroniza desde el PS para la siguiente iteración.
+**SimpleCNN**: CNN + MLP se entrenan juntas E2E. Los pesos se ajustan durante el entrenamiento, reciben gradientes, se actualizan con SGD localmente, y luego se resincronizandesde el PS para la siguiente iteración.
+
+**ResNet-18**: Solo el MLP se entrena. La CNN permanece congelada (requires_grad=False) permanentemente, actuando como extractor de características fijo. Se sincroniza globalmente por cuestiones de arquitectura uniforme, pero nunca recibe updates de gradientes.
 
 ### 2.2 Dependencias y Flujo de Datos de Alto Nivel
 
@@ -129,7 +138,7 @@ El usuario lanza el PS desde línea de comandos o GUI. El script de entrada (`ps
 
 2. **Crear instancia PS**: Se instancia un objeto ParameterServer con esos parámetros. Inicialmente, el PS no tiene CNNni MLP asignados.
 
-3. **Cargar modelos CNN y MLP**: Se crea una CNN (ResNet-18 preentrenada o SimpleCNN) en CPU (para servir a múltiples Workers sin competencia GPU) y un MLP nuevo. Sus pesos se convierten a numpy (para compatibilidad con serialización TCP).
+3. **Cargar modelos CNN y MLP**: Se crea una CNN en CPU: ResNet-18 preentrenada (con requires_grad=False, permanentemente congelada) O SimpleCNN (con requires_grad=True, entrenable E2E). También se crea un MLP nuevo. Sus pesos se convierten a numpy (para compatibilidad con serialización TCP).
 
 4. **Asignar modelos al PS**: Se llama a `ps.set_cnn(cnn)` y `ps.set_mlp(mlp.state_dict_numpy())`. El PS almacena internamente estos pesos como diccionarios de numpy arrays.
 
@@ -216,9 +225,10 @@ El Worker:
 2. Aplica transformaciones de Train (RandomResizedCrop, RandomHorizontalFlip, normalización)
 3. Pasa la imagen forward a través de CNN (que emite 512 features) y luego MLP (que emite 1000 logits)
 4. Calcula pérdida con CrossEntropyLoss
-5. Retropropaga el gradiente (backward) a través de MLP → CNN → todas las capas convolucionales
-6. Aplica SGD: θ -= learning_rate * gradiente, en ambas CNN y MLP
-7. **CRÍTICO**: La CNN se "congela" (requires_grad=False) inmediatamente después del backward para evitar actualizaciones accidentales. Pero durante el backward, la CNN sí recibió gradientes del MLP que fluyen a través de ella.
+5. **SimpleCNN**: Retropropaga el gradiente (backward) a través de MLP → CNN → todas las capas. Aplica SGD en AMBAS redes.
+   **ResNet-18**: Retropropaga solo a través de MLP (CNN congelada nunca recibe gradientes). Aplica SGD solo a MLP.
+6. Aplica SGD: θ -= learning_rate * gradiente
+7. **CRÍTICO**: En SimpleCNN, ambas redes se actualizan. En ResNet-18, solo MLP cambia; CNN permanece congelada y nunca se actualiza.
 
 Este ciclo se repite accum_steps veces (ej 5 veces). Después de 5 entrenamientos, el Worker tiene CNN y MLP locales que han divergido del PS en formas específicas (los cambios acumulados de 5 SGD steps).
 

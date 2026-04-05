@@ -51,10 +51,10 @@ Output: (N, 512)
 - ⚠️ SGD puro sin momentum en backprop hace convergencia lenta
 
 **Estado en el Sistema**:
-- ✅ **ENTRENABLE LOCALMENTE**: Se descongela en cada _train_batch() durante accum_steps
-- ✅ Recibe gradientes en backward E2E completo (120+ capas)
-- ⚠️ Cambios locales NO PERSISTEN: se resincroniza con CNN global (PS) cada REQUEST_PARAMS
-- ⚠️ Dinámica: CNN local se descarta periódicamente (cada ciclo REQUEST_PARAMS) y se sobrescribe con promedio global
+- ❌ **CONGELADA (requires_grad=False)**: No recibe gradientes en backward
+- ❌ Solo forward pass para extracción de features
+- ✅ Se resincroniza con CNN global (PS) cada REQUEST_PARAMS con pesos promediados
+- ✅ Dinámica: CNN global se entrena distribuida via SimpleCNN + Async-FedAvg
 
 ### SimpleCNN (Para Experimentación)
 
@@ -109,11 +109,11 @@ class _SimpleCNN(nn.Module):
 - ⚠️ SGD puro sin momentum + resincronización = convergencia muy lenta
 
 **Estado en el Sistema**:
-- ✅ **ENTRENABLE**: Se descongela en cada batch durante training
-- ✅ Recibe gradientes en backward E2E completo
+- ✅ **ENTRENABLE (requires_grad=True)**: Recibe gradientes en backward
+- ✅ CNN se actualiza localmente con SGD
 - ⚠️ Cambios locales NO PERSISTEN: se resincroniza con CNN global (PS) cada REQUEST_PARAMS
 - ⚠️ Dinámica: CNN local se descarta periódicamente y se sobrescribe con promedio global
-- ❌ **NO RECOMENDADA**: Features aleatorias + resincronización = learning inestable
+- ⚠️ **NO RECOMENDADA**: Features aleatorias + resincronización = learning inestable
 
 ---
 
@@ -124,7 +124,7 @@ cnn = CNNExtractor(
     arch="resnet18",           # "resnet18" o "simple"
     pretrained=True,           # Si True: ImageNet1K_V1
     device="cuda",             # Device de PyTorch
-    seed=42                    # Para reproducibilidad
+    seed=None                  # None = aleatorio, int = reproducible
 )
 ```
 
@@ -238,13 +238,13 @@ He init garantiza:
 
 ## Interacción CNN ↔ MLP
 
-### Flujo E2E Simplificado
+### Flujo E2E Simplificado (SimpleCNN)
 
 ```
 Input Images: (64, 3, 224, 224)
        ↓
 ┌──────────────────────────────┐
-│ CNN.forward()                │  Extrae features de ResNet-18
+│ CNN.forward() (SimpleCNN)    │  Extrae features (entrenable)
 │ (se entrena localmente,      │  Backward durante accum_steps
 │  se resincroniza globalmente)│  Cambios locales no persisten
 └──────┬───────────────────────┘
@@ -254,7 +254,7 @@ Features: (64, 512)
 ┌──────────────────┐
 │ MLP.forward()    │  Clasifica features
 │ (entrenamientos) │  Se optimizan parámetros
-│ (resincronizados)│  Se resincronizandel PS
+│ (resincronizados)│  Se resincroniza del PS
 └──────┬───────────┘
        │
 Logits: (64, 1000)
@@ -266,31 +266,81 @@ Loss: scalar (≈6.9-0.1 durante entrenamiento)
   Backward()
        ↓
 Gradients en MLP params (fc1, fc2, fc3) ✓ SE COMPUTAN Y SE USAN
-Gradients en CNN params (120+ capas) ✓ SE COMPUTAN Y SE USAN
+Gradients en CNN params (120+ capas) ✓ SE COMPUTAN Y SE USAN (SimpleCNN)
 ```
 
-### Dinámicas de Entrenamiento CNN: Local vs Global
+### Flujo MLP-Only (ResNet-18)
 
-**CNN SÍ se entrena en el código, pero con dinámicas especiales:**
+```
+Input Images: (64, 3, 224, 224)
+       ↓
+┌──────────────────────────────┐
+│ CNN.forward() (ResNet-18)    │  Extrae features (congelada)
+│ (congelada, requires_grad=F) │  Solo forward, sin gradientes
+│ (se resincroniza globalmente)│  
+└──────┬───────────────────────┘
+       │
+Features: (64, 512)
+       ↓
+┌──────────────────┐
+│ MLP.forward()    │  Clasifica features
+│ (entrenamientos) │  Se optimizan parámetros
+│ (resincronizados)│  Se resincroniza del PS
+└──────┬───────────┘
+       │
+Logits: (64, 1000)
+       ↓
+   CrossEntropyLoss
+       ↓
+Loss: scalar (≈6.9-0.1 durante entrenamiento)
+       ↓
+  Backward()
+       ↓
+Gradients en MLP params (fc1, fc2, fc3) ✓ SE COMPUTAN Y SE USAN
+Gradients en CNN params (120+ capas) ✗ NO se computan (congelada)
+```
+
+### Dinámicas de Entrenamiento CNN: Local vs Global (SimpleCNN)
+
+**SimpleCNN SÍ se entrena en el código, pero con dinámicas especiales:**
 
 | Aspecto | Realidad |
 |---|---|
-| **Backward E2E** | Gradientes llegan a CNN (120+ capas convolucionales) |
+| **Backward E2E** | Gradientes llegan a CNN (120+ capas de SimpleCNN) |
 | **SGD local** | CNN se actualiza: `cnn_param.data -= lr * cnn_param.grad` |
 | **Duración** | Cambios CNN locales duran accum_steps batches (ej: 5 batches) |
 | **Resincronización** | Cada REQUEST_PARAMS, CNN local se SOBRESCRIBE con CNN global del PS |
 | **Persistencia** | CNN cambios locales se DESCARTAN cuando sincroniza (NO persisten) |
 | **Global** | PS recibe CNN de cada Worker, la promedia con Async-FedAvg → CNN global SÍ aprende |
-| **Comunicación** | CNN 44MB + MLP 4.5MB = 50MB total intercambiados (AMBAS se sincronizan) |
+| **Comunicación** | CNN 6MB + MLP 4.5MB = ~11MB total intercambiados (AMBAS se sincronizan) |
 
-**Dinámicas Especiales**:
-- A nivel **local**: CNN aparenta estar congelada (cambios no persisten)
+**Dinámica Especial SimpleCNN**:
+- A nivel **local**: CNN aparenta estar congelada (cambios no persisten entre ciclos)
 - A nivel **global**: CNN entrena su entrenamiento distribuido vía Async-FedAvg
 - **Efecto**: CNN global converge lentamente (no hay momentum persistente a nivel local)
 
+### Dinámicas de Entrenamiento CNN: ResNet-18 (Congelada)
+
+**ResNet-18 NO se entrena - está permanentemente congelada:**
+
+| Aspecto | Realidad |
+|---|---|
+| **Backward** | Gradientes se computan pero NO se propaguen a CNN (grad_fn interrumpido) |
+| **SGD local** | CNN NO se actualiza (requires_grad=False) |
+| **Congelación** | Permanente desde __init__, nunca cambia |
+| **Resincronización** | CNN se recibe del PS pero no cambia (porque nunca cambió localmente) |
+| **Persistencia** | No hay cambios locales que persistir |
+| **Global** | PS solo actualiza MLP, CNN permanece estática (no hay Async-FedAvg de CNN para ResNet-18) |
+| **Comunicación** | CNN 45MB + MLP 4.5MB = ~50MB total intercambiados (ambas se sincronizan por completitud) |
+
+**Dinámica Especial ResNet-18**:
+- CNN congelada permanentemente → transfer learning puro
+- Solo MLP se entrena → clasificador aprendible sobre features fijas
+- **Efecto**: Convergencia más rápida que SimpleCNN (features preentrenadas), pero limitada (CNN no se adapta)
+
 ---
 
-## Cómo se Entrena Realmente
+## Cómo se Entrena Realmente (SimpleCNN)
 
 ```
 Forward Pass:
@@ -307,9 +357,31 @@ SGD Local (ambas redes SE ACTUALIZAN):
   mlp.parameters() -= lr * mlp.grad  ✓ MLP SE ACTUALIZA LOCALMENTE
   cnn.parameters() -= lr * cnn.grad  ✓ CNN SE ACTUALIZA LOCALMENTE
 
-Sincronización (ambas se RESINCRONIZIFAN del PS):
+Sincronización (ambas se RESINCRODNIZAN del PS):
   mlp_global = recv(PARAMS).mlp_state  → MLP se SOBRESCRIBE
   cnn_global = recv(PARAMS).cnn_state  → CNN se SOBRESCRIBE (cambios locales se pierden)
+```
+
+## Cómo se Entrena Realmente (ResNet-18)
+
+```
+Forward Pass:
+  X → CNN (requires_grad=False) → features (512D)
+  features → MLP → logits (1000D)
+  logits → Loss
+
+Backward Pass:
+  dLoss/d(logits) → MLP gradient ✓ (se computa y se ACTUALIZA MLP)
+  d(logits)/d(features) → gradient ✓ (se propaga, pero CNN congelada)
+  d(features)/dCNN_weights → CNN gradient ✗ NO se computa (congelada, no participa en backward)
+
+SGD Local (solo MLP SE ACTUALIZA):
+  mlp.parameters() -= lr * mlp.grad  ✓ MLP SE ACTUALIZA LOCALMENTE
+  cnn.parameters() ← NO SE ACTUALIZAN (congelada)
+
+Sincronización (solo MLP se RESINCRONIZA del PS):
+  mlp_global = recv(PARAMS).mlp_state  → MLP se SOBRESCRIBE
+  cnn_global = recv(PARAMS).cnn_state  → CNN se SOBRESCRIBE pero no ha cambiado (fue congelada localmente)
 ```
 
 ### Estado Dict Intercambiado

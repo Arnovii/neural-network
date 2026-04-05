@@ -2,7 +2,7 @@
 
 ## Descripción General
 
-Este proyecto implementa un **sistema de entrenamiento distribuido E2E asincrónico para ImageNet-1k** basado en una arquitectura **Parameter Server (PS)** con **Workers independientes**. El sistema realiza **full training de CNN + MLP** de forma descentralizada y no bloqueante, permitiendo escalar el aprendizaje en múltiples máquinas.
+Este proyecto implementa un **sistema de entrenamiento distribuido asincrónico para ImageNet-1k** basado en una arquitectura **Parameter Server (PS)** con **Workers independientes**. El sistema realiza **entrenamiento E2E de CNN + MLP en SimpleCNN** o **entrenamiento de MLP únicamente en ResNet-18 congelada** de forma descentralizada y no bloqueante, permitiendo escalar el aprendizaje en múltiples máquinas.
 
 ### Problema Resuelto
 
@@ -13,8 +13,8 @@ El entrenamiento E2E de CNN + MLP en datasets masivos como ImageNet-1k requiere:
 
 Este proyecto resuelve estos desafíos mediante:
 1. **Streaming asincrónico**: Datos descargados bajo demanda desde HuggingFace
-2. **E2E training**: CNN + MLP entrenables conjuntamente en cada Worker
-3. **Async-FedAvg**: Parámetros globales distribuidos sincrónicamente sin barrera de blocking
+2. **E2E training (SimpleCNN) o MLP-only (ResNet-18)**: Entrenable conjuntamente o solo clasificador según arquitectura
+3. **Async-FedAvg**: Parámetros globales distribuidos asincronicamente sin barrera de sincronización global
 4. **Comunicación eficiente**: Parámetros (~50 MB/update) intercambiados vía TCP/IP
 
 ## Enfoque: Federated Averaging Asincrónico (Async-FedAvg)
@@ -22,37 +22,40 @@ Este proyecto resuelve estos desafíos mediante:
 El sistema implementa **Federated Averaging asincrónico** con corrección de **staleness** (antigüedad de parámetros):
 
 ```
-Algoritmo Async-FedAvg (E2E Distribuido):
+Algoritmo Async-FedAvg (SimpleCNN: E2E, ResNet-18: MLP-only):
 En cada Worker, ciclo indefinido:
 1. REQUEST_PARAMS → recibe θ_global (CNN + MLP) del PS
-2. _sync_cnn() → carga CNN global (SOBRESCRIBE CNN local con promediado)
+2. _sync_cnn() → carga CNN global (SOBRESCRIBE CNN local)
 3. FOR accum_steps batches:
-   a. Forward E2E: X → CNN (descongela, require_grad=True) → MLP
-   b. Backward: ∇L calculado para CNN (120+ capas) + MLP (2-3 capas)
+   a. Forward: X → CNN (resnet18: congelada/requires_grad=False, simple: entrenable/requires_grad=True) → MLP
+   b. Backward: ∇L calculado para MLP (2-3 capas) + CNN gradientes si simple
+      (resnet18: sin backprop en CNN, simple: backprop completo en CNN 120+ capas)
    c. SGD local: 
-      θ_cnn_local -= lr · ∇L_cnn  (cambios locales ephemeral)
-      θ_mlp_local -= lr · ∇L_mlp  (cambios locales ephemeral)
-   d. CNN se vuelve a congelar (requires_grad=False)
-4. UPDATES → envía (θ_cnn_local, θ_mlp_local) al PS
+      θ_mlp_local -= lr · ∇L_mlp  (siempre)
+      θ_cnn_local -= lr · ∇L_cnn  (solo si simple, cambios ephemeral)
+4. UPDATES → envía (θ_cnn_local si simple, θ_mlp_local) al PS
 5. PS PROMEDIA:
    Δθ = θ_local - θ_global
    θ_global_new = θ_global + α(s) · Δθ  donde α(s) = 1/(1+λ·s)
 
-CRÍTICO: CNN cambios locales NO PERSISTEN (se pierden en siguiente REQUEST_PARAMS)
-PERO: CNN GLOBAL entrena (PS promedia CNN de todos Workers) → Async-FedAvg en CNN
+CRÍTICO:
+- ResNet-18: CNN congelada, solo MLP se entrena localmente y se sincroniza
+- SimpleCNN: CNN + MLP cambios locales NO PERSISTEN (se pierden en siguiente REQUEST_PARAMS)
+  PERO CNN GLOBAL entrena via Async-FedAvg
 ```
 
 **Ventajas**:
-- ✅ Entrenamiento E2E completo (CNN y MLP actualizadas en cada Worker)
+- ✅ SimpleCNN: Entrenamiento E2E completo (CNN + MLP actualizadas en cada Worker)
+- ✅ ResNet-18: Transfer learning eficiente (solo MLP se entrena, CNN fija)
 - ✅ No hay barrera de sincronización global
 - ✅ Tolerancia a heterogeneidad (Workers rápidos/lentos)
 - ✅ Escalabilidad lineal con número de Workers
 - ✅ Mejor utilización de red (parámetros enviados asincronamente sin bloqueo)
 
 **Desventajas**:
-- ⚠️ **Convergencia lenta para E2E completo**: SGD puro (sin momentum) + resincronización de pesos en cada step
-- ⚠️ **Ruido en gradientes CNN**: 120+ capas ResNet-18 generan gradientes ruidosos sin adaptación por parámetro
+- ⚠️ **Convergencia lenta para SimpleCNN E2E**: SGD puro (sin momentum) + resincronización de pesos en cada step
 - ⚠️ **SimpleCNN sin pretrain**: Features iniciales aleatorias → primero centenares de batches con ruido puro
+- ⚠️ **ResNet-18 convergencia limitada**: CNN congelada restringe adaptación de features
 
 ## Componentes Principales
 
@@ -60,7 +63,7 @@ PERO: CNN GLOBAL entrena (PS promedia CNN de todos Workers) → Async-FedAvg en 
 |---|---|---|
 | **Parameter Server (PS)** | Almacena y actualiza parámetros MLP globales | `Distributed/parameter_server.py` |
 | **Worker** | Entrena MLP localmente y envía parámetros actualizados | `Distributed/worker_node.py` |
-| **CNN Extractor** | ResNet-18 preentrenada O SimpleCNN (ambas entrenables E2E) | `Model/cnn_extractor.py` |
+| **CNN Extractor** | ResNet-18 preentrenada (congelada) O SimpleCNN (entrenable E2E) | `Model/cnn_extractor.py` |
 | **MLP Classifier** | Clasificador con 2-3 capas entrenables | `Model/mlp_pytorch.py` |
 | **Streaming Pipeline** | Descarga y prepara batches desde HuggingFace | `Utils/imagenet_streaming.py` |
 | **GUI** | Interfaz gráfica para control y monitoreo | `ps_gui_imagenet.py` |
@@ -101,7 +104,7 @@ PERO: CNN GLOBAL entrena (PS promedia CNN de todos Workers) → Async-FedAvg en 
 
 ### Implementado
 - ✅ Transfer Learning con fine-tuning distribuido asincrónico (Async-FedAvg)
-- ✅ CNN distribuidamente entrenada (ResNet-18 preentrenada o SimpleCNN) - se actualiza globalmente via Async-FedAvg
+- ✅ CNN parcialmente entrenable (SimpleCNN se actualiza localmente y globalmente via Async-FedAvg, ResNet-18 congelada)
 - ✅ MLP entrenables (2-3 capas) - único componente con gradientes
 - ✅ Comunicación PS ↔ Workers vía TCP/IP
 - ✅ Streaming de datos desde HuggingFace (no descarga completa)
@@ -115,8 +118,8 @@ PERO: CNN GLOBAL entrena (PS promedia CNN de todos Workers) → Async-FedAvg en 
 - ✅ Logging estructurado con colores
 
 ### Por Diseño (No en Roadmap)
-- ℹ️ E2E training de CNN + MLP ambos entrenables localmente y sincronizados globalmente
 - ℹ️ Sincronización global entre Workers (Sync-FedAvg) - arquitectura asincrónica por diseño
+- ℹ️ E2E training de CNN + MLP solo para SimpleCNN (ResNet-18 es MLP-only por diseño)
 
 ### No Implementado
 - ❌ Compresión de parámetros / Cuantización
@@ -133,7 +136,7 @@ PERO: CNN GLOBAL entrena (PS promedia CNN de todos Workers) → Async-FedAvg en 
 
 2. **No hay recuperación ante fallos**: Si un Worker se desconecta, los parámetros MLP locales se pierden (sin persistencia)
 
-3. **CNN se entrena globalmente**: La CNN se recibe del PS (promediada), se entrena localmente durante accum_steps, se envía al PS, PS la promedia, se recibe nuevamente (ciclo REQUEST_PARAMS)
+3. **SimpleCNN se entrena globalmente (solo si se usa SimpleCNN)**: La CNN se recibe del PS (promediada), se entrena localmente durante accum_steps, se envía al PS, PS la promedia, se recibe nuevamente (ciclo REQUEST_PARAMS). ResNet-18 permanece congelada permanentemente (no se entrena ni globalmente ni localmente).
 
 4. **Inicialización del MLP por Worker**: Si el PS no inicializa el MLP antes de que un Worker se conecte, el Worker crea una versión por defecto (puede causar desincronización)
 

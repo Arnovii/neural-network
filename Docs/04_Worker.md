@@ -65,7 +65,7 @@ def _init_stream(self) -> None:
         image_size=self.image_size,
         shuffle_buffer=self.shuffle_buffer,
         prefetch_batches=self.prefetch_batches,
-        seed=42 + self.worker_rank,
+        seed=(self.seed + self.worker_rank) if self.seed is not None else None,
         hf_token=self.hf_token,
     )
     self._stream.start()  # ← Inicia hilo background de prefetch
@@ -233,10 +233,10 @@ def _train_batch(self, X_np, Y_np, lr) -> Tuple[float, float, int]:
     # Preparar para gradientes
     self._cnn._model.train()
     for p in self._cnn._model.parameters():
-        p.requires_grad_(True)
+        p.requires_grad_(True)  # Solo para SimpleCNN, ResNet-18 permanece False
     self._mlp.train()
 
-    # Forward E2E
+    # Forward: SimpleCNN entrenable, ResNet-18 congelada
     self._cnn._model.zero_grad()
     self._mlp.zero_grad()
     
@@ -248,10 +248,12 @@ def _train_batch(self, X_np, Y_np, lr) -> Tuple[float, float, int]:
     loss.backward()
 
     # SGD local (sin momentum, sin wd)
+    # SimpleCNN: CNN gradientes se propagan, se SGD
+    # ResNet-18: CNN congelada, sin gradientes
     with torch.no_grad():
         for p in self._cnn._model.parameters():
             if p.grad is not None:
-                p.data -= lr * p.grad  # SGD en CNN descongela temporal (cambios no persisten)
+                p.data -= lr * p.grad  # Cambios no persisten (cambios locales descartan en REQUEST_PARAMS)
         for p in self._mlp.parameters():
             if p.grad is not None:
                 p.data -= lr * p.grad

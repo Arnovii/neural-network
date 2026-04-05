@@ -1,14 +1,17 @@
 """
 Distributed — Entrenamiento distribuido asíncrono con Parameter Server.
 
-Implementa un sistema de entrenamiento distribuido end-to-end (E2E) sobre ImageNet-1k
-donde múltiples Workers entrenan modelos de forma asíncrona sin sincronización.
+Implementa un sistema de entrenamiento distribuido sobre ImageNet-1k donde múltiples
+Workers entrenan modelos de forma asíncrona sin sincronización. Soporta DOS modos:
+
+  1. **SimpleCNN E2E**: CNN + MLP entrenables (ambas redes reciben gradientes locales)
+  2. **ResNet-18 MLP-only**: CNN congelada (solo MLP se entrena, CNN es extractor fijo)
 
 ARQUITECTURA
 ============
 
 **Parameter Server (PS)**:
-  - Coordinador central que mantiene el estado global (CNN + MLP).
+  - Coordinador central que mantiene el estado global (CNN + MLP en ambos modos).
   - No bloqueante: cada Worker recibe parámetros, entrena, y envía actualizaciones.
   - Aplica FedAvg asíncrono con corrección de staleness (λ-factor).
   - Soporta evaluación periódica en validación y exportación de historiales.
@@ -16,12 +19,15 @@ ARQUITECTURA
 **Workers**:
   - Nodos computacionales independientes que corren streaming de ImageNet-1k.
   - Loop autónomo: REQUEST_PARAMS → TRAIN → UPDATES, sin barreras entre Workers.
+  - SimpleCNN: Entrena ambas redes (CNN + MLP backprop habilitado)
+  - ResNet-18: Entrena solo MLP (CNN congelada con requires_grad=False)
   - Soportan gradient accumulation (accum_steps) para reducir overhead de comunicación.
   - Pueden ejecutarse en CPU o GPU (CUDA/MPS).
 
 **Protocol**:
   - Mensajes Pickle sobre TCP con garantía de integridad (4-byte length prefix).
   - Serialización nativa de state_dict PyTorch (Dict[str, np.ndarray]).
+  - Sincroniza estado de CNN completo aunque solo MLP de ResNet-18 reciba updates.
   - Mensajes: READY, WORKER_ID, CNN_WEIGHTS, CNN_ACK, START, REQUEST_PARAMS,
     PARAMS, UPDATES, STOP.
 

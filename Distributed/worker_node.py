@@ -127,15 +127,33 @@ class WorkerNode:
     # ================================================================
 
     def _connect(self) -> None:
+        """
+        Establece conexión TCP con Parameter Server y realiza handshake inicial.
+
+        Secuencia de handshake (según protocol.py):
+        1. Envía READY → PS asigna Worker_ID único
+        2. Recibe WORKER_ID → guarda self._worker_id
+        3. Recibe CONFIG → obtiene batch_size, image_size
+
+        Si PS no responde en tiempo, lanza ConnectionError.
+        Si mensajes fuera de formato, lanza ConnectionError con tipo recibido.
+
+        :returns: None (modifica self._sock, self._worker_id, self.batch_size, self.image_size)
+        :rtype: None
+
+        :raises ConnectionError: Si falla conexión TCP o secuencia READY/WORKER_ID/CONFIG inválida
+        """
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._sock.connect((self.server_host, self.server_port))
         send_message(self._sock, MsgType.READY, {})
 
+        # Recibe WORKER_ID
         msg = receive_message(self._sock)
         if msg["type"] != MsgType.WORKER_ID:
             raise ConnectionError(f"Esperaba WORKER_ID, recibí {msg['type']}")
         self._worker_id = msg["payload"]["worker_id"]
 
+        # Recibir CONFIG (batch_size, image_size desde PS)
         msg = receive_message(self._sock)
         if msg["type"] != MsgType.CONFIG:
             raise ConnectionError(f"Esperaba CONFIG, recibí {msg['type']}")
@@ -164,6 +182,9 @@ class WorkerNode:
     # ================================================================
 
     def _init_stream(self) -> None:
+        """Construye el pipeline de streaming con prefetching en background."""
+
+        # Garantiza que el batch_size e image_size fueron recibidos en CONFIG
         assert self.batch_size is not None, "batch_size debe ser configurado por CONFIG"
         assert self.image_size is not None, "image_size debe ser configurado por CONFIG"
 
@@ -189,6 +210,13 @@ class WorkerNode:
     # ================================================================
 
     def _handshake_loop(self) -> None:
+        """
+        Espera CNN_WEIGHTS del PS, confirma con CNN_ACK,
+        espera START y entra en el loop de entrenamiento.
+
+        El PS solo envía CNN_WEIGHTS cuando tiene CNN+MLP configurados,
+        por lo que no hay race condition en este lado.
+        """
         assert self._sock is not None
 
         while True:
@@ -240,6 +268,7 @@ class WorkerNode:
         # load_weights_from_bytes → load_state_dict → NO modifica requires_grad
         self._cnn.load_weights_from_bytes(weights_bytes)
 
+        # Verifica que el número de parámetros coincide
         actual_keys = len(self._cnn._model.state_dict())
         if cnn_key_count > 0 and actual_keys != cnn_key_count:
             raise RuntimeError(
@@ -247,6 +276,7 @@ class WorkerNode:
                 f"PS={cnn_key_count}, Worker={actual_keys}"
             )
 
+        # Verifica que las claves MLP son las esperadas
         expected_mlp = {
             "fc1.weight",
             "fc1.bias",
@@ -282,7 +312,17 @@ class WorkerNode:
     # ================================================================
 
     def _training_loop(self) -> None:
-        """Loop: REQUEST_PARAMS → sincronizar → entrenar → UPDATES."""
+        """
+        Loop continuo: REQUEST_PARAMS → sincronizar → entrenar → UPDATES.
+
+        Sin barrera con otros Workers. El PS aplica las actualizaciones
+        inmediatamente al recibirlas.
+
+        Precondiciones (garantizadas por _handshake_loop):
+          - self._cnn fue cargado y verificado
+          - self._stream fue iniciado
+          - self._sock está activo
+        """
         if self._cnn is None:
             raise RuntimeError(
                 f"[W{self._worker_id}] _training_loop sin CNN inicializada."
@@ -303,7 +343,7 @@ class WorkerNode:
         first_params_logged = False
 
         while True:
-            # ── 1. Pedir parámetros globales ──
+            # ----------------- 1. Pedir parámetros globales -----------------
             try:
                 send_message(self._sock, MsgType.REQUEST_PARAMS, {})
                 msg = receive_message(self._sock)
@@ -336,14 +376,15 @@ class WorkerNode:
                 )
                 first_params_logged = True
 
-            # ── 2. Sincronizar estado global del PS ──
+            # ----------------- 2. Sincronizar estado global del PS -----------------
+
             # _sync_cnn usa load_state_dict → no modifica requires_grad
             # El estado correcto (False para resnet18, True para simple)
             # se mantiene intacto tras cada sincronización.
             self._sync_cnn(cnn_state)
             self._mlp = self._sync_mlp(mlp_state, self._mlp)
 
-            # ── 3. Entrenar accum_steps batches ──
+            # ----------------- 3. Entrenar accum_steps batches -----------------
             total_loss, total_acc, total_n = 0.0, 0.0, 0
 
             for _ in range(self.accum_steps):
@@ -372,7 +413,8 @@ class WorkerNode:
                     f"v={version_read} | q={self._stream.queue_size}"
                 )
 
-            # ── 4. Enviar actualizaciones al PS ──
+            # ----------------- 4. Enviar actualizaciones al PS -----------------
+            
             # cnn_weights=None si freeze → PS no actualiza la CNN global
             # cnn_weights=state_dict si E2E → PS aplica FedAvg sobre CNN
             try:
