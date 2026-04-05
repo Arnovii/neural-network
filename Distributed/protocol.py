@@ -46,7 +46,7 @@ from typing import Any, Dict
 class MsgType(str, Enum):
     READY = "READY"
     WORKER_ID = "WORKER_ID"
-    CONFIG = "CONFIG"  # PS → Worker: parámetros globales
+    CONFIG = "CONFIG"
     CNN_WEIGHTS = "CNN_WEIGHTS"
     CNN_ACK = "CNN_ACK"
     START = "START"
@@ -57,12 +57,28 @@ class MsgType(str, Enum):
 
 
 def send_message(sock: socket.socket, msg_type: MsgType, payload: Any) -> None:
-    """Serializa y envía un mensaje completo por TCP."""
+    """
+    Serializa y envía un mensaje completo por TCP.
+
+    :param sock: Socket TCP conectado (debe estar activo).
+    :type sock: socket.socket con estado ESTABLISHED.
+
+    :param msg_type: Tipo de mensaje (PARAMS, GRADIENTS, etc.).
+    :type msg_type: MsgType, ej. MsgType.GRADIENTS.
+
+    :param payload: Contenido del mensaje (dict, array, etc.).
+    :type payload: Any, típicamente Dict con datos numéricos.
+
+    :return: None (mensaje enviado completo).
+    :rtype: NoneType.
+
+    :raises ConnectionError: Si socket se cierra antes de enviar todo.
+    """
     body = pickle.dumps(
         {"type": msg_type, "payload": payload},
         protocol=pickle.HIGHEST_PROTOCOL,
     )
-    data = struct.pack(">I", len(body)) + body
+    data = struct.pack(">I", len(body)) + body  # Añade encabezado (big-endian)
     total = 0
     while total < len(data):
         sent = sock.send(data[total:])
@@ -104,6 +120,7 @@ def _recv_exact(sock: socket.socket, n: int) -> bytes:
 
     :param sock: Socket TCP conectado
     :type sock: socket.socket
+
     :param n: Número exacto de bytes a recibir
     :type n: int
 
@@ -113,8 +130,8 @@ def _recv_exact(sock: socket.socket, n: int) -> bytes:
     :raises ConnectionError: Si socket se cierra antes de recibir n bytes
     """
     buf = b""
-    while len(buf) < n:
-        chunk = sock.recv(n - len(buf))
+    while len(buf) < n:  # Sigue leyendo hasta tener n bytes
+        chunk = sock.recv(n - len(buf))  # Solo pide lo que falta
         if not chunk:
             raise ConnectionError(
                 f"Conexión cerrada: esperados {n} bytes, recibidos {len(buf)}"
