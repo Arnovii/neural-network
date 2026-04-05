@@ -1,26 +1,25 @@
 """
 Distributed/worker_node.py
 
-Worker asíncrono para entrenamiento distribuido E2E en ImageNet.
+Worker asíncrono para entrenamiento distribuido en ImageNet.
 
-DISEÑO:
-  - Streaming puro desde HuggingFace: nunca más de `prefetch_batches`
-    batches en RAM simultáneamente.
-  - Loop completamente autónomo: no espera a ningún otro Worker.
-  - Formato PyTorch state_dict nativo en todo el pipeline.
-  - Sin fallbacks silenciosos: cualquier inconsistencia lanza RuntimeError.
+MODOS DE ENTRENAMIENTO (determinados automáticamente por arquitectura CNN):
 
-FLUJO POR ITERACIÓN:
-    1. REQUEST_PARAMS  → PS responde con PARAMS
-    2. _sync_cnn()     → carga estado global CNN (BN running stats incluidos)
-    3. _sync_mlp()     → carga estado global MLP
-    4. _train_batch()  → forward E2E + backward + SGD local
-    5. UPDATES         → enviar pesos actualizados + métricas al PS
+  "resnet18" (freeze_cnn=True):
+    - CNN congelada desde CNNExtractor.__init__ (requires_grad=False permanente)
+    - forward con torch.no_grad() → features sin grad_fn → 0 overhead de memoria
+    - Solo el MLP recibe gradientes y se actualiza
+    - cnn_weights=None en UPDATES → PS no toca la CNN global
 
-LOGGING:
-  verbose=True imprime una línea cada 10 batches. Los logs de debug
-  por iteración/paso están desactivados por defecto para no degradar
-  el rendimiento de la GUI.
+  "simple" (freeze_cnn=False):
+    - CNN entrenable desde CNNExtractor.__init__ (requires_grad=True permanente)
+    - forward en train() → features con grad_fn → backward fluye por toda la red
+    - CNN y MLP se actualizan con SGD local
+    - cnn_weights enviado al PS → FedAvg sobre CNN global
+
+El modo se fija en _load_cnn() al recibir el arch del PS. No hay gestión
+manual de requires_grad en _train_batch: el estado es correcto desde la
+construcción de CNNExtractor y se preserva a través de load_state_dict().
 """
 
 import socket
@@ -43,7 +42,7 @@ _IMAGENET_CLASSES = 1000
 
 class WorkerNode:
     """
-    Worker asíncrono para entrenamiento E2E distribuido en ImageNet.
+    Worker asíncrono para entrenamiento distribuido en ImageNet.
 
     :param server_host:      IP del Parameter Server.
     :param server_port:      Puerto TCP.
@@ -53,13 +52,12 @@ class WorkerNode:
     :param device:           Dispositivo PyTorch ('cpu', 'cuda', 'cuda:0', 'mps').
     :param shuffle_buffer:   Imágenes en buffer de shuffle.
     :param prefetch_batches: Batches pre-cargados en background.
-    :param seed:             Semilla RNG (None = aleatorio). Se suma worker_rank para diversidad.
+    :param seed:             Semilla RNG (None = aleatorio).
     :param hf_token:         Token HuggingFace.
     :param accum_steps:      Batches a acumular antes de enviar UPDATES.
     :param verbose:          Imprimir progreso cada 10 batches.
 
-    NOTA: batch_size, hidden1, hidden2, image_size se reciben del PS
-          mediante CONFIG inmediatamente después de WORKER_ID.
+    NOTA: batch_size e image_size se reciben del PS mediante CONFIG.
     """
 
     def __init__(
@@ -90,10 +88,8 @@ class WorkerNode:
         self.accum_steps = accum_steps
         self.verbose = verbose
 
-        # Inicializados por CONFIG mensaje del PS
+        # Recibidos via CONFIG del PS
         self.batch_size: Optional[int] = None
-        self.hidden1: Optional[int] = None
-        self.hidden2: Optional[int] = None
         self.image_size: Optional[int] = None
 
         self._worker_id: Optional[int] = None
@@ -103,31 +99,17 @@ class WorkerNode:
         self._stream: Optional[PrefetchBuffer] = None
         self._batches_done = 0
 
+        # Determinado en _load_cnn() a partir del arch recibido del PS.
+        # Refleja directamente el estado de requires_grad en CNNExtractor:
+        #   resnet18 → True  (CNN siempre congelada)
+        #   simple   → False (CNN siempre entrenable)
+        self._freeze_cnn: bool = True
+
     # ================================================================
     # PUNTO DE ENTRADA
     # ================================================================
 
     def run(self) -> None:
-        """
-        Punto de entrada principal del Worker: conecta, entrena, y se limpia.
-
-        Thread-safe para múltiples Workers en paralelo. Ejecuta loop autónomo
-        de entrenamiento hasta que PS envíe STOP o se produzca error fatal.
-
-        Pasos:
-        -----
-        1. _connect(): Establece TCP con PS, recibe WORKER_ID y CONFIG
-        2. _init_stream(): Construye pipeline de descarga/prefetch desde HF
-        3. _handshake_loop(): Espera CNN_WEIGHTS, confirma, espera START
-        4. _training_loop(): Loop infinito de entrenamiento (REQUEST_PARAMS → sync → train → UPDATES)
-        5. Limpieza automática en finally block (close sockets, stop streams)
-
-        :returns: None (ejecutor directo, llamar desde main)
-        :rtype: None
-
-        :raises ConnectionError: Si no puede conectar al PS
-        :raises RuntimeError: Si hay inconsistencia en CNN/MLP/CONFIG recibido
-        """
         self._connect()
         self._log(
             f"Conectado | rank={self.worker_rank}/{self.num_workers} | "
@@ -145,33 +127,15 @@ class WorkerNode:
     # ================================================================
 
     def _connect(self) -> None:
-        """
-        Establece conexión TCP con Parameter Server y realiza handshake inicial.
-
-        Secuencia de handshake (según protocol.py):
-        1. Envía READY → PS asigna Worker_ID único
-        2. Recibe WORKER_ID → guarda self._worker_id
-        3. Recibe CONFIG → obtiene batch_size, image_size
-
-        Si PS no responde en tiempo, lanza ConnectionError.
-        Si mensajes fuera de formato, lanza ConnectionError con tipo recibido.
-
-        :returns: None (modifica self._sock, self._worker_id, self.batch_size, self.image_size)
-        :rtype: None
-
-        :raises ConnectionError: Si falla conexión TCP o secuencia READY/WORKER_ID/CONFIG inválida
-        """
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._sock.connect((self.server_host, self.server_port))
         send_message(self._sock, MsgType.READY, {})
 
-        # Recibir WORKER_ID
         msg = receive_message(self._sock)
         if msg["type"] != MsgType.WORKER_ID:
             raise ConnectionError(f"Esperaba WORKER_ID, recibí {msg['type']}")
         self._worker_id = msg["payload"]["worker_id"]
 
-        # Recibir CONFIG (batch_size, image_size desde PS)
         msg = receive_message(self._sock)
         if msg["type"] != MsgType.CONFIG:
             raise ConnectionError(f"Esperaba CONFIG, recibí {msg['type']}")
@@ -200,8 +164,6 @@ class WorkerNode:
     # ================================================================
 
     def _init_stream(self) -> None:
-        """Construye el pipeline de streaming con prefetching en background."""
-        # Garantizar que batch_size e image_size fueron recibidos en CONFIG
         assert self.batch_size is not None, "batch_size debe ser configurado por CONFIG"
         assert self.image_size is not None, "image_size debe ser configurado por CONFIG"
 
@@ -227,13 +189,6 @@ class WorkerNode:
     # ================================================================
 
     def _handshake_loop(self) -> None:
-        """
-        Espera CNN_WEIGHTS del PS, confirma con CNN_ACK,
-        espera START y entra en el loop de entrenamiento.
-
-        El PS solo envía CNN_WEIGHTS cuando tiene CNN+MLP configurados,
-        por lo que no hay race condition en este lado.
-        """
         assert self._sock is not None
 
         while True:
@@ -243,10 +198,8 @@ class WorkerNode:
             if t == MsgType.STOP:
                 self._log("STOP recibido durante handshake.")
                 return
-
             elif t == MsgType.CNN_WEIGHTS:
                 self._load_cnn(msg["payload"])
-
             elif t == MsgType.START:
                 self._log("START recibido — iniciando loop de entrenamiento.")
                 self._training_loop()
@@ -254,10 +207,15 @@ class WorkerNode:
 
     def _load_cnn(self, payload: dict) -> None:
         """
-        Carga la CNN enviada por el PS y verifica su integridad.
+        Carga la CNN recibida del PS y fija el modo de entrenamiento.
 
-        Envía CNN_ACK con la arquitectura confirmada para que el PS
-        pueda detectar cualquier inconsistencia.
+        CNNExtractor se instancia con el arch correcto, lo que establece
+        requires_grad de forma permanente y coherente con la semántica:
+          - resnet18 → requires_grad=False en todos los parámetros
+          - simple   → requires_grad=True  en todos los parámetros
+
+        load_weights_from_bytes usa load_state_dict, que no modifica
+        requires_grad, así que el estado se preserva tras cargar los pesos.
         """
         arch = payload["arch"]
         weights_bytes = payload["weights_bytes"]
@@ -270,14 +228,18 @@ class WorkerNode:
                 "Valores válidos: 'simple', 'resnet18'."
             )
 
+        # freeze_cnn refleja el estado permanente de requires_grad en CNNExtractor
+        self._freeze_cnn = arch == "resnet18"
+
         if self._cnn is None or self._cnn.arch != arch:
             self._log(f"Instanciando CNN arch={arch} en {self.device}")
+            # CNNExtractor.__init__ establece requires_grad según arch:
+            #   resnet18 → False (congelada), simple → True (entrenable)
             self._cnn = CNNExtractor(arch=arch, device=str(self.device), seed=self.seed)
 
+        # load_weights_from_bytes → load_state_dict → NO modifica requires_grad
         self._cnn.load_weights_from_bytes(weights_bytes)
-        self._cnn._model.eval()
 
-        # Verificar que el número de parámetros coincide
         actual_keys = len(self._cnn._model.state_dict())
         if cnn_key_count > 0 and actual_keys != cnn_key_count:
             raise RuntimeError(
@@ -285,7 +247,6 @@ class WorkerNode:
                 f"PS={cnn_key_count}, Worker={actual_keys}"
             )
 
-        # Verificar que las claves MLP son las esperadas
         expected_mlp = {
             "fc1.weight",
             "fc1.bias",
@@ -296,13 +257,13 @@ class WorkerNode:
         }
         if mlp_keys and set(mlp_keys) != expected_mlp:
             raise RuntimeError(
-                f"[W{self._worker_id}] MLP keys inesperadas del PS: {set(mlp_keys)}. "
-                f"Esperadas: {expected_mlp}"
+                f"[W{self._worker_id}] MLP keys inesperadas del PS: {set(mlp_keys)}."
             )
 
+        mode = "freeze (solo MLP)" if self._freeze_cnn else "E2E (CNN + MLP)"
         self._log(
             f"CNN cargada ✓ arch={arch} | feature_dim={self._cnn.feature_dim} | "
-            f"cnn_params={actual_keys}"
+            f"params={actual_keys} | modo={mode}"
         )
 
         assert self._sock is not None
@@ -321,21 +282,10 @@ class WorkerNode:
     # ================================================================
 
     def _training_loop(self) -> None:
-        """
-        Loop continuo: REQUEST_PARAMS → sincronizar → entrenar → UPDATES.
-
-        Sin barrera con otros Workers. El PS aplica las actualizaciones
-        inmediatamente al recibirlas.
-
-        Precondiciones (garantizadas por _handshake_loop):
-          - self._cnn fue cargado y verificado
-          - self._stream fue iniciado
-          - self._sock está activo
-        """
+        """Loop: REQUEST_PARAMS → sincronizar → entrenar → UPDATES."""
         if self._cnn is None:
             raise RuntimeError(
-                f"[W{self._worker_id}] _training_loop sin CNN inicializada. "
-                "El PS debe enviar CNN_WEIGHTS antes de START."
+                f"[W{self._worker_id}] _training_loop sin CNN inicializada."
             )
 
         assert self._sock is not None
@@ -343,8 +293,9 @@ class WorkerNode:
         assert self._stream is not None
 
         self._log(
-            f"Entrenamiento E2E | arch={self._cnn.arch} | "
-            f"feature_dim={self._cnn.feature_dim} | device={self.device}"
+            f"Entrenamiento | arch={self._cnn.arch} | "
+            f"feature_dim={self._cnn.feature_dim} | device={self.device} | "
+            f"freeze_cnn={self._freeze_cnn}"
         )
 
         stream_iter = self._stream.__iter__()
@@ -372,27 +323,23 @@ class WorkerNode:
             version_read = payload["version"]
             lr = payload["lr"]
 
-            # Validar que el PS tiene parámetros configurados
             if not mlp_state:
-                raise RuntimeError(
-                    f"[W{self._worker_id}] PS devolvió mlp_state vacío. "
-                    "Verifica que ps.set_mlp() fue llamado antes de ps.listen()."
-                )
+                raise RuntimeError(f"[W{self._worker_id}] PS devolvió mlp_state vacío.")
             if not cnn_state:
-                raise RuntimeError(
-                    f"[W{self._worker_id}] PS devolvió cnn_state vacío. "
-                    "Verifica que ps.set_cnn() fue llamado antes de ps.listen()."
-                )
+                raise RuntimeError(f"[W{self._worker_id}] PS devolvió cnn_state vacío.")
 
             if not first_params_logged:
                 fc1_shape = mlp_state.get("fc1.weight", np.array([])).shape
                 self._log(
-                    f"Primer PARAMS recibido — v={version_read} | lr={lr} | "
+                    f"Primer PARAMS — v={version_read} | lr={lr} | "
                     f"mlp fc1.weight={fc1_shape} | cnn_params={len(cnn_state)}"
                 )
                 first_params_logged = True
 
-            # ── 2. Sincronizar estado global ──
+            # ── 2. Sincronizar estado global del PS ──
+            # _sync_cnn usa load_state_dict → no modifica requires_grad
+            # El estado correcto (False para resnet18, True para simple)
+            # se mantiene intacto tras cada sincronización.
             self._sync_cnn(cnn_state)
             self._mlp = self._sync_mlp(mlp_state, self._mlp)
 
@@ -426,6 +373,8 @@ class WorkerNode:
                 )
 
             # ── 4. Enviar actualizaciones al PS ──
+            # cnn_weights=None si freeze → PS no actualiza la CNN global
+            # cnn_weights=state_dict si E2E → PS aplica FedAvg sobre CNN
             try:
                 send_message(
                     self._sock,
@@ -436,7 +385,9 @@ class WorkerNode:
                         "batch_size": total_n,
                         "version_read": version_read,
                         "mlp_weights": self._serialize_mlp(),
-                        "cnn_weights": self._serialize_cnn(),
+                        "cnn_weights": None
+                        if self._freeze_cnn
+                        else self._serialize_cnn(),
                     },
                 )
             except Exception as e:
@@ -451,9 +402,22 @@ class WorkerNode:
         self, X_np: np.ndarray, Y_np: np.ndarray, lr: float
     ) -> Tuple[float, float, int]:
         """
-        Paso E2E completo: imagen → CNN → features → MLP → loss → backward.
+        Paso de entrenamiento. El comportamiento depende de self._freeze_cnn,
+        que a su vez refleja el estado permanente de requires_grad en la CNN:
 
-        :return: (loss, accuracy_pct, n_samples)
+        Modo freeze (resnet18, requires_grad=False permanente):
+          - torch.no_grad() en el forward CNN: sin grafo, sin memoria de activaciones
+          - features sin grad_fn: backward del MLP no puede atravesarlas hacia la CNN
+          - Solo MLP recibe gradientes y se actualiza
+
+        Modo E2E (simple, requires_grad=True permanente):
+          - CNN en train(): BN actualiza running stats durante entrenamiento
+          - forward con grafo: features tienen grad_fn
+          - backward fluye por MLP y CNN
+          - Ambos se actualizan con SGD local
+
+        No hay llamadas a requires_grad_(True/False) aquí: el estado es
+        correcto desde CNNExtractor.__init__ y se preserva en load_state_dict.
         """
         assert self._cnn is not None
         assert self._mlp is not None
@@ -461,27 +425,50 @@ class WorkerNode:
         X = torch.from_numpy(X_np).to(self.device)
         Y = torch.from_numpy(Y_np.astype(np.int64)).to(self.device)
 
-        self._cnn._model.train()
-        for p in self._cnn._model.parameters():
-            p.requires_grad_(True)
-        self._mlp.train()
+        if self._freeze_cnn:
+            # ── Modo resnet18: CNN fija ──
+            # requires_grad=False ya establecido en CNNExtractor.__init__
+            # torch.no_grad() añade una garantía explícita + ahorra memoria
+            self._cnn._model.eval()
+            with torch.no_grad():
+                features = self._cnn._model(X)
 
-        self._cnn._model.zero_grad()
-        self._mlp.zero_grad()
+            self._mlp.train()
+            self._mlp.zero_grad()
+            logits = self._mlp(features)
+            loss_t = nn.functional.cross_entropy(logits, Y)
+            loss_t.backward()
 
-        features = self._cnn._model(X)  # (N, feature_dim)
-        logits = self._mlp(features)  # (N, 1000)
-        loss_t = nn.functional.cross_entropy(logits, Y)
+            with torch.no_grad():
+                for p in self._mlp.parameters():
+                    if p.grad is not None:
+                        p.data -= lr * p.grad
 
-        loss_t.backward()
+        else:
+            # ── Modo simple: E2E ──
+            # requires_grad=True ya establecido en CNNExtractor.__init__
+            # train() necesario para que BN actualice running_mean/running_var
+            self._cnn._model.train()
+            self._mlp.train()
 
-        with torch.no_grad():
-            for p in self._cnn._model.parameters():
-                if p.grad is not None:
-                    p.data -= lr * p.grad
-            for p in self._mlp.parameters():
-                if p.grad is not None:
-                    p.data -= lr * p.grad
+            self._cnn._model.zero_grad()
+            self._mlp.zero_grad()
+
+            features = self._cnn._model(X)  # grad_fn presente
+            logits = self._mlp(features)
+            loss_t = nn.functional.cross_entropy(logits, Y)
+            loss_t.backward()  # gradientes en CNN + MLP
+
+            with torch.no_grad():
+                for p in self._cnn._model.parameters():
+                    if p.grad is not None:
+                        p.data -= lr * p.grad
+                for p in self._mlp.parameters():
+                    if p.grad is not None:
+                        p.data -= lr * p.grad
+
+            # eval() tras el step: BN usa running stats en inferencia/sync
+            self._cnn._model.eval()
 
         with torch.no_grad():
             correct = (logits.argmax(1) == Y).sum().item()
@@ -489,10 +476,6 @@ class WorkerNode:
         n = len(Y_np)
         loss_val = loss_t.item()
         acc_val = 100.0 * correct / n
-
-        self._cnn._model.eval()
-        for p in self._cnn._model.parameters():
-            p.requires_grad_(False)
 
         del X, Y, features, logits, loss_t
         return loss_val, acc_val, n
@@ -503,8 +486,12 @@ class WorkerNode:
 
     def _sync_cnn(self, cnn_state: Dict[str, np.ndarray]) -> None:
         """
-        Carga estado global CNN (state_dict completo, BN buffers incluidos).
-        Pone la CNN en eval() tras la carga para usar running stats de BN.
+        Carga el estado global de la CNN desde el PS.
+
+        load_state_dict copia valores de tensores pero NO modifica requires_grad.
+        El estado correcto establecido en CNNExtractor.__init__ se preserva:
+          - resnet18: sigue en requires_grad=False tras cada sync
+          - simple:   sigue en requires_grad=True  tras cada sync
         """
         assert self._cnn is not None
         base = getattr(self._cnn._model, "model", self._cnn._model)
@@ -525,16 +512,14 @@ class WorkerNode:
         existing: Optional[MLPPyTorch],
     ) -> MLPPyTorch:
         """
-        Carga estado global MLP (PyTorch state_dict nativo).
+        Carga el estado global del MLP desde el PS.
 
-        Si `existing` ya existe, reutiliza el objeto para evitar el
-        overhead de construir un nn.Module en cada iteración.
+        Reutiliza el objeto si ya existe para evitar reconstruir nn.Module.
         """
         if existing is None:
             if "fc1.weight" not in mlp_state:
                 raise RuntimeError(
-                    f"[W{self._worker_id}] mlp_state no contiene fc1.weight. "
-                    "El PS no tiene MLP configurado."
+                    f"[W{self._worker_id}] mlp_state no contiene fc1.weight."
                 )
             feature_dim = mlp_state["fc1.weight"].shape[1]
             hidden1 = mlp_state["fc1.weight"].shape[0]
@@ -543,8 +528,7 @@ class WorkerNode:
                 self.device
             )
             self._log(
-                f"MLP creado desde PS state_dict: "
-                f"{feature_dim}→{hidden1}→{hidden2}→{_IMAGENET_CLASSES}"
+                f"MLP creado desde PS: {feature_dim}→{hidden1}→{hidden2}→{_IMAGENET_CLASSES}"
             )
 
         with torch.no_grad():
@@ -558,7 +542,7 @@ class WorkerNode:
     # ================================================================
 
     def _serialize_cnn(self) -> Dict[str, np.ndarray]:
-        """State_dict completo de la CNN para transporte TCP."""
+        """State_dict completo de la CNN (solo llamado en modo E2E)."""
         assert self._cnn is not None
         base = getattr(self._cnn._model, "model", self._cnn._model)
         return {

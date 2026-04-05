@@ -15,12 +15,13 @@ OPCIONES:
     --hidden1           Neuronas capa oculta 1 del MLP         (default: 1024)
     --hidden2           Neuronas capa oculta 2 del MLP         (default: 512)
     --batch-size        Batch size (enviado a todos Workers)   (default: 64)
-    --image-size        Resolución imágenes (enviado a Workers) (default: 224)
+    --image-size        Resolución imágenes (enviado a Workers)(default: 224)
     --cnn-arch          resnet18 | simple                      (default: resnet18)
-    --seed              Semilla RNG (None = aleatorio)         (default: None)
+    --seed              Semilla RNG (default: None = aleatorio)
     --steps-per-report  Steps entre reportes de métricas       (default: 500)
     --max-steps         Detener tras N steps (0 = indefinido)  (default: 0)
     --metrics-window    Tamaño ventana deslizante de métricas  (default: 200)
+    --hf-token          Token HuggingFace (o usar HF_TOKEN env)
 
 EJEMPLO — 2 Workers, parar tras 50k steps:
     python ps_imagenet.py --wait-workers 2 --max-steps 50000
@@ -71,14 +72,19 @@ def main() -> None:
     parser.add_argument(
         "--cnn-arch", type=str, default="resnet18", choices=["resnet18", "simple"]
     )
-    parser.add_argument(
-        "--seed", type=int, default=None, help="Semilla RNG (None = aleatorio)"
-    )
+    parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--steps-per-report", type=int, default=500)
     parser.add_argument("--max-steps", type=int, default=0)
     parser.add_argument("--metrics-window", type=int, default=200)
+    parser.add_argument(
+        "--hf-token",
+        type=str,
+        default=None,
+        help="Token HuggingFace (alternativa: variable HF_TOKEN)",
+    )
     args = parser.parse_args()
 
+    # HF token: argumento CLI tiene prioridad sobre variable de entorno
     hf_token = args.hf_token or os.environ.get("HF_TOKEN")
 
     print("=" * 68)
@@ -90,11 +96,16 @@ def main() -> None:
     print(f"  MLP               : feature_dim → {args.hidden1} → {args.hidden2} → 1000")
     print(f"  Batch size        : {args.batch_size}  (enviado a Workers)")
     print(f"  Image size        : {args.image_size}  (enviado a Workers)")
-    print(f"  Semilla           : {args.seed or 'aleatorio'}")
+    print(
+        f"  Semilla           : {args.seed if args.seed is not None else 'aleatorio'}"
+    )
     print(f"  LR                : {args.lr}")
     print(f"  Staleness λ       : {args.staleness_lambda}")
     print(f"  Steps/reporte     : {args.steps_per_report}")
     print(f"  Max steps         : {args.max_steps or '∞'}")
+    print(
+        f"  HF Token          : {'✓ configurado' if hf_token else '✗ no configurado'}"
+    )
     print("=" * 68)
 
     # ── Evento de conexión ──
@@ -116,10 +127,9 @@ def main() -> None:
     def on_step(step, loss, acc, staleness):
         step_ts.append(time.perf_counter())
         if step % 50 == 0:
-            if len(step_ts) >= 2:
-                sps = len(step_ts) / (step_ts[-1] - step_ts[0])
-            else:
-                sps = 0.0
+            sps = (
+                len(step_ts) / (step_ts[-1] - step_ts[0]) if len(step_ts) >= 2 else 0.0
+            )
             print(
                 f"  step={step:6,d} | loss={loss:.4f} | acc={acc:.2f}% | "
                 f"staleness={staleness} | {sps:.1f} steps/s"
