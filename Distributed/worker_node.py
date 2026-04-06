@@ -190,10 +190,11 @@ class WorkerNode:
         :raises RuntimeError: Si hay inconsistencias en mensajes o estados recibidos.
         """
         self._connect()
-        self._log(
+        _log.worker_msg(
+            self._worker_id,
             f"Conectado | rank={self.worker_rank}/{self.num_workers} | "
             f"device={self.device} | batch={self.batch_size} | "
-            f"accum={self.accum_steps}"
+            f"accum={self.accum_steps}",
         )
         self._init_stream()
         try:
@@ -245,8 +246,9 @@ class WorkerNode:
         config = msg["payload"]
         self.batch_size = config["batch_size"]
         self.image_size = config["image_size"]
-        self._log(
-            f"CONFIG recibida: batch_size={self.batch_size}, image_size={self.image_size}"
+        _log.worker_msg(
+            self._worker_id,
+            f"CONFIG recibida: batch_size={self.batch_size}, image_size={self.image_size}",
         )
 
     def _cleanup(self) -> None:
@@ -272,7 +274,7 @@ class WorkerNode:
                 self._sock.close()
             except Exception:
                 pass
-        self._log("Recursos liberados.")
+        _log.worker_msg(self._worker_id, "Recursos liberados.")
 
     # ================================================================
     # STREAM DE DATOS
@@ -313,9 +315,10 @@ class WorkerNode:
             hf_token=self.hf_token,
         )
         self._stream.start()
-        self._log(
+        _log.worker_msg(
+            self._worker_id,
             f"Stream iniciado: {self.dataset_name} | "
-            f"shard {self.worker_rank}/{self.num_workers}"
+            f"shard {self.worker_rank}/{self.num_workers}",
         )
 
     # ================================================================
@@ -349,12 +352,14 @@ class WorkerNode:
             type_msg = msg["type"]
 
             if type_msg == MsgType.STOP:
-                self._log("STOP recibido durante handshake.")
+                _log.worker_msg(self._worker_id, "STOP recibido durante handshake.")
                 return
             elif type_msg == MsgType.CNN_WEIGHTS:
                 self._load_cnn(msg["payload"])
             elif type_msg == MsgType.START:
-                self._log("START recibido — iniciando loop de entrenamiento.")
+                _log.worker_msg(
+                    self._worker_id, "START recibido — iniciando loop de entrenamiento."
+                )
                 self._training_loop()
                 return
 
@@ -406,7 +411,9 @@ class WorkerNode:
 
         # Solo crea la CNN si no existe aún, o hubo un cambio de arquitectura
         if self._cnn is None or self._cnn.arch != arch:
-            self._log(f"Instanciando CNN arch={arch} en {self.device}")
+            _log.worker_msg(
+                self._worker_id, f"Instanciando CNN arch={arch} en {self.device}"
+            )
             # CNNExtractor.__init__ establece requires_grad según arch:
             #   resnet18 → False (congelada), simple → True (entrenable)
             self._cnn = CNNExtractor(arch=arch, device=str(self.device), seed=self.seed)
@@ -439,9 +446,10 @@ class WorkerNode:
             )
 
         mode = "freeze (solo MLP)" if self._freeze_cnn else "E2E (CNN + MLP)"
-        self._log(
+        _log.worker_msg(
+            self._worker_id,
             f"CNN cargada ✓ arch={arch} | feature_dim={self._cnn.feature_dim} | "
-            f"params={actual_keys} | modo={mode}"
+            f"params={actual_keys} | modo={mode}",
         )
 
         assert self._sock is not None
@@ -496,10 +504,11 @@ class WorkerNode:
         assert self._cnn is not None
         assert self._stream is not None
 
-        self._log(
+        _log.worker_msg(
+            self._worker_id,
             f"Entrenamiento | arch={self._cnn.arch} | "
             f"feature_dim={self._cnn.feature_dim} | device={self.device} | "
-            f"freeze_cnn={self._freeze_cnn}"
+            f"freeze_cnn={self._freeze_cnn}",
         )
 
         stream_iter = self._stream.__iter__()
@@ -512,13 +521,13 @@ class WorkerNode:
                 send_message(self._sock, MsgType.REQUEST_PARAMS, {})
                 msg = receive_message(self._sock)
             except Exception as e:
-                self._log(f"Error de comunicación: {e}")
+                _log.worker_msg(self._worker_id, f"Error de comunicación: {e}")
                 return
 
             if msg["type"] == MsgType.STOP:
                 return
             if msg["type"] != MsgType.PARAMS:
-                self._log(f"Mensaje inesperado: {msg['type']}")
+                _log.worker_msg(self._worker_id, f"Mensaje inesperado: {msg['type']}")
                 continue
 
             payload = msg["payload"]
@@ -534,9 +543,10 @@ class WorkerNode:
 
             if not first_params_logged:
                 fc1_shape = mlp_state.get("fc1.weight", np.array([])).shape
-                self._log(
+                _log.worker_msg(
+                    self._worker_id,
                     f"Primer PARAMS — v={version_read} | lr={lr} | "
-                    f"mlp fc1.weight={fc1_shape} | cnn_params={len(cnn_state)}"
+                    f"mlp fc1.weight={fc1_shape} | cnn_params={len(cnn_state)}",
                 )
                 first_params_logged = True
 
@@ -570,11 +580,12 @@ class WorkerNode:
             avg_acc = total_acc / total_n
             self._batches_done += self.accum_steps
 
-            if self.verbose and self._batches_done % 10 == 0:
-                self._log(
+            if self._batches_done % 10 == 0:
+                _log.worker_msg(
+                    self._worker_id,
                     f"batch={self._batches_done} | "
                     f"loss={avg_loss:.4f} | acc={avg_acc:.2f}% | "
-                    f"v={version_read} | q={self._stream.queue_size}"
+                    f"v={version_read} | q={self._stream.queue_size}",
                 )
 
             # ----------------- 4. Enviar actualizaciones al PS -----------------
@@ -597,7 +608,7 @@ class WorkerNode:
                     },
                 )
             except Exception as e:
-                self._log(f"Error enviando UPDATES: {e}")
+                _log.worker_msg(self._worker_id, f"Error enviando UPDATES: {e}")
                 return
 
     # ================================================================
@@ -796,8 +807,9 @@ class WorkerNode:
             existing = MLPPyTorch(feature_dim, hidden1, hidden2, _IMAGENET_CLASSES).to(
                 self.device
             )
-            self._log(
-                f"MLP creado desde PS: {feature_dim}→{hidden1}→{hidden2}→{_IMAGENET_CLASSES}"
+            _log.worker_msg(
+                self._worker_id,
+                f"MLP creado desde PS: {feature_dim}→{hidden1}→{hidden2}→{_IMAGENET_CLASSES}",
             )
 
         with torch.no_grad():
@@ -850,25 +862,3 @@ class WorkerNode:
             name: param.data.cpu().numpy().copy()
             for name, param in self._mlp.named_parameters()
         }
-
-    # ================================================================
-    # LOG
-    # ================================================================
-
-    def _log(self, msg: str) -> None:
-        """
-        Imprime mensaje de log con prefijo Worker ID si modo verbose está habilitado.
-
-        Formatea el mensaje como ``[Wid] msg`` donde ``id`` es el Worker ID asignado
-        por el PS, o '?' si aún no fue asignado. Garantiza que la salida se
-        sincroniza inmediatamente (flush=True) para logs en tiempo real.
-
-        :param msg: Mensaje a imprimir.
-        :type msg: str
-
-        :returns: None
-        :rtype: None
-        """
-        if self.verbose:
-            wid = self._worker_id if self._worker_id is not None else "?"
-            print(f"[W{wid}] {msg}", flush=True)

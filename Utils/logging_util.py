@@ -6,10 +6,10 @@ from typing import Optional
 class FormattedLogger:
     PHASES = {
         "ps": "PARAM SRV",
-        "worker": "WORKER   ",
+        "worker": "WORKER",
         "train": "TRAIN MLP",
-        "warn": "WARN     ",
-        "error": "ERROR    ",
+        "warn": "WARN",
+        "error": "ERROR",
     }
     COLORS = {
         "ps": "\033[94m",
@@ -125,6 +125,31 @@ class FormattedLogger:
         :rtype: None
         """
         self.log("worker", msg, progress, metric)
+
+    def worker_msg(self, worker_id, msg: str, progress=None, metric=None):
+        """
+        Registra mensaje con formateo de fase 'worker' incluido el Worker ID.
+
+        Agrega prefijo [Wid] al mensaje para identificación del Worker.
+
+        :param worker_id: ID del Worker (int o None para mostrar '?')
+        :type worker_id: Optional[int]
+
+        :param msg: Texto del mensaje.
+        :type msg: str
+
+        :param progress: Información de progreso opcional.
+        :type progress: Optional[str]
+
+        :param metric: Información de métrica opcional.
+        :type metric: Optional[str]
+
+        :returns: None
+        :rtype: None
+        """
+        wid = worker_id if worker_id is not None else "?"
+        full_msg = f"[W{wid}] {msg}"
+        self.log("worker", full_msg, progress, metric)
 
     def train(self, msg: str, progress=None, metric=None):
         """
