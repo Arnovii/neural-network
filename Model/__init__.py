@@ -84,7 +84,7 @@ FLUJO TÍPICO (SimpleCNN E2E)
 ============================
 
     # PS: Cargar CNN entrenable
-    cnn = CNNExtractor(arch='simple', pretrained=False)
+    cnn = CNNExtractor(arch='simple')
     cnn_bytes = cnn._get_weights_bytes()  # serializar para enviar a Workers
 
     # Worker: Recibir y entrenar CNN + MLP
@@ -105,7 +105,7 @@ FLUJO TÍPICO (ResNet-18 MLP-only)
 ==================================
 
     # PS: Cargar CNN congelada
-    cnn = CNNExtractor(arch='resnet18', pretrained=True)  # requires_grad=False
+    cnn = CNNExtractor(arch='resnet18')  # requires_grad=False
     cnn_bytes = cnn._get_weights_bytes()
 
     # Worker: Recibir y entrenar solo MLP

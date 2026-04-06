@@ -162,7 +162,6 @@ def main() -> None:
     print(f"\nCargando CNN {args.cnn_arch}...")
     cnn = CNNExtractor(
         arch=args.cnn_arch,
-        pretrained=(args.cnn_arch == "resnet18"),
         device="cpu",
         seed=args.seed,
     )

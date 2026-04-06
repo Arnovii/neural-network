@@ -121,7 +121,7 @@ FLUJO TÍPICO
     ps = ParameterServer(host='0.0.0.0', port=9999, ...)
     ps.listen()
 
-    cnn = CNNExtractor(arch='resnet18', pretrained=True)
+    cnn = CNNExtractor(arch='resnet18')
     ps.set_cnn(cnn)
 
     mlp = MLPPyTorch(feature_dim=512, hidden1=1024, hidden2=512, n_classes=1000)

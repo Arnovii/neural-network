@@ -4,8 +4,8 @@ Model/cnn_extractor.py
 Extractor CNN para ImageNet con PyTorch.
 
 ARQUITECTURAS:
-  "resnet18" → ResNet-18 con pesos ImageNet (recomendado).
-               Con pretrained=True: pesos IMAGENET1K_V1.
+  "resnet18" → ResNet-18 con pesos ImageNet (siempre preentrenada).
+               Carga IMAGENET1K_V1 weights automáticamente.
                feature_dim = 512. Sin capa de clasificación.
                Se construye CONGELADA (requires_grad=False, eval).
                Semántica: extractor de características fijo.
@@ -16,9 +16,8 @@ ARQUITECTURAS:
                Semántica: red entrenable desde cero en modo E2E.
 
 DIFERENCIA CLAVE VS VERSIÓN ANTERIOR:
-  El requires_grad se determina por arquitectura en __init__, no de forma
-  incondicional. Esto elimina la dependencia frágil de que _train_batch
-  recuerde activar gradientes en cada iteración para el modo 'simple'.
+  El requires_grad y preentrenamiento se determinan automáticamente por
+  arquitectura en __init__, sin parámetro `pretrained` ni dependencias frágiles.
 """
 
 from __future__ import annotations
@@ -136,10 +135,9 @@ class CNNExtractor:
     _train_batch pone 'simple' en train() antes del forward para actualizar
     las running stats de BatchNorm durante el entrenamiento.
 
-    :param arch:       'resnet18' o 'simple'.
-    :param pretrained: Si True, carga pesos ImageNet para resnet18.
-    :param device:     Dispositivo PyTorch ('cpu', 'cuda', 'mps').
-    :param seed:       Semilla de inicialización (solo afecta a 'simple').
+    :param arch:   'resnet18' o 'simple' (determina automáticamente pretrained + requires_grad).
+    :param device: Dispositivo PyTorch ('cpu', 'cuda', 'mps').
+    :param seed:   Semilla de inicialización (solo afecta a 'simple').
     """
 
     ARCHITECTURES = ("simple", "resnet18")
@@ -147,22 +145,22 @@ class CNNExtractor:
     def __init__(
         self,
         arch: str = "resnet18",
-        pretrained: bool = True,
         device: str = "cpu",
         seed: Optional[int] = 42,
     ) -> None:
         """
         Inicializa el extractor CNN para feature extraction desde ImageNet.
 
-        :param arch: Arquitectura CNN ('resnet18' preentrenado o 'simple' aleatorio).
-                     - 'resnet18': ResNet-18 con pesos IMAGENET1K_V1 si pretrained=True
-                     - 'simple': CNN de 3 bloques Conv2d sin pretrain (experimentación)
+        La comportamiento de preentrenamiento se determina automáticamente por arquitectura:
+        - 'resnet18': Carga pesos IMAGENET1K_V1, congelada permanentemente.
+        - 'simple': CNN de 3 bloques Conv2d sin pretrain, entrenable E2E.
+
+        :param arch: Arquitectura CNN ('resnet18' o 'simple').
+                     - 'resnet18': ResNet-18 con pesos ImageNet (congelada).
+                     - 'simple': CNN personalizada de 3 bloques (entrenable).
         :type arch: str
-        :param pretrained: Si True, carga pesos ImageNet para resnet18 (recomendado).
-                          Si False, inicializa con pesos aleatorios (convergencia más lenta).
-        :type pretrained: bool
         :param device: Dispositivo PyTorch ('cpu', 'cuda', 'cuda:0', 'mps').
-                      Modelos congelados: se copian a este device y se cargaán una sola vez.
+                      Modelos congelados: se copian a este device y se cargan una sola vez.
         :type device: str
         :param seed: Semilla RNG para PyTorch (solo afecta 'simple').
                     Si None, no se fija ningún seed.
@@ -174,13 +172,16 @@ class CNNExtractor:
             raise ValueError(f"arch debe ser {self.ARCHITECTURES}, recibido: {arch!r}")
 
         self.arch = arch
-        self.pretrained = pretrained
         self.seed = seed
         self.device = torch.device(device)
 
         if seed is not None:
             torch.manual_seed(seed)
 
+        # Determinar pretrained automáticamente por arquitectura:
+        # resnet18 → siempre con ImageNet weights (congelada)
+        # simple → sin preentrenamiento (entrenable)
+        pretrained = arch == "resnet18"
         self._model = self._build(arch, pretrained).to(self.device)
 
         # El estado de requires_grad refleja la semántica permanente de la arquitectura:

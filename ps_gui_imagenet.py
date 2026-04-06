@@ -535,7 +535,6 @@ class PSApp:
             try:
                 cnn = CNNExtractor(
                     arch=arch,
-                    pretrained=(arch == "resnet18"),
                     device="cpu",
                     seed=seed,
                 )
