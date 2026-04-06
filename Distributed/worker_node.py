@@ -449,7 +449,7 @@ class WorkerNode:
         _log.worker_msg(
             self._worker_id,
             f"CNN cargada ✓ arch={arch} | feature_dim={self._cnn.feature_dim} | "
-            f"params={actual_keys} | modo={mode}",
+            f"params={actual_keys} | modo={mode}"
         )
 
         assert self._sock is not None
@@ -700,6 +700,27 @@ class WorkerNode:
             logits = self._mlp(features)
             loss_t = nn.functional.cross_entropy(logits, Y)
             loss_t.backward()  # gradientes en CNN + MLP
+
+            # Gradient clipping sobre CNN + MLP conjuntamente.
+            # Necesario en E2E desde cero: sin pretrain, los gradientes
+            # de la CNN pueden ser desproporcionados respecto al MLP,
+            # causando oscilaciones que enlentecen la convergencia.
+            # max_norm=1.0 es el umbral estándar para redes sin pretrain.
+            # En modo resnet18 (freeze) este bloque no se ejecuta.
+            all_params = list(self._cnn._model.parameters()) + list(
+                self._mlp.parameters()
+            )
+            nn.utils.clip_grad_norm_(all_params, max_norm=1.0)
+
+            # La CNN en E2E usa un LR reducido respecto al MLP.
+            # Justificación: la CNN parte de pesos aleatorios y tiene
+            # que aprender representaciones desde cero; un LR igual al
+            # del MLP hace que los pesos convolucionales salten demasiado.
+            # CNN_LR_FACTOR=0.1 da lr_cnn = lr_PS * 0.1, que sitúa el
+            # LR efectivo de la CNN en el rango 0.001-0.01 para los
+            # valores típicos de lr_PS (0.01-0.1).
+            _CNN_LR_FACTOR = 0.1
+            lr_cnn = lr * _CNN_LR_FACTOR
 
             with torch.no_grad():
                 for param in self._cnn._model.parameters():
