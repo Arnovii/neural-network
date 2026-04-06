@@ -7,7 +7,7 @@ Este paquete encapsula la arquitectura de dos capas con DOS MODOS distintos:
 
    - **ResNet-18 preentrenado** (ImageNet IMAGENET1K_V1): ~50M params
      → CONGELADA (requires_grad=False) → Actúa como extractor fijo, NO se entrena
-     
+
    - **SimpleCNN custom**: 3 bloques Conv→BN→ReLU→MaxPool ~1M params
      → ENTRENABLE (requires_grad=True) → Participa en E2E backward pass
 
@@ -66,7 +66,7 @@ CNNExtractor : class
     - pretrained: True (carga IMAGENET1K_V1 para resnet18)
     - device: 'cpu' | 'cuda' | 'cuda:0' | 'mps'
     - seed: Optional[int] (default None, para reproducibilidad en SimpleCNN)
-    
+
     NOTA: requires_grad se establece en __init__ y NUNCA cambia durante entrenamiento.
     - ResNet-18: requires_grad=False PERMANENTEMENTE (feature extractor)
     - SimpleCNN: requires_grad=True PERMANENTEMENTE (participates in E2E training)
