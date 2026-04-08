@@ -1,36 +1,43 @@
 """
 Distributed/worker_node.py
 
-Implementa un nodo cliente (Worker) que se conecta a un Parameter Server centralizado
-para realizar entrenamiento distribuido asincronico sobre ImageNet-1k.
+Worker asíncrono para entrenamiento distribuido en ImageNet.
 
-MODOS DE ENTRENAMIENTO
-======================
-
-El Worker soporta dos modos de entrenamiento, determinados automaticamente por la
-arquitectura CNN recibida durante la fase de handshake:
+MODOS DE ENTRENAMIENTO (determinados automáticamente por arquitectura CNN):
 
   "resnet18" (freeze_cnn=True):
-    - CNN congelada: requires_grad=False permanente
-    - forward: CNN en eval() con torch.no_grad() sin grad_fn
-    - backward: Solo MLP recibe gradientes
-    - UPDATES: cnn_weights=None (CNN no se modifica)
+    - CNN congelada desde CNNExtractor.__init__ (requires_grad=False permanente)
+    - forward con torch.no_grad() → features sin grad_fn → 0 overhead de memoria
+    - Solo el MLP recibe gradientes y se actualiza con lr (del PS)
+    - cnn_weights=None en UPDATES → PS no toca la CNN global
+    - lr_cnn viaja en PARAMS pero se ignora (CNN no recibe gradientes)
 
   "simple" (freeze_cnn=False):
-    - CNN entrenable: requires_grad=True permanente
-    - forward: CNN en train() con grad_fn
-    - backward: CNN y MLP reciben gradientes
-    - UPDATES: cnn_weights=estado_cnn (se sincroniza con PS)
+    - CNN entrenable desde CNNExtractor.__init__ (requires_grad=True permanente)
+    - forward en train() → features con grad_fn → backward fluye por toda la red
+    - CNN se actualiza con lr_cnn (del PS), MLP con lr (del PS)
+    - gradient clipping conjunto (CNN + MLP) antes del SGD step
+    - cnn_weights enviado al PS → FedAvg sobre CNN global
 
-FLUJO PRINCIPAL
-===============
+OPTIMIZADOR: SGD puro con gradient clipping.
+  No se usa Adam porque sus momentos (m, v) son locales al Worker y se
+  dessincronizan cuando el PS hace FedAvg con 2+ workers:
+    - El Worker calcula gradientes sobre los pesos del PS
+    - Adam acumula momentos sobre la trayectoria LOCAL del Worker
+    - El PS devuelve pesos promediados (FedAvg) que pueden diferir mucho
+    - Los momentos de Adam ya no corresponden al nuevo punto de partida
+  SGD sin estado extra garantiza que cada paso sea correcto respecto
+  a los pesos actuales del PS.
 
-1. run() inicializa conexion, streaming y handshake
-2. _training_loop() ejecuta REQUEST_PARAMS -> TRAIN -> UPDATES
-3. requires_grad se establece en CNNExtractor.__init__ y se preserva
+LRs SEPARADOS:
+  El PS envía dos valores en cada PARAMS:
+    lr     → LR del MLP
+    lr_cnn → LR de la CNN (solo usado en modo simple/E2E)
 
-NO hay gestion manual de requires_grad: el estado es correcto desde construccion
-de CNNExtractor y se preserva a traves de load_state_dict().
+GRADIENT CLIPPING:
+  En modo E2E, el grad norm conjunto (CNN+MLP) puede ser alto porque la
+  CNN parte de pesos aleatorios. clip_grad_norm_(all_params, max_norm=1.0)
+  estabiliza el entrenamiento sin necesidad de un LR muy pequeño.
 """
 
 import socket
@@ -49,6 +56,7 @@ from Utils.logging_util import get_logger
 _log = get_logger(use_colors=True)
 
 _IMAGENET_CLASSES = 1000
+_GRAD_CLIP_MAX_NORM = 1.0  # Umbral de gradient clipping (E2E)
 
 
 class WorkerNode:
@@ -104,7 +112,7 @@ class WorkerNode:
     :param verbose: Imprimir logs de progreso cada 10 batches.
     :type verbose: bool
 
-    :note: batch_size e image_size se reciben del PS mediante mensaje CONFIG durante conexión.
+    :note: batch_size e image_size se reciben del PS mediante mensaje CONFIG durante conexión. lr y lr_cnn se reciben del PS mediante PARAMS en cada iteración.
 
     :raises ConnectionError: Si falla la conexión inicial con el Parameter Server.
     :raises RuntimeError: Si hay mismatch de parámetros con la CNN recibida del PS.
@@ -449,7 +457,7 @@ class WorkerNode:
         _log.worker_msg(
             self._worker_id,
             f"CNN cargada ✓ arch={arch} | feature_dim={self._cnn.feature_dim} | "
-            f"params={actual_keys} | modo={mode}"
+            f"params={actual_keys} | modo={mode}",
         )
 
         assert self._sock is not None
@@ -460,6 +468,7 @@ class WorkerNode:
                 "worker_id": self._worker_id,
                 "arch": arch,
                 "feature_dim": self._cnn.feature_dim,
+                "freeze_cnn": self._freeze_cnn,
             },
         )
 
@@ -534,12 +543,15 @@ class WorkerNode:
             mlp_state = payload["mlp_state"]
             cnn_state = payload["cnn_state"]
             version_read = payload["version"]
-            lr = payload["lr"]
+            lr = payload["lr"]  # LR del MLP
+            lr_cnn = payload.get("lr_cnn", lr * 0.1)  # LR de la CNN
 
             if not mlp_state:
                 raise RuntimeError(f"[W{self._worker_id}] PS devolvió mlp_state vacío.")
-            if not cnn_state:
-                raise RuntimeError(f"[W{self._worker_id}] PS devolvió cnn_state vacío.")
+            if not cnn_state and not self._freeze_cnn:
+                raise RuntimeError(
+                    f"[W{self._worker_id}] PS devolvió cnn_state vacío en modo E2E."
+                )
 
             if not first_params_logged:
                 fc1_shape = mlp_state.get("fc1.weight", np.array([])).shape
@@ -568,10 +580,10 @@ class WorkerNode:
                     stream_iter = self._stream.__iter__()  # Reinicia el stream
                     X_np, Y_np = next(stream_iter)
 
-                loss, acc, batch_size = self._train_batch(X_np, Y_np, lr)
-                total_loss += loss * batch_size
-                total_acc += acc * batch_size
-                total_n += batch_size
+                loss, acc, n = self._train_batch(X_np, Y_np, lr, lr_cnn)
+                total_loss += loss * n
+                total_acc += acc * n
+                total_n += n
 
             if total_n == 0:
                 continue
@@ -616,7 +628,11 @@ class WorkerNode:
     # ================================================================
 
     def _train_batch(
-        self, X_np: np.ndarray, Y_np: np.ndarray, lr: float
+        self,
+        X_np: np.ndarray,
+        Y_np: np.ndarray,
+        lr: float,
+        lr_cnn: float,
     ) -> Tuple[float, float, int]:
         """
         Ejecuta un paso forward-backward-SGD de entrenamiento local.
@@ -710,18 +726,10 @@ class WorkerNode:
             all_params = list(self._cnn._model.parameters()) + list(
                 self._mlp.parameters()
             )
-            nn.utils.clip_grad_norm_(all_params, max_norm=1.0)
+            nn.utils.clip_grad_norm_(all_params, max_norm=_GRAD_CLIP_MAX_NORM)
 
-            # La CNN en E2E usa un LR reducido respecto al MLP.
-            # Justificación: la CNN parte de pesos aleatorios y tiene
-            # que aprender representaciones desde cero; un LR igual al
-            # del MLP hace que los pesos convolucionales salten demasiado.
-            # CNN_LR_FACTOR=0.1 da lr_cnn = lr_PS * 0.1, que sitúa el
-            # LR efectivo de la CNN en el rango 0.001-0.01 para los
-            # valores típicos de lr_PS (0.01-0.1).
-            _CNN_LR_FACTOR = 0.1
-            lr_cnn = lr * _CNN_LR_FACTOR
-
+            # LRs separados: lr_cnn < lr para que la CNN aprenda más
+            # despacio que el MLP (la CNN parte de representaciones aleatorias).
             with torch.no_grad():
                 for param in self._cnn._model.parameters():
                     if param.grad is not None:
@@ -771,9 +779,9 @@ class WorkerNode:
         :raises AssertionError: Si CNN no fue inicializada.
         """
         assert self._cnn is not None
-        base = getattr(
-            self._cnn._model, "model", self._cnn._model
-        )  # Obtiene el modelo PyTorch real de la CNN
+        if not cnn_state:
+            return
+        base = getattr(self._cnn._model, "model", self._cnn._model)
         sd = base.state_dict()
         with torch.no_grad():
             # Itera sobre todos los parámetros enviados por el PS

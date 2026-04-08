@@ -9,9 +9,24 @@ DISEÑO:
   - Corrección de staleness: α(s) = 1 / (1 + λ·s), s = versión_actual − versión_leída.
   - Estado interno en formato PyTorch state_dict nativo (numpy arrays para transporte).
 
-HANDSHAKE SEGURO:
-  Cada Worker que conecta queda bloqueado hasta que CNN y MLP estén configurados
-  (máx 120 s). Esto elimina la race condition entre ps.listen() y ps.set_cnn().
+OPTIMIZADOR:
+  El Worker usa SGD puro con gradient clipping. No se usa Adam porque sus momentos
+  (m, v) son locales al Worker y se dessincronizan cuando el PS hace FedAvg con
+  múltiples workers: los momentos apuntan a una trayectoria que ya no corresponde
+  al punto de partida devuelto por el PS.
+
+  El PS envía dos LRs en PARAMS:
+    lr      → Learning rate del MLP (siempre activo)
+    lr_cnn  → Learning rate de la CNN (solo activo en modo E2E / simple)
+
+  En modo resnet18 (freeze), lr_cnn viaja en el mensaje pero el Worker lo ignora
+  porque la CNN no recibe gradientes.
+
+LRs SEPARADOS:
+  Motivación: en E2E desde cero, la CNN necesita un LR más bajo que el MLP.
+  La CNN parte de pesos aleatorios y sus capas convolucionales profundas reciben
+  gradientes más pequeños que el MLP. Un LR igual causaría que la CNN avance
+  demasiado despacio mientras el MLP sobreajusta las features actuales.
 
 AVERAGING DE CNN:
   Los pesos flotantes (convoluciones, BN running stats) se promedian con FedAvg.
@@ -88,21 +103,23 @@ class ParameterServer:
 
     Ciclo de vida recomendado:
         ps = ParameterServer(...)
-        ps.set_cnn(cnn)          # ANTES de listen()
-        ps.set_mlp(mlp_state)    # ANTES de listen()
+        ps.set_cnn(cnn)
+        ps.set_mlp(mlp_state)
         ps.listen()
-        # ... entrenamiento continuo ...
         ps.stop()
-
-    Si listen() se llama antes de set_cnn/set_mlp, el handshake de cada
-    Worker quedará bloqueado hasta que ambos estén disponibles (máx 120 s).
 
     :param host:              IP de escucha.
     :param port:              Puerto TCP.
-    :param learning_rate:     LR base para SGD local de cada Worker.
+    :param learning_rate:     LR del MLP para SGD local de cada Worker.
+    :param learning_rate_cnn: LR de la CNN para SGD local (solo en modo E2E/simple).
+                              En modo resnet18 (freeze), este valor viaja en PARAMS
+                              pero el Worker lo ignora porque la CNN está congelada.
     :param staleness_lambda:  Corrección de staleness (0.0 = sin corrección).
     :param steps_per_report:  Steps entre llamadas a on_report.
     :param metrics_window:    Tamaño de la ventana deslizante.
+    :param batch_size:        Tamaño de batch para SGD local (enviado a Workers en CONFIG).
+    :param image_size:        Resolución de imágenes (ancho y alto, cuadradas, enviado en CONFIG).
+    :param seed:              Semilla RNG para reproducibilidad (None = aleatorio, enviado en CONFIG).
     :param on_step:           Callback por cada step: (step, loss, acc, staleness).
     :param on_report:         Callback cada steps_per_report: (step, loss, acc).
     :param on_worker_connected:    Callback: (worker_id, addr_str).
@@ -113,12 +130,14 @@ class ParameterServer:
         self,
         host: str,
         port: int,
-        learning_rate: float = 0.001,
+        learning_rate: float = 0.01,
+        learning_rate_cnn: float = 0.001,
         staleness_lambda: float = 0.1,
-        steps_per_report: int = 500,
-        metrics_window: int = 200,
+        steps_per_report: int = 10,
+        metrics_window: int = 50,
         batch_size: int = 64,
         image_size: int = 224,
+        seed: Optional[int] = None,
         on_step: Optional[Callable] = None,
         on_report: Optional[Callable] = None,
         on_worker_connected: Optional[Callable] = None,
@@ -181,11 +200,13 @@ class ParameterServer:
         """
         self.host = host
         self.port = port
-        self.learning_rate = learning_rate
+        self.learning_rate = learning_rate  # LR del MLP
+        self.learning_rate_cnn = learning_rate_cnn  # LR de la CNN (E2E)
         self.staleness_lambda = staleness_lambda
         self.steps_per_report = steps_per_report
         self.batch_size = batch_size
         self.image_size = image_size
+        self.seed = seed
 
         self.on_step = on_step
         self.on_report = on_report
@@ -211,6 +232,7 @@ class ParameterServer:
         # Workers
         self._sockets: Dict[int, socket.socket] = {}
         self._addrs: Dict[int, str] = {}
+        self._worker_freeze: Dict[int, bool] = {}  # wid → freeze_cnn
         self._next_id: int = 0
         self._workers_lock = threading.Lock()
 
@@ -264,7 +286,7 @@ class ParameterServer:
 
         _log.ps(
             f"CNN lista: arch={cnn.arch} | feature_dim={cnn.feature_dim} | "
-            f"params={len(cnn_state)} ({len(no_avg)} excluidos del avg)"
+            f"params={len(cnn_state)} | no_avg={len(no_avg)}"
         )
 
     def set_mlp(self, mlp_state: Dict[str, np.ndarray]) -> None:
@@ -399,23 +421,31 @@ class ParameterServer:
             self._next_id += 1
             self._sockets[wid] = conn
             self._addrs[wid] = f"{addr[0]}:{addr[1]}"
+            self._worker_freeze[wid] = False
 
         try:
             send_message(conn, MsgType.WORKER_ID, {"worker_id": wid})
-
-            # Enviar configuración global inmediatamente
-            send_message(
-                conn,
-                MsgType.CONFIG,
-                {
-                    "batch_size": self.batch_size,
-                    "image_size": self.image_size,
-                },
-            )
         except Exception:
             with self._workers_lock:
                 self._sockets.pop(wid, None)
                 self._addrs.pop(wid, None)
+                self._worker_freeze.pop(wid, None)
+            conn.close()
+            return
+
+        # Enviar CONFIG con parámetros de streaming
+        try:
+            config = {
+                "batch_size": self.batch_size,
+                "image_size": self.image_size,
+                "seed": self.seed,
+            }
+            send_message(conn, MsgType.CONFIG, config)
+        except Exception:
+            with self._workers_lock:
+                self._sockets.pop(wid, None)
+                self._addrs.pop(wid, None)
+                self._worker_freeze.pop(wid, None)
             conn.close()
             return
 
@@ -431,9 +461,7 @@ class ParameterServer:
         deadline = 120.0
         waited = 0.0
         poll = 0.25
-        _log.ps(
-            f"Worker {wid}: esperando configuración del modelo (máx {int(deadline)} s)..."
-        )
+        _log.ps(f"Worker {wid}: esperando modelo (máx {int(deadline)} s)...")
 
         while True:
             with self._params_lock:
@@ -445,10 +473,7 @@ class ParameterServer:
             if ready:
                 break
             if waited >= deadline:
-                _log.error(
-                    f"Worker {wid}: timeout ({int(deadline)} s) esperando CNN + MLP. "
-                    "Llama ps.set_cnn() y ps.set_mlp() antes de ps.listen()."
-                )
+                _log.error(f"Worker {wid}: timeout esperando CNN+MLP.")
                 self._remove_worker(wid)
                 conn.close()
                 return
@@ -490,20 +515,22 @@ class ParameterServer:
                 self._remove_worker(wid)
                 return
 
-            # Verifica que el Worker confirmó la misma arquitectura
-            ack_payload = ack.get("payload") or {}
-            ack_arch = (
-                ack_payload.get("arch") if isinstance(ack_payload, dict) else None
-            )
-            if ack_arch and ack_arch != arch:
-                _log.error(
-                    f"Worker {wid}: mismatch de arquitectura — "
-                    f"PS={arch}, Worker={ack_arch}. Desconectando."
-                )
-                self._remove_worker(wid)
-                return
-
-            _log.ps(f"Worker {wid}: CNN cargada ✓ arch={arch}")
+            ack_pl = ack.get("payload") or {}
+            if isinstance(ack_pl, dict):
+                ack_arch = ack_pl.get("arch")
+                freeze_flag = bool(ack_pl.get("freeze_cnn", False))
+                if ack_arch and ack_arch != arch:
+                    _log.error(
+                        f"Worker {wid}: mismatch arch PS={arch}, Worker={ack_arch}"
+                    )
+                    self._remove_worker(wid)
+                    return
+                with self._workers_lock:
+                    self._worker_freeze[wid] = freeze_flag
+                mode = "freeze" if freeze_flag else "E2E"
+                _log.ps(f"Worker {wid}: CNN cargada ✓ arch={arch} mode={mode}")
+            else:
+                _log.ps(f"Worker {wid}: CNN cargada ✓ arch={arch}")
 
         except Exception as e:
             _log.error(f"Error distribuyendo CNN a Worker {wid}: {e}")
@@ -526,6 +553,12 @@ class ParameterServer:
         Loop de servicio asíncrono para un Worker.
 
         Atiende solo a `wid`. Otros Workers tienen sus propios hilos.
+
+        Envía PARAMS con dos LRs:
+          - lr:     LR del MLP (siempre)
+          - lr_cnn: LR de la CNN (solo relevante en modo E2E; ignorado en freeze)
+
+        La CNN state solo se envía en modo E2E (optimización de bandwidth).
 
         :param wid: Worker id
         :type wid: int
@@ -550,10 +583,15 @@ class ParameterServer:
                         mlp_copy = {
                             key: value.copy() for key, value in self._mlp_state.items()
                         }
-                        cnn_copy = {
-                            key: value.copy() for key, value in self._cnn_state.items()
-                        }
                         ver = self._version
+                        with self._workers_lock:
+                            is_freeze = self._worker_freeze.get(wid, False)
+                        cnn_copy = (
+                            {}
+                            if is_freeze
+                            else {k: v.copy() for k, v in self._cnn_state.items()}
+                        )
+
                     try:
                         send_message(
                             conn,
@@ -562,7 +600,8 @@ class ParameterServer:
                                 "mlp_state": mlp_copy,
                                 "cnn_state": cnn_copy,
                                 "version": ver,
-                                "lr": self.learning_rate,
+                                "lr": self.learning_rate,  # LR del MLP
+                                "lr_cnn": self.learning_rate_cnn,  # LR de la CNN
                             },
                         )
                     except Exception as e:
@@ -768,6 +807,7 @@ class ParameterServer:
         with self._workers_lock:
             sock = self._sockets.pop(wid, None)
             self._addrs.pop(wid, None)
+            self._worker_freeze.pop(wid, None)
         if sock:
             try:
                 send_message(sock, MsgType.STOP, None)
@@ -779,6 +819,7 @@ class ParameterServer:
         with self._workers_lock:
             sock = self._sockets.pop(wid, None)
             self._addrs.pop(wid, None)
+            self._worker_freeze.pop(wid, None)
         if sock:
             try:
                 sock.close()

@@ -152,6 +152,7 @@ def main() -> None:
         metrics_window=args.metrics_window,
         batch_size=args.batch_size,
         image_size=args.image_size,
+        seed=args.seed,
         on_step=on_step,
         on_report=on_report,
         on_worker_connected=on_connected,

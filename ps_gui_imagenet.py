@@ -121,13 +121,14 @@ class PSApp:
         self.root = root
         self.root.title("Parameter Server — ImageNet-1k Distribuido")
         self.root.state("zoomed")
-        self.root.columnconfigure(0, weight=0, minsize=310)
+        self.root.columnconfigure(0, weight=0, minsize=320)
         self.root.columnconfigure(1, weight=1)
         self.root.rowconfigure(0, weight=1)
 
         self._q: queue.Queue = queue.Queue()
         self._ps: ParameterServer | None = None
         self._state: str = self._S_OFFLINE
+        self._freeze_cnn: bool = True
 
         self._workers: dict = {}
         self._steps_hist: list = []
@@ -140,11 +141,12 @@ class PSApp:
         self._t_start: float = 0.0
         self._status = tk.StringVar(value="Listo.")
 
-        # Widgets de parámetros a bloquear/desbloquear según estado
-        self._param_widgets: list = []
+        # Referencia al campo LR CNN para habilitarlo/deshabilitarlo según arch
+        self._ent_lr_cnn: ttk.Entry | None
 
         self._build_ui()
         self._refresh_buttons()
+        self._update_lr_cnn_state()  # deshabilitar lr_cnn si resnet18 es default
 
     # ================================================================
     # UI
@@ -162,7 +164,7 @@ class PSApp:
         ).grid(row=1, column=0, columnspan=2, sticky="ew")
 
     def _build_left(self) -> None:
-        cont = ttk.Frame(self.root, width=300)
+        cont = ttk.Frame(self.root, width=310)
         cont.grid(row=0, column=0, sticky="ns", padx=5, pady=5)
         cont.grid_propagate(False)
 
@@ -198,10 +200,9 @@ class PSApp:
             ent_host, "IP donde escuchará el servidor (0.0.0.0 = todas las interfaces)"
         )
         ToolTip(ent_port, "Puerto TCP para comunicación con Workers")
-        self._param_widgets.extend([ent_host, ent_port])
 
-        # ── Evaluación (PS) ──
-        self._section(frm, "Evaluación (PS)")
+        # ── Dataset ──
+        self._section(frm, "Dataset")
         self._v_dataset = tk.StringVar(value="ILSVRC/imagenet-1k")
         self._v_hf_token = tk.StringVar(value=os.environ.get("HF_TOKEN", ""))
         ent_dataset = self._entry(frm, "Dataset HF Hub:", self._v_dataset, width=30)
@@ -209,17 +210,34 @@ class PSApp:
         ent_token = ttk.Entry(frm, textvariable=self._v_hf_token, width=30, show="*")
         ent_token.pack(fill=tk.X, pady=2)
         ToolTip(
-            ent_dataset,
-            "Dataset HF Hub para validación (ej: ILSVRC/imagenet-1k, timm/imagenet-1k-wds)",
+            ent_dataset, "Dataset HF Hub (ej: ILSVRC/imagenet-1k, timm/imagenet-1k-wds)"
         )
-        ToolTip(ent_token, "Token HF para autenticarse (ps.evaluate usa estos valores)")
+        ToolTip(ent_token, "Token de acceso HF para datasets privados.")
         ttk.Label(
             frm,
-            text="ℹ Estos valores son SOLO para evaluación del PS.\n  Workers usan dataset + token propios via CLI.",
+            text="ℹ ILSVRC/imagenet-1k requiere token con\n  licencia aceptada en HF.",
             font=("Helvetica", 8),
             foreground="#1565C0",
             justify=tk.LEFT,
-        ).pack(anchor=tk.W, pady=(2, 8))
+        ).pack(anchor=tk.W, pady=(2, 4))
+
+        # ── Semilla RNG ──
+        self._section(frm, "Semilla RNG")
+        self._v_seed = tk.StringVar(value="")
+        ent_seed = self._entry(frm, "Seed (vacío = aleatorio):", self._v_seed, width=12)
+        ToolTip(
+            ent_seed,
+            "None para reproducibilidad aleatoria, o número entero para reproducir",
+        )
+
+        # ── Streaming ──
+        self._section(frm, "Streaming")
+        self._v_batch_size = tk.IntVar(value=64)
+        self._v_image_size = tk.IntVar(value=224)
+        ent_bs = self._entry(frm, "Batch size:", self._v_batch_size, width=12)
+        ent_is = self._entry(frm, "Image size:", self._v_image_size, width=12)
+        ToolTip(ent_bs, "Tamaño de batch para SGD local en cada Worker")
+        ToolTip(ent_is, "Resolución de imágenes (ancho y alto, cuadradas)")
 
         # ── CNN ──
         self._section(frm, "CNN Extractor")
@@ -229,6 +247,7 @@ class PSApp:
             text="ResNet-18 + pesos ImageNet (recomendado)",
             variable=self._v_arch,
             value="resnet18",
+            command=self._update_lr_cnn_state,
         )
         rb_resnet.pack(anchor=tk.W)
         rb_simple = ttk.Radiobutton(
@@ -236,29 +255,19 @@ class PSApp:
             text="Simple CNN (sin pretrain)",
             variable=self._v_arch,
             value="simple",
+            command=self._update_lr_cnn_state,
         )
         rb_simple.pack(anchor=tk.W)
         ToolTip(rb_resnet, "Extractor preentrenado (más rápido, mejor convergencia)")
-        ToolTip(rb_simple, "CNN simple sin preentrenamiento (convergencia lenta)")
-        self._param_widgets.extend([rb_resnet, rb_simple])
-
-        # ── Semilla RNG ──
-        self._v_seed = tk.StringVar(value="")
-        ent_seed = self._entry(
-            frm, "Semilla RNG (vacío=aleatorio):", self._v_seed, width=12
-        )
-        ToolTip(ent_seed, "Semilla para reproducibilidad (None o vacío = aleatorio)")
-        self._param_widgets.append(ent_seed)
-
-        # ── Batch-Size & Image-Size ──
-        self._section(frm, "Streaming")
-        self._v_batch_size = tk.IntVar(value=64)
-        self._v_image_size = tk.IntVar(value=224)
-        ent_bs = self._entry(frm, "Batch size:", self._v_batch_size, width=8)
-        ent_is = self._entry(frm, "Image size:", self._v_image_size, width=8)
-        ToolTip(ent_bs, "Imágenes por batch (se envía a todos los Workers)")
-        ToolTip(ent_is, "Tamaño de crop final (se envía a todos los Workers)")
-        self._param_widgets.extend([ent_bs, ent_is])
+        ToolTip(rb_simple, "CNN simple sin preentrenamiento (E2E, más lento)")
+        ttk.Label(
+            frm,
+            text="ℹ resnet18: CNN congelada, solo MLP aprende\n"
+            "  simple: CNN + MLP aprenden conjuntamente (E2E)",
+            font=("Helvetica", 8),
+            foreground="#6A1B9A",
+            justify=tk.LEFT,
+        ).pack(anchor=tk.W, pady=(2, 4))
 
         # ── MLP ──
         self._section(frm, "Clasificador MLP")
@@ -268,29 +277,73 @@ class PSApp:
         ent_h2 = self._entry(frm, "Neuronas capa 2:", self._v_h2, width=8)
         ToolTip(ent_h1, "1ª capa oculta del MLP (features → h1)")
         ToolTip(ent_h2, "2ª capa oculta del MLP (h1 → h2 → 1000)")
-        self._param_widgets.extend([ent_h1, ent_h2])
+
+        # ── Learning Rates ──
+        self._section(frm, "Learning Rates (SGD)")
+        self._v_lr = tk.StringVar(value="0.01")
+        self._v_lr_cnn = tk.StringVar(value="0.001")
+
+        # LR MLP
+        ent_lr_mlp = self._entry(frm, "LR MLP:", self._v_lr, width=12)
+        ToolTip(
+            ent_lr_mlp,
+            "Learning rate del clasificador MLP.\n"
+            "Recomendado: 0.01 (resnet18) | 0.01 (simple)\n"
+            "El MLP aprende a partir de features buenas (resnet18) o aleatorias (simple).",
+        )
+
+        # LR CNN (solo activo en modo simple)
+        ttk.Label(frm, text="LR CNN:").pack(anchor=tk.W)
+        self._ent_lr_cnn = ttk.Entry(frm, textvariable=self._v_lr_cnn, width=12)
+        self._ent_lr_cnn.pack(pady=2)
+        ToolTip(
+            self._ent_lr_cnn,
+            "Learning rate de la CNN (solo en modo simple / E2E).\n"
+            "Se deshabilita automáticamente con resnet18 (CNN congelada).\n"
+            "Recomendado: 0.001 (10x menor que LR MLP para estabilidad E2E).\n\n"
+            "Por qué más pequeño: la CNN parte de pesos aleatorios y sus capas\n"
+            "profundas reciben gradientes que ya han sido escalados por las capas\n"
+            "superiores. Un LR igual al MLP haría que la CNN oscile en lugar\n"
+            "de aprender representaciones estables.",
+        )
+        self._lbl_lr_cnn_info = ttk.Label(
+            frm,
+            text="ℹ LR CNN deshabilitado (resnet18 está congelada)",
+            font=("Helvetica", 8),
+            foreground="#607D8B",
+            justify=tk.LEFT,
+        )
+        self._lbl_lr_cnn_info.pack(anchor=tk.W, pady=(2, 4))
 
         # ── Async SGD ──
         self._section(frm, "Async SGD")
-        self._v_lr = tk.StringVar(value="0.01")
         self._v_lambda = tk.StringVar(value="0.1")
         self._v_report = tk.IntVar(value=10)
         self._v_window = tk.IntVar(value=50)
-        ent_lr = self._entry(frm, "Learning rate:", self._v_lr, width=12)
         ent_lambda = self._entry(frm, "Staleness λ (0–1):", self._v_lambda, width=12)
         ent_report = self._entry(frm, "Steps por reporte:", self._v_report, width=12)
         ent_window = self._entry(frm, "Ventana métricas:", self._v_window, width=12)
-        ToolTip(ent_lr, "Tasa de aprendizaje SGD (0.01 recomendado)")
-        ToolTip(ent_lambda, "Factor corrección staleness (0=sin corrección, 1=fuerte)")
-        ToolTip(ent_report, "Steps entre reportes de métricas")
-        ToolTip(ent_window, "Pasos para promediar métricas (suaviza ruido)")
+        ToolTip(
+            ent_lambda,
+            "Factor corrección staleness α(s)=1/(1+λ·s). λ=0: sin corrección, λ=1: fuerte.",
+        )
+        ToolTip(
+            ent_report,
+            "Cada cuántos steps actualizar la gráfica.\n"
+            "Valor pequeño (1-10): actualización frecuente.\n"
+            "Valor grande (50-200): curvas más suaves.",
+        )
+        ToolTip(
+            ent_window,
+            "Tamaño de la ventana deslizante de métricas.\n"
+            "Ventana=50: refleja los últimos 50 batches.",
+        )
         ttk.Label(
             frm,
             text="ℹ λ=0: sin corrección  λ=0.1: moderada  λ=1: fuerte",
             font=("Helvetica", 8),
             foreground="#2E7D32",
         ).pack(anchor=tk.W, pady=(2, 8))
-        self._param_widgets.extend([ent_lr, ent_lambda, ent_report, ent_window])
 
         # ── Evaluación ──
         self._section(frm, "Evaluación")
@@ -303,7 +356,6 @@ class PSApp:
         )
         self._btn_eval.pack(fill=tk.X, pady=6)
         ToolTip(self._btn_eval, "Evalúa modelo global en validación (no bloqueante)")
-        self._param_widgets.append(ent_vb)
 
         # ── Botones ──
         ttk.Separator(frm, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=(18, 8))
@@ -327,10 +379,7 @@ class PSApp:
         ):
             btn.pack(fill=tk.X, pady=3)
 
-        ToolTip(
-            self._btn_listen,
-            "Carga CNN+MLP y abre socket TCP (puede tardar si descarga ResNet-18)",
-        )
+        ToolTip(self._btn_listen, "Carga CNN+MLP y abre socket TCP")
         ToolTip(self._btn_train, "Activa el entrenamiento (Workers ya están esperando)")
         ToolTip(self._btn_shutdown, "Envía STOP a todos los Workers y cierra el PS")
         ToolTip(self._btn_clear, "Limpia gráficas sin detener entrenamiento")
@@ -446,6 +495,30 @@ class PSApp:
         self._ax_acc.set_ylim(0, 100)
         self._fig.tight_layout(rect=(0, 0, 1, 0.93))
 
+    def _update_lr_cnn_state(self) -> None:
+        """
+        Habilita o deshabilita el campo LR CNN según la arquitectura seleccionada.
+
+        - resnet18: CNN siempre congelada → LR CNN no tiene efecto → deshabilitar
+        - simple:   CNN entrenable E2E   → LR CNN controla su velocidad → habilitar
+        """
+        if self._ent_lr_cnn is None:
+            return
+        arch = self._v_arch.get()
+        is_simple = arch == "simple"
+        self._ent_lr_cnn.configure(state=tk.NORMAL if is_simple else tk.DISABLED)
+        if hasattr(self, "_lbl_lr_cnn_info"):
+            if is_simple:
+                self._lbl_lr_cnn_info.configure(
+                    text="ℹ LR CNN activo (modo E2E — CNN + MLP aprenden juntos)",
+                    foreground="#2E7D32",
+                )
+            else:
+                self._lbl_lr_cnn_info.configure(
+                    text="ℹ LR CNN deshabilitado (resnet18 está congelada)",
+                    foreground="#607D8B",
+                )
+
     # ================================================================
     # BOTONES
     # ================================================================
@@ -467,11 +540,6 @@ class PSApp:
         self._btn_eval.configure(
             state=tk.NORMAL if s == self._S_TRAINING else tk.DISABLED
         )
-
-        # Bloquear/desbloquear widgets de parámetros según estado
-        is_offline = s == self._S_OFFLINE
-        for widget in self._param_widgets:
-            widget.configure(state=tk.NORMAL if is_offline else tk.DISABLED)
 
         cfg = {
             self._S_OFFLINE: ("OFFLINE", "#607D8B"),
@@ -509,27 +577,39 @@ class PSApp:
             host = self._v_host.get().strip()
             port = int(self._v_port.get())
             lr = float(self._v_lr.get())
+            lr_cnn = float(self._v_lr_cnn.get())
             lam = float(self._v_lambda.get())
             rep = int(self._v_report.get())
             win = int(self._v_window.get())
             h1 = int(self._v_h1.get())
             h2 = int(self._v_h2.get())
-            batch_size = int(self._v_batch_size.get())
-            image_size = int(self._v_image_size.get())
             arch = self._v_arch.get()
-            # Leer seed: si está vacío, es None (aleatorio)
+            bs = int(self._v_batch_size.get())
+            img_sz = int(self._v_image_size.get())
+
+            # Seed: vacío o "None" → None (Python = aleatorio), o int string → int
             seed_str = self._v_seed.get().strip()
-            seed = int(seed_str) if seed_str else None
+            if not seed_str or seed_str.lower() == "none":
+                seed = None
+            else:
+                seed = int(seed_str)
         except ValueError as e:
             messagebox.showerror("Parámetro inválido", str(e))
             return
+
+        hf_token = self._v_hf_token.get().strip() or None
         q = self._q
 
-        # Indicar "cargando" visualmente mientras descarga/carga CNN
         self._state = self._S_LOADING
         self._refresh_buttons()
-        self._status.set(f"Cargando {arch}... (puede tardar en la primera vez)")
-        self._log(f"[PS] Cargando CNN {arch} + MLP {h1}→{h2}→1000...")
+        mode_str = "freeze" if arch == "resnet18" else "E2E"
+        self._status.set(
+            f"Cargando {arch} ({mode_str})... (puede tardar en la primera vez)"
+        )
+        self._log(
+            f"[PS] Cargando CNN {arch} ({mode_str}) + MLP {h1}→{h2}→1000 | "
+            f"lr_mlp={lr} lr_cnn={lr_cnn} | batch={bs} img={img_sz} seed={seed}"
+        )
 
         def _init():
             try:
@@ -546,11 +626,13 @@ class PSApp:
                     host=host,
                     port=port,
                     learning_rate=lr,
+                    learning_rate_cnn=lr_cnn,
                     staleness_lambda=lam,
                     steps_per_report=rep,
                     metrics_window=win,
-                    batch_size=batch_size,
-                    image_size=image_size,
+                    batch_size=bs,
+                    image_size=img_sz,
+                    seed=seed,
                     on_step=lambda step, loss, acc, stale: q.put(
                         ("step", (step, loss, acc, stale))
                     ),
@@ -568,7 +650,25 @@ class PSApp:
                 ps.set_mlp(mlp.state_dict_numpy())
                 ps.listen()
 
-                q.put(("ps_ready", (ps, host, port, arch, cnn.feature_dim, h1, h2)))
+                q.put(
+                    (
+                        "ps_ready",
+                        (
+                            ps,
+                            host,
+                            port,
+                            arch,
+                            cnn.feature_dim,
+                            h1,
+                            h2,
+                            lr,
+                            lr_cnn,
+                            bs,
+                            img_sz,
+                            seed,
+                        ),
+                    )
+                )
 
             except Exception as e:
                 q.put(("init_error", e))
@@ -663,14 +763,21 @@ class PSApp:
                 kind, data = self._q.get_nowait()
 
                 if kind == "ps_ready":
-                    ps, host, port, arch, fdim, h1, h2 = data
+                    ps, host, port, arch, fdim, h1, h2, lr, lr_cnn, bs, img_sz, seed = (
+                        data
+                    )
                     self._ps = ps
                     self._state = self._S_LISTENING
                     self._refresh_buttons()
+                    mode = (
+                        "freeze (CNN congelada)"
+                        if arch == "resnet18"
+                        else "E2E (CNN + MLP)"
+                    )
                     self._log(
-                        f"[PS] ✓ Servidor en {host}:{port} | "
-                        f"arch={arch} | feature_dim={fdim} | "
-                        f"MLP {fdim}→{h1}→{h2}→1000"
+                        f"[PS] ✓ Servidor en {host}:{port} | arch={arch} ({mode}) | "
+                        f"feature_dim={fdim} | MLP {fdim}→{h1}→{h2}→1000 | "
+                        f"lr_mlp={lr} lr_cnn={lr_cnn} | batch={bs} img={img_sz} seed={seed}"
                     )
                     self._status.set(
                         f"Escuchando en {host}:{port} — esperando Workers..."
