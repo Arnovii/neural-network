@@ -135,9 +135,9 @@ class CNNExtractor:
     _train_batch pone 'simple' en train() antes del forward para actualizar
     las running stats de BatchNorm durante el entrenamiento.
 
-    :param arch:   'resnet18' o 'simple' (determina automáticamente pretrained + requires_grad).
+    :param arch:   'resnet18' o 'simple' (determina automaticamente trainable + pesos).
     :param device: Dispositivo PyTorch ('cpu', 'cuda', 'mps').
-    :param seed:   Semilla de inicialización (solo afecta a 'simple').
+    :param seed:   Semilla RNG (default: None = aleatorio, solo afecta a 'simple').
     """
 
     ARCHITECTURES = ("simple", "resnet18")
@@ -146,14 +146,14 @@ class CNNExtractor:
         self,
         arch: str = "resnet18",
         device: str = "cpu",
-        seed: Optional[int] = 42,
+        seed: Optional[int] = None,
     ) -> None:
         """
         Inicializa el extractor CNN para feature extraction desde ImageNet.
 
-        La comportamiento de preentrenamiento se determina automáticamente por arquitectura:
-        - 'resnet18': Carga pesos IMAGENET1K_V1, congelada permanentemente.
-        - 'simple': CNN de 3 bloques Conv2d sin pretrain, entrenable E2E.
+        El comportamiento de preentrenamiento y entrenamientos se determina automaticamente por arquitectura:
+        - 'resnet18': Carga pesos IMAGENET1K_V1, congelada permanentemente (requires_grad=False).
+        - 'simple': CNN de 3 bloques Conv2d sin pretrain, entrenable E2E (requires_grad=True).
 
         :param arch: Arquitectura CNN ('resnet18' o 'simple').
                      - 'resnet18': ResNet-18 con pesos ImageNet (congelada).
@@ -162,8 +162,8 @@ class CNNExtractor:
         :param device: Dispositivo PyTorch ('cpu', 'cuda', 'cuda:0', 'mps').
                       Modelos congelados: se copian a este device y se cargan una sola vez.
         :type device: str
-        :param seed: Semilla RNG para PyTorch (solo afecta 'simple').
-                    Si None, no se fija ningún seed.
+        :param seed: Semilla RNG para PyTorch (default: None = aleatorio).
+                    Solo afecta a la arquitectura 'simple'.
         :type seed: Optional[int]
 
         :raises ValueError: Si arch no está en ARCHITECTURES.
@@ -178,28 +178,22 @@ class CNNExtractor:
         if seed is not None:
             torch.manual_seed(seed)
 
-        # Determinar pretrained automáticamente por arquitectura:
-        # resnet18 → siempre con ImageNet weights (congelada)
-        # simple → sin preentrenamiento (entrenable)
-        pretrained = arch == "resnet18"
-        self._model = self._build(arch, pretrained).to(self.device)
-
-        # El estado de requires_grad refleja la semántica permanente de la arquitectura:
-        #   resnet18 → congelada: nunca necesita gradientes
-        #   simple   → entrenable: participa en E2E backprop
-        #
-        # Esto evita que _train_batch tenga que gestionar requires_grad en cada iteración,
-        # eliminando la dependencia frágil de orden de ejecución que existía antes.
+        # Determinar si entrenable automáticamente por arquitectura:
+        # resnet18 → congelada (requires_grad=False, pesos preentrenados)
+        # simple   → entrenable (requires_grad=True, pesos aleatorios)
         trainable = arch == "simple"
+        self._model = self._build(arch, trainable).to(self.device)
+
+        # Establecer requires_grad según si es entrenable o congelada
         for p in self._model.parameters():
-            p.requires_grad_(trainable)  # Controla si PyTorch calcula gradientes
+            p.requires_grad_(trainable)
 
         # Ambas en eval() inicialmente. _train_batch pondrá 'simple' en train()
         # antes del forward para que BatchNorm actualice sus running stats.
         self._model.eval()
 
     @staticmethod
-    def _build(arch: str, pretrained: bool) -> nn.Module:
+    def _build(arch: str, trainable: bool) -> nn.Module:
         """
         Construye y retorna la arquitectura CNN solicitada.
 
@@ -209,21 +203,21 @@ class CNNExtractor:
         :param arch: Nombre de arquitectura ('resnet18' o 'simple')
         :type arch: str
 
-        :param pretrained: Si True y arch='resnet18', carga pesos IMAGENET1K_V1. \
-                          Si arch='simple', parámetro ignorado (sin pesos preentrenados disponibles).
-        :type pretrained: bool
+        :param trainable: Si False y arch='resnet18', carga pesos IMAGENET1K_V1 (congelada). \
+                         Si True y arch='simple', inicializa CNN entrenable sin preentrenamiento.
+        :type trainable: bool
 
-        :returns: Módulo PyTorch inicializado
+        :returns: Modulo PyTorch inicializado
         :rtype: nn.Module
 
-        :raises ValueError: Si arch no está en ['resnet18', 'simple']
+        :raises ValueError: Si arch no esta en ['resnet18', 'simple']
         """
         if arch == "simple":
             return _SimpleCNN()
 
         import torchvision.models as tvm
 
-        weights = "IMAGENET1K_V1" if pretrained else None
+        weights = "IMAGENET1K_V1" if not trainable else None
         model = tvm.resnet18(weights=weights)
         model.fc = nn.Identity()  # type: ignore  # expone vector de 512 features
         return model

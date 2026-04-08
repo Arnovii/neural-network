@@ -144,6 +144,9 @@ class PSApp:
         # Referencia al campo LR CNN para habilitarlo/deshabilitarlo según arch
         self._ent_lr_cnn: ttk.Entry | None
 
+        # Lista de widgets de configuración (para desactivar durante entrenamiento)
+        self._config_widgets: list = []
+
         self._build_ui()
         self._refresh_buttons()
         self._update_lr_cnn_state()  # deshabilitar lr_cnn si resnet18 es default
@@ -209,6 +212,7 @@ class PSApp:
         ttk.Label(frm, text="HF Token:").pack(anchor=tk.W)
         ent_token = ttk.Entry(frm, textvariable=self._v_hf_token, width=30, show="*")
         ent_token.pack(fill=tk.X, pady=2)
+        self._config_widgets.append(ent_token)
         ToolTip(
             ent_dataset, "Dataset HF Hub (ej: ILSVRC/imagenet-1k, timm/imagenet-1k-wds)"
         )
@@ -250,6 +254,7 @@ class PSApp:
             command=self._update_lr_cnn_state,
         )
         rb_resnet.pack(anchor=tk.W)
+        self._config_widgets.append(rb_resnet)
         rb_simple = ttk.Radiobutton(
             frm,
             text="Simple CNN (sin pretrain)",
@@ -258,6 +263,7 @@ class PSApp:
             command=self._update_lr_cnn_state,
         )
         rb_simple.pack(anchor=tk.W)
+        self._config_widgets.append(rb_simple)
         ToolTip(rb_resnet, "Extractor preentrenado (más rápido, mejor convergencia)")
         ToolTip(rb_simple, "CNN simple sin preentrenamiento (E2E, más lento)")
         ttk.Label(
@@ -296,6 +302,7 @@ class PSApp:
         ttk.Label(frm, text="LR CNN:").pack(anchor=tk.W)
         self._ent_lr_cnn = ttk.Entry(frm, textvariable=self._v_lr_cnn, width=12)
         self._ent_lr_cnn.pack(pady=2)
+        self._config_widgets.append(self._ent_lr_cnn)
         ToolTip(
             self._ent_lr_cnn,
             "Learning rate de la CNN (solo en modo simple / E2E).\n"
@@ -378,6 +385,9 @@ class PSApp:
             self._btn_clear,
         ):
             btn.pack(fill=tk.X, pady=3)
+        self._config_widgets.extend(
+            [self._btn_listen, self._btn_train, self._btn_clear]
+        )
 
         ToolTip(self._btn_listen, "Carga CNN+MLP y abre socket TCP")
         ToolTip(self._btn_train, "Activa el entrenamiento (Workers ya están esperando)")
@@ -472,14 +482,14 @@ class PSApp:
         )
         ttk.Separator(parent, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=2)
 
-    @staticmethod
-    def _entry(parent, label, var, width=22):
+    def _entry(self, parent, label, var, width=22):
         ttk.Label(parent, text=label).pack(anchor=tk.W)
         entry = ttk.Entry(parent, textvariable=var, width=width)
         pack_kwargs: dict = {"pady": 2}  # type: ignore[annotation-unchecked]
         if width == 22:
             pack_kwargs["fill"] = "x"
         entry.pack(**pack_kwargs)
+        self._config_widgets.append(entry)
         return entry
 
     def _setup_axes(self):
@@ -518,6 +528,20 @@ class PSApp:
                     text="ℹ LR CNN deshabilitado (resnet18 está congelada)",
                     foreground="#607D8B",
                 )
+
+    def _set_config_enabled(self, enabled: bool) -> None:
+        """
+        Desactiva o activa todos los widgets de configuración.
+        
+        :param enabled: True para activar, False para desactivar.
+        """
+        state = tk.NORMAL if enabled else tk.DISABLED
+        for widget in self._config_widgets:
+            try:
+                widget.configure(state=state)
+            except Exception:
+                # Algunos widgets no tienen state (e.g., Labels)
+                pass
 
     # ================================================================
     # BOTONES
@@ -697,6 +721,7 @@ class PSApp:
         self._state = self._S_TRAINING
         self._t_start = time.perf_counter()
         self._refresh_buttons()
+        self._set_config_enabled(False)
         self._log("[PS] Entrenamiento activado. Workers entrenando.")
         self._status.set("Entrenamiento asíncrono en progreso...")
 
@@ -728,6 +753,7 @@ class PSApp:
         for row in self._tree.get_children():
             self._tree.delete(row)
         self._refresh_buttons()
+        self._set_config_enabled(True)
         self._log("[PS] Servidor detenido.")
         self._status.set("Servidor detenido.")
 
