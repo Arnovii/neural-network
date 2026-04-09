@@ -59,13 +59,24 @@ class _ResBlockLite(nn.Module):
         (out ≈ shortcut), lo que estabiliza las primeras iteraciones de SGD.
       - Stride en la primera Conv (en lugar de MaxPool): preserva más
         información espacial que el pooling de máximo.
-
-    :param in_ch:   Canales de entrada.
-    :param out_ch:  Canales de salida.
-    :param stride:  Stride de la primera Conv (1 = sin downsampling).
     """
 
     def __init__(self, in_ch: int, out_ch: int, stride: int = 1) -> None:
+        """
+        Inicializa un bloque residual ligero con stride opcional.
+
+        :param in_ch: Número de canales de entrada.
+        :type in_ch: int
+
+        :param out_ch: Número de canales de salida.
+        :type out_ch: int
+
+        :param stride: Stride de la primera convolución (1 = sin submuestreo, 2 = submuestreo).
+        :type stride: int
+
+        :returns: None
+        :rtype: None
+        """
         super().__init__()
         self.conv1 = nn.Conv2d(in_ch, out_ch, 3, stride=stride, padding=1, bias=False)
         self.bn1 = nn.BatchNorm2d(out_ch)
@@ -175,6 +186,15 @@ class _SimpleCNN(nn.Module):
                 nn.init.zeros_(m.bias)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Procesa un batch de imágenes a través de la CNN simple mejorada.
+
+        :param x: Batch de imágenes (B, 3, H, W).
+        :type x: torch.Tensor
+
+        :returns: Características extraídas (B, feature_dim).
+        :rtype: torch.Tensor
+        """
         x = self.stem(x)
         x = self.layer1(x)
         x = self.layer2(x)
@@ -221,6 +241,23 @@ class CNNExtractor:
         device: str = "cpu",
         seed: Optional[int] = None,
     ) -> None:
+        """
+        Inicializa el extractor CNN con la arquitectura especificada.
+
+        :param arch: Arquitectura seleccionada ('resnet18', 'resnet50', o 'simple').
+        :type arch: str
+
+        :param device: Dispositivo PyTorch ('cpu', 'cuda', etc.).
+        :type device: str
+
+        :param seed: Semilla para reproducibilidad (None = sin fijar).
+        :type seed: Optional[int]
+
+        :returns: None
+        :rtype: None
+
+        :raises ValueError: Si arch no está en ARCHITECTURES permitidas.
+        """
         if arch not in self.ARCHITECTURES:
             raise ValueError(f"arch debe ser {self.ARCHITECTURES}, recibido: {arch!r}")
 
@@ -241,6 +278,16 @@ class CNNExtractor:
 
     @staticmethod
     def _build(arch: str, trainable: bool) -> nn.Module:
+        """
+        Construye la arquitectura CNN especificada.
+
+        :param arch: Tipo de arquitectura a construir ('simple', 'resnet18', 'resnet50').
+        :type arch: str
+        :param trainable: Si True, descarga pesos pre-entrenados; si False, usa de ImageNet.
+        :type trainable: bool
+        :returns: Módulo PyTorch construido.
+        :rtype: nn.Module
+        """
         if arch == "simple":
             return _SimpleCNN()
 
@@ -253,22 +300,39 @@ class CNNExtractor:
 
     @property
     def feature_dim(self) -> int:
+        """
+        Retorna la dimensión de las características extraídas.
+
+        :returns: Dimensión del vector de características.
+        :rtype: int
+        """
         return FEATURE_DIM
 
     # ── Serialización ─────────────────────────────────────────────
 
     def _get_weights_bytes(self) -> bytes:
-        """Serializa el state_dict a bytes para enviar por TCP."""
+        """
+        Serializa el state_dict del modelo a bytes para envío por TCP.
+
+        :returns: Representación binaria del estado del modelo.
+        :rtype: bytes
+        """
         buf = io.BytesIO()
         torch.save(self._model.state_dict(), buf)
         return buf.getvalue()
 
     def load_weights_from_bytes(self, weights_bytes: bytes) -> None:
         """
-        Carga pesos desde bytes recibidos del PS por TCP.
+        Carga pesos desde bytes recibidos del Servidor de Parámetros por TCP.
 
         load_state_dict no modifica requires_grad — el estado correcto
-        establecido en __init__ se preserva después de cada sync.
+        establecido en __init__ se preserva después de cada sincronización.
+
+        :param weights_bytes: Representación binaria del estado a cargar.
+        :type weights_bytes: bytes
+        
+        :returns: None
+        :rtype: None
         """
         buf = io.BytesIO(weights_bytes)
         state = torch.load(buf, map_location=self.device, weights_only=True)

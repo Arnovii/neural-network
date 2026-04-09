@@ -47,12 +47,35 @@ def main() -> None:
     """
     Punto de entrada para el Parameter Server en modo terminal.
 
-    Analiza configuración de línea de comandos, instancia modelos CNN+MLP,
-    crea ParameterServer, espera a que Workers se conecten, y ejecuta
-    el loop de entrenamiento distribuido hasta max_steps o interrupción por teclado.
+    Orquesta el flujo completo del servidor PS asíncrono:
 
-    Registra métricas periódicamente y muestra throughput (steps/sec).
-    Los resultados se exportan a JSON al completar o parar el servidor.
+    1. **Parsing de argumentos CLI**: Lee parámetros de línea de comandos
+       (host, puerto, learning rates, arquitectura CNN, seed, etc.)
+    2. **Resolución de HF Token**: Prioridad: argumento CLI > variable HF_TOKEN
+    3. **Instanciación de modelos**:
+       - CNNExtractor (resnet18 preentrenado o simple CNN)
+       - MLPPyTorch (feature_dim → hidden1 → hidden2 → 1000 clases)
+    4. **Creación de ParameterServer**:
+       - Establece callbacks para eventos (step, report, connected, disconnected)
+       - Configura hiperparámetros Async-SGD (lr, staleness_lambda, metrics_window)
+    5. **Apertura de servidor TCP**: ps.listen() inicia socket de escucha
+    6. **Espera de Workers**: Bloquea hasta que N Workers se conecten (--wait-workers)
+    7. **Loop de entrenamiento**:
+       - Ejecuta indefinidamente o hasta max_steps
+       - Registra métricas cada 50 steps (throughput en steps/sec)
+       - Reporta visualmente cada --steps-per-report steps
+    8. **Cleanup**: ps.stop() cierra conexiones y libera recursos
+    9. **Salida**: Imprime resumen de entrenamiento (steps totales, loss final, acc final)
+
+    Callbacks internos:
+    - on_connected(): Incrementa contador de workers, señal ready si alcanza --wait-workers
+    - on_disconnected(): Registra desconexión en terminal
+    - on_step(): Muestreo cada 50 steps, cálculo de throughput, chequeo de max_steps
+    - on_report(): Resporte visual cada --steps-per-report steps
+
+    Exceptions:
+    - KeyboardInterrupt (Ctrl+C): Detiene entrenamiento gracefully y ejecuta cleanup
+    - Otras excepciones en ParameterServer se propagan y terminan el proceso
 
     :returns: None
     :rtype: None
@@ -113,18 +136,82 @@ def main() -> None:
     connected = [0]
     stop = threading.Event()
 
-    def on_connected(wid, addr):
+    def on_connected(wid: int, addr: str) -> None:
+        """
+        Callback de PS: se ejecuta cuando un Worker se conecta exitosamente.
+
+        Acciones:
+        1. Incrementa contador de workers conectados
+        2. Imprime mensaje visual con ID del worker y dirección de red
+        3. Si se alcanzó el número esperado de workers (--wait-workers):
+           Establece evento ready para desbloquear espera en main()
+
+        Este callback se registra en ParameterServer.on_worker_connected.
+
+        :param wid: ID único del Worker asignado por el PS.
+        :type wid: int
+
+        :param addr: Dirección de red del Worker (formato "IP:puerto").
+        :type addr: str
+
+        :returns: None
+        :rtype: None
+        """
         connected[0] += 1
         print(f"  [+] Worker {wid} desde {addr} ({connected[0]}/{args.wait_workers})")
         if connected[0] >= args.wait_workers:
             ready.set()
 
-    def on_disconnected(wid):
+    def on_disconnected(wid: int) -> None:
+        """
+        Callback de PS: se ejecuta cuando un Worker se desconecta.
+
+        Simplemente registra en terminal que el Worker se desconectó.
+        No modifica el comportamiento del entrenamiento (PS sigue funcionando
+        con los workers restantes en modo asíncrono).
+
+        Este callback se registra en ParameterServer.on_worker_disconnected.
+
+        :param wid: ID único del Worker desconectado.
+        :type wid: int
+
+        :returns: None
+        :rtype: None
+        """
         print(f"  [-] Worker {wid} desconectado.")
 
     step_ts: list = []
 
-    def on_step(step, loss, acc, staleness):
+    def on_step(step: int, loss: float, acc: float, staleness: int) -> None:
+        """
+        Callback de PS: se ejecuta después de cada step de entrenamiento.
+
+        Realiza muestreo frecuente de métricas:
+        1. Registra timestamp del step para cálculo posterior de throughput
+        2. Cada 50 steps:
+           - Calcula throughput en steps/segundo desde primero al último
+           - Imprime: step, loss, accuracy, staleness, throughput
+        3. Si max_steps > 0: chequea si se alcanzó límite y establece stop event
+
+        Throughput = (número de steps en buffer) / (tiempo transcurrido en buffer)
+
+        Este callback se registra en ParameterServer.on_step.
+
+        :param step: Número del step global de entrenamiento.
+        :type step: int
+
+        :param loss: Valor de pérdida (loss) en el batch actual.
+        :type loss: float
+
+        :param acc: Precisión en porcentaje (0-100) en el batch actual.
+        :type acc: float
+
+        :param staleness: Máximo número de versiones de atrazo observadas.
+        :type staleness: int
+
+        :returns: None
+        :rtype: None
+        """
         step_ts.append(time.perf_counter())
         if step % 50 == 0:
             sps = (
@@ -137,7 +224,32 @@ def main() -> None:
         if args.max_steps > 0 and step >= args.max_steps:
             stop.set()
 
-    def on_report(step, loss, acc):
+    def on_report(step: int, loss: float, acc: float) -> None:
+        """
+        Callback de PS: se ejecuta cada --steps-per-report steps.
+
+        Imprime un reporte visual formateado con métricas agregadas en ventana deslizante.
+        Proporciona feedback visual periódico del progreso del entrenamiento.
+
+        Formato:
+        ────────────────────────────────────────────────────────
+          Reporte | step=XXXX | loss=X.XXXX | acc=XX.XX%
+        ────────────────────────────────────────────────────────
+
+        Este callback se registra en ParameterServer.on_report.
+
+        :param step: Número del step global en este reporte.
+        :type step: int
+
+        :param loss: Pérdida promedio en ventana de métricas.
+        :type loss: float
+
+        :param acc: Precisión promedio en ventana de métricas (%).
+        :type acc: float
+
+        :returns: None
+        :rtype: None
+        """
         print(f"\n{'─' * 60}")
         print(f"  Reporte | step={step:,} | loss={loss:.4f} | acc={acc:.2f}%")
         print(f"{'─' * 60}\n")

@@ -504,6 +504,15 @@ class WorkerNode:
           - SGD sin momentum no tiene estado acumulado → no hay pérdida de información
           - Garantiza que lr_cnn y lr reflejan exactamente los valores del PS
           - Elimina cualquier riesgo de estado residual entre iteraciones
+
+        :param lr: Tasa de aprendizaje para el MLP (recibida del PS).
+        :type lr: float
+
+        :param lr_cnn: Tasa de aprendizaje para la CNN en modo E2E (recibida del PS).
+        :type lr_cnn: float
+
+        :returns: None
+        :rtype: None
         """
         assert self._cnn is not None
         assert self._mlp is not None
@@ -722,8 +731,13 @@ class WorkerNode:
           - sgd.step(): C++ backend (en lugar de 2 bucles Python con no_grad)
 
         :param X_np: Batch de imágenes float32 (B, 3, H, W).
+        :type X_np: np.ndarray
+
         :param Y_np: Etiquetas int64 (B,) — ya int64 desde imagenet_streaming.
-        :return: (loss, accuracy_pct, n_samples)
+        :type Y_np: np.ndarray
+
+        :returns: Tupla (loss, accuracy_pct, n_samples) con métricas del batch.
+        :rtype: Tuple[float, float, int]
         """
         assert self._cnn is not None
         assert self._mlp is not None
@@ -808,6 +822,10 @@ class WorkerNode:
         (False para resnet18, True para simple) se preserva intacto.
 
         :param cnn_state: State numpy del PS (vacío en modo freeze → no-op).
+        :type cnn_state: Dict[str, np.ndarray]
+        
+        :returns: None
+        :rtype: None
         """
         assert self._cnn is not None
         if not cnn_state:

@@ -109,7 +109,16 @@ class MLPPyTorch(nn.Module):
         return self.fc3(self.relu(self.fc2(self.relu(self.fc1(x)))))
 
     def state_dict_numpy(self) -> Dict[str, np.ndarray]:
-        """Devuelve el state_dict como Dict[str, np.ndarray] para transporte TCP."""
+        """
+        Exporta el state_dict de parámetros como Dict[str, np.ndarray].
+
+        Convierte todos los parámetros entrenables (pesos y sesgos) a numpy arrays
+        en CPU. Útil para serializar el modelo a través de TCP hacia el Parameter Server.
+
+        :returns: Diccionario con claves de parámetros y valores como numpy arrays.
+                  Ejemplo: {'fc1.weight': array(...), 'fc1.bias': array(...), ...}
+        :rtype: Dict[str, np.ndarray]
+        """
         return {
             name: param.data.cpu().numpy().copy()
             for name, param in self.named_parameters()

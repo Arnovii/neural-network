@@ -60,12 +60,6 @@ logging_util : module
     - info(msg), warning(msg), error(msg), etc.
     - Cada método añade timestamp y colorización automática
 
-results_exporter : module
-    Exportación de historiales:
-
-    - export_results(history, filepath): Serializa histórico a JSON
-      Guarda pérdidas, accuracies, metadatos (modelo, epochs, etc.)
-
 EXPORTACIONES PRINCIPALES
 ==========================
 
@@ -110,11 +104,6 @@ get_logger : function
     Retorna logger global singleton.
     Parámetro: use_colors (default False para GUI)
 
-export_results : function
-    from Utils.results_exporter import export_results
-
-    Serializa histórico de entrenamiento a JSON.
-
 FLUJO TÍPICO
 ============
 
@@ -151,16 +140,6 @@ FLUJO TÍPICO
     logger = get_logger(use_colors=True)
     logger.info("Iniciando entrenamiento")
     logger.error("Error de conexión")
-
-    # Exportación
-    from Utils.results_exporter import export_results
-
-    history = {
-        "losses": [5.2, 4.8, 4.1, ...],
-        "accuracies": [0.05, 0.12, 0.25, ...],
-        "steps": [0, 500, 1000, ...]
-    }
-    export_results(history, "results.json")
 """
 
 from Utils.imagenet_streaming import (
@@ -172,7 +151,6 @@ from Utils.imagenet_streaming import (
     get_val_transform,
 )
 from Utils.logging_util import FormattedLogger, get_logger
-from Utils.results_exporter import export_results
 
 __all__ = [
     "ImageNetStream",
@@ -183,5 +161,4 @@ __all__ = [
     "get_val_transform",
     "FormattedLogger",
     "get_logger",
-    "export_results",
 ]

@@ -47,7 +47,31 @@ from Model.mlp_pytorch import MLPPyTorch
 
 
 class ToolTip:
+    """
+    Tooltip flotante que aparece al pasar el mouse sobre un widget tkinter.
+
+    Muestra un label flotante con texto informativo después de 500ms de hover.
+    Se destruye automáticamente al salir del widget. Utiliza tkinter.Toplevel
+    para renderizar el tooltip fuera de la jerarquía de widgets principal.
+    """
+
     def __init__(self, widget: tk.Widget, text: str) -> None:
+        """
+        Inicializa tooltip para un widget tkinter.
+
+        Registra eventos de Enter/Leave en el widget para mostrar/ocultar
+        el tooltip. El tooltip se mostará después de 500ms persistiendo al
+        entrar al widget y desaparecerá al salir del mismo.
+
+        :param widget: Widget tkinter al cual asociar el tooltip.
+        :type widget: tk.Widget
+
+        :param text: Texto a mostrar en el tooltip (puede contener saltos de línea).
+        :type text: str
+
+        :returns: None
+        :rtype: None
+        """
         self.widget = widget
         self.text = text
         self._id = None
@@ -55,10 +79,30 @@ class ToolTip:
         widget.bind("<Enter>", lambda e: self._schedule())
         widget.bind("<Leave>", lambda e: self._cancel())
 
-    def _schedule(self):
+    def _schedule(self) -> None:
+        """
+        Programa la aparición del tooltip después de 500ms.
+
+        Utiliza widget.after() para registrar un callback que ejecutará
+        _show() en 500 milisegundos. Si el usuario mueve el mouse fuera
+        antes de ese tiempo, _cancel() anulará este callback.
+
+        :returns: None
+        :rtype: None
+        """
         self._id = self.widget.after(500, self._show)
 
-    def _cancel(self):
+    def _cancel(self) -> None:
+        """
+        Cancela la aparición del tooltip y lo destruye si está visible.
+
+        Anula el callback programado (si aún no se ha ejecutado) y destruye
+        la ventana flotante del tooltip si ya está visible. Se llama cuando
+        el usuario mueve el mouse fuera del widget.
+
+        :returns: None
+        :rtype: None
+        """
         if self._id:
             self.widget.after_cancel(self._id)
             self._id = None
@@ -66,7 +110,18 @@ class ToolTip:
             self._tip.destroy()
             self._tip = None
 
-    def _show(self):
+    def _show(self) -> None:
+        """
+        Muestra el tooltip flotante junto al widget.
+
+        Crea una ventana Toplevel sin decoraciones (overrideredirect=True)
+        posicionada 10 píxeles a la derecha y debajo del widget.
+        Renderiza un Label con fondo amarillo claro (#ffffe0) con el
+        texto del tooltip.
+
+        :returns: None
+        :rtype: None
+        """
         x = self.widget.winfo_rootx() + 10
         y = self.widget.winfo_rooty() + self.widget.winfo_height() + 4
         self._tip = tw = tk.Toplevel(self.widget)
@@ -156,6 +211,16 @@ class PSApp:
     # ================================================================
 
     def _build_ui(self) -> None:
+        """
+        Construye la interfaz gráfica completa: panel izquierdo + derecho + status bar.
+
+        Llama a _build_left() para crear panel de configuración (parámetros)
+        y _build_right() para crear panel de monitoreo (tablas, gráficas, logs).
+        Finalmente agrega status bar en la fila inferior que muestra estado actual.
+
+        :returns: None
+        :rtype: None
+        """
         self._build_left()
         self._build_right()
         ttk.Label(
@@ -167,6 +232,24 @@ class PSApp:
         ).grid(row=1, column=0, columnspan=2, sticky="ew")
 
     def _build_left(self) -> None:
+        """
+        Construye panel izquierdo con controles de configuración del Parameter Server.
+
+        Crea estructura con Canvas+Scrollbar para permitir scroll vertical en los
+        múltiples controles de configuración:
+        - Conexión TCP (host, puerto)
+        - Dataset (nombre HF, token)
+        - Streaming (batch_size, image_size)
+        - CNN Extractor (arquitectura: resnet18 / simple)
+        - MLP (hidden layer sizes)
+        - Learning rates (LR MLP, LR CNN)
+        - Async SGD (lambda, windows)
+        - Evaluación
+        - Botones de acción (listen, train, shutdown, clear)
+
+        :returns: None
+        :rtype: None
+        """
         cont = ttk.Frame(self.root, width=310)
         cont.grid(row=0, column=0, sticky="ns", padx=5, pady=5)
         cont.grid_propagate(False)
@@ -395,6 +478,17 @@ class PSApp:
         ToolTip(self._btn_clear, "Limpia gráficas sin detener entrenamiento")
 
     def _build_right(self) -> None:
+        """
+        Construye panel derecho con monitoreo: tabla de Workers, gráficas y log.
+
+        Organiza tres secciones:
+        1. Tabla Treeview de Workers conectados (ID, dirección, estado)
+        2. Gráficas matplotlib (3 ejes): Pérdida, Precisión, Workers activos
+        3. Widget Text para logging con scroll automático
+
+        :returns: None
+        :rtype: None
+        """
         right = ttk.Frame(self.root)
         right.grid(row=0, column=1, sticky="nsew", padx=5, pady=5)
         right.rowconfigure(1, weight=1)
@@ -476,13 +570,50 @@ class PSApp:
         ls.pack(side=tk.RIGHT, fill=tk.Y)
 
     @staticmethod
-    def _section(parent, text):
+    def _section(parent: ttk.Frame, text: str) -> None:
+        """
+        Crea sección visual con título separador en el panel izquierdo.
+
+        Agrupa controles relacionados bajo un encabezado en negrita con
+        separador horizontal debajo. Mejora legibilidad visual del formulario.
+
+        :param parent: Frame padre donde insertar la sección.
+        :type parent: ttk.Frame
+
+        :param text: Título de la sección.
+        :type text: str
+
+        :returns: None
+        :rtype: None
+        """
         ttk.Label(parent, text=text, font=("Helvetica", 10, "bold")).pack(
             anchor=tk.W, pady=(14, 0)
         )
         ttk.Separator(parent, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=2)
 
-    def _entry(self, parent, label, var, width=22):
+    def _entry(self, parent: ttk.Frame, label: str, var: tk.Variable, width: int = 22) -> ttk.Entry:
+        """
+        Crea un par etiqueta+entrada de texto para ingreso de parámetros.
+
+        Genera un Label con descriptivo y un Entry vinculado a una variable tkinter.
+        La entrada se desactiva cuando el servidor está activo. Se agrega a
+        self._config_widgets para control centralizado de estado.
+
+        :param parent: Frame padre donde insertar el control.
+        :type parent: ttk.Frame
+
+        :param label: Texto descriptivo de la etiqueta.
+        :type label: str
+
+        :param var: Variable tkinter (StringVar, IntVar, etc) asociada al Entry.
+        :type var: tk.Variable
+
+        :param width: Ancho del Entry en caracteres (default: 22).
+        :type width: int
+
+        :returns: Widget Entry creado.
+        :rtype: ttk.Entry
+        """
         ttk.Label(parent, text=label).pack(anchor=tk.W)
         entry = ttk.Entry(parent, textvariable=var, width=width)
         pack_kwargs: dict = {"pady": 2}  # type: ignore[annotation-unchecked]
@@ -492,7 +623,20 @@ class PSApp:
         self._config_widgets.append(entry)
         return entry
 
-    def _setup_axes(self):
+    def _setup_axes(self) -> None:
+        """
+        Configura los tres ejes matplotlib con etiquetas, límites y estilos.
+
+        Inicializa:
+        - Eje 1 (loss): Pérdida en escala libre
+        - Eje 2 (acc): Precisión limitada a 0-100%
+        - Eje 3 (workers): Número de workers activos en escala libre
+
+        Todos incluyen grid sutil (alpha=0.3) y etiquetas X/Y.
+
+        :returns: None
+        :rtype: None
+        """
         for ax, title, ylabel in [
             (self._ax_loss, "Pérdida (ventana deslizante)", "Loss"),
             (self._ax_acc, "Precisión (ventana deslizante)", "Precisión (%)"),
@@ -509,8 +653,15 @@ class PSApp:
         """
         Habilita o deshabilita el campo LR CNN según la arquitectura seleccionada.
 
+        Lógica:
         - resnet18: CNN siempre congelada → LR CNN no tiene efecto → deshabilitar
         - simple:   CNN entrenable E2E   → LR CNN controla su velocidad → habilitar
+
+        También actualiza el texto informativo debajo del campo para clarificar
+        el estado actual de la CNN (congelada vs entrenable).
+
+        :returns: None
+        :rtype: None
         """
         if self._ent_lr_cnn is None:
             return
@@ -533,7 +684,15 @@ class PSApp:
         """
         Desactiva o activa todos los widgets de configuración.
 
-        :param enabled: True para activar, False para desactivar.
+        Itera sobre self._config_widgets y establece su estado (NORMAL/DISABLED).
+        Se utiliza para bloquear parámetros cuando el servidor está activo.
+        Ignora errores en widgets que no tengan propiedad state (e.g., Labels).
+
+        :param enabled: True para activar (state=NORMAL), False para desactivar (state=DISABLED).
+        :type enabled: bool
+
+        :returns: None
+        :rtype: None
         """
         state = tk.NORMAL if enabled else tk.DISABLED
         for widget in self._config_widgets:
@@ -548,6 +707,20 @@ class PSApp:
     # ================================================================
 
     def _refresh_buttons(self) -> None:
+        """
+        Actualiza estado de botones de acción según el estado del servidor.
+
+        Estados posibles:
+        - OFFLINE: Solo "Encender servidor" habilitado
+        - LOADING: Solo "Detener" habilitado
+        - LISTENING: "Iniciar entrenamiento" (si hay workers) + "Detener"
+        - TRAINING: "Evaluar" + "Detener" habilitados
+
+        También actualiza indicador visual del servidor (label con color y estado).
+
+        :returns: None
+        :rtype: None
+        """
         has_w = bool(self._workers)
         s = self._state
         self._btn_listen.configure(
@@ -580,22 +753,35 @@ class PSApp:
         Carga CNN+MLP en hilo background e inicia servidor TCP.
 
         Proceso:
-        1. Lee parámetros de GUI (validación de tipos)
+        1. Lee y valida todos los parámetros de GUI (tipos: int, float, str)
         2. Cambia estado a LOADING ('Cargando...')
-        3. Lanza hilo background que:
+        3. Lanza hilo daemon con _init():
            - Instancia CNN desde arquitectura seleccionada (resnet18/simple)
-           - Instancia MLP con hidden1/hidden2 seleccionados
-           - Instancia ParameterServer con parámetros Async-SGD (lr, λ, windows)
-           - Llama ps.set_cnn(), ps.set_mlp(), ps.listen()
-        4. Loop principal recibe eventos (step, report, worker_connected, worker_disconnected)
-        5. Actualiza gráficas y status en tiempo real
+           - Instancia MLP con hidden1/hidden2 seleccionados y feature_dim del CNN
+           - Instancia ParameterServer con parámetros Async-SGD (lr, lr_cnn, λ, windows)
+           - Registra callbacks para eventos (step, report, worker_connected, worker_disconnected)
+           - Llama ps.set_cnn(), ps.set_mlp(), ps.listen() para iniciar escucha TCP
+        4. Envía evento ps_ready a la cola si éxito, o init_error si falla
+        5. Loop principal (_poll) recibe eventos y actualiza GUI en tiempo real
 
         GUI no se congela durante descarga de ResNet-18 (~50MB) gracias a threading.
+
+        Parámetros parseados:
+        - host: dirección IP (default 0.0.0.0)
+        - port: puerto TCP (default 9999)
+        - lr, lr_cnn: learning rates (float)
+        - lam: staleness lambda 0-1 (float)
+        - rep, win: steps per report, metrics window (int)
+        - h1, h2: hidden layer sizes (int)
+        - arch: CNN architecture "resnet18" o "simple" (str)
+        - bs, img_sz: batch size, image size (int)
+        - seed: reproducibility seed o None (int/None)
+        - hf_token: HuggingFace token o None (str/None)
 
         :returns: None
         :rtype: None
 
-        :raises messagebox.showerror: Si parámetros inválidos (no son int/float)
+        :raises messagebox.showerror: Si parámetros inválidos (incompatible con tipos esperados)
         """
         try:
             host = self._v_host.get().strip()
@@ -702,16 +888,24 @@ class PSApp:
 
     def _cmd_train(self) -> None:
         """
-        Inicia el entrenamiento en los Workers (envía START a todos).
+        Inicia el entrenamiento distribuido asíncrono en todos los Workers.
 
-        Requisitos:
-        - Servidor en estado LISTENING (Workers conectados y en standby)
+        Requisitos previos:
+        - Servidor en estado LISTENING (CNN+MLP cargados, escuchando TCP)
         - Al menos 1 Worker debe estar conectado
 
-        Envía mensaje START a todos los Workers. Ellos entran en loop
-        de entrenamiento indefinido (REQUEST_PARAMS → sync → train → UPDATES).
+        Acciones:
+        1. Valida estado (LISTENING) y existencia de workers
+        2. Cambia estado a TRAINING
+        3. Registra timestamp de inicio (self._t_start) para cálculo de elapsed time
+        4. Desactiva todos los controles de configuración (bloquea parámetros)
+        5. Envía mensaje START a todos los Workers vía ps.train()
+
+        Workers entran a loop indefinido:
+        REQUEST_PARAMS → sincronizar con versión actual → train batch → enviar UPDATES
 
         Cambio de estado: LISTENING → TRAINING.
+        Interfaz: configura descongelada → congelada.
 
         :returns: None
         :rtype: None
@@ -727,16 +921,23 @@ class PSApp:
 
     def _cmd_shutdown(self) -> None:
         """
-        Detiene el servidor PS y todos los Workers.
+        Detiene el servidor PS y desconecta todos los Workers.
 
         Proceso:
-        1. Cambia estado a OFFLINE
-        2. Envía STOP a cada Worker (interrumpe training loop)
-        3. Cierra sockets TCP
-        4. Limpia thread daemon de listening
-        5. Resetea interfaz a estado inicial
+        1. Verifica que ps existe (validación de estado)
+        2. Si en TRAINING: solicita confirmación antes de detener
+        3. Lanza ps.stop() en hilo daemon:
+           - Envía STOP a cada Worker conectado
+           - Cierra socket listener TCP
+           - Detiene loop de handshake
+        4. Cambia estado a OFFLINE
+        5. Limpia referencias: self._ps = None, self._workers.clear()
+        6. Vacía tabla Treeview de workers
+        7. Rehabilita todos los controles de configuración
+        8. Actualiza interfaz visual
 
         Cambio de estado: LOADING/LISTENING/TRAINING → OFFLINE.
+        Interfaz: congelada → descongelada.
 
         :returns: None
         :rtype: None
@@ -758,6 +959,25 @@ class PSApp:
         self._status.set("Servidor detenido.")
 
     def _cmd_evaluate(self) -> None:
+        """
+        Ejecuta evaluación no-bloqueante del modelo en el split de validación.
+
+        Requisitos:
+        - Servidor inicializado (self._ps existe)
+        - Estado TRAINING (solo evaluar modelo mientras se entrena)
+
+        Proceso:
+        1. Lee parámetros de validación de GUI (dataset, token HF, número batches)
+        2. Lanza ps.evaluate() en hilo daemon (no bloquea GUI)
+        3. Envía evento 'log' para mostrar "Evaluando..."
+        4. Al terminar, envía evento 'val_result' con (step, loss, accuracy)
+        5. Handler _on_val() agrega resultados a histórico y actualiza gráficas
+
+        Errores se capturan y loguean como eventos 'log' sin interrumpir ejecución.
+
+        :returns: None
+        :rtype: None
+        """
         if not self._ps or self._state != self._S_TRAINING:
             return
         dataset = self._v_dataset.get().strip()
@@ -784,6 +1004,29 @@ class PSApp:
     # ================================================================
 
     def _poll(self) -> None:
+        """
+        Loop principal que procesa eventos asíncronos de la cola de eventos.
+
+        Evento queue permite comunicación no-bloqueante entre:
+        - Hilo background (_init, _eval, ps.listen callbacks)
+        - Main GUI thread (this method)
+
+        Tipos de eventos procesados:
+        - ps_ready: PS inicializado → actualiza estado, log
+        - init_error: Fallo en _init() → muestra error, revierte a OFFLINE
+        - connected/disconnected: Worker cambió estado → tabla + refresh buttons
+        - step: Step de entrenamiento → actualiza métricas instantáneas
+        - report: Reporte periódico → gráficas + historial
+        - val_result: Resultado evaluación → gráficas + historial validación
+        - log: Mensaje genérico → agrega a widget Text
+        - error: Excepción capturada → muestra error, revierte a LISTENING si TRAINING
+
+        Loop persiste cuando estado != OFFLINE. Timeout 100ms entre calls para
+        permitir responsividad de GUI.
+
+        :returns: None
+        :rtype: None
+        """
         try:
             while True:
                 kind, data = self._q.get_nowait()
@@ -842,7 +1085,27 @@ class PSApp:
     # HANDLERS
     # ================================================================
 
-    def _on_connected(self, wid, addr) -> None:
+    def _on_connected(self, wid: int, addr: str) -> None:
+        """
+        Maneja evento de conexión de un nuevo Worker.
+
+        Acciones:
+        1. Registra el Worker en diccionario self._workers[wid] = addr
+        2. Agrega fila a tabla Treeview con (ID, dirección, "Activo")
+        3. Asigna color único al Worker usando lista WORKER_COLORS (cíclica)
+        4. Actualiza botones (habilita "Iniciar entrenamiento" si hay workers)
+        5. Loguea mensaje de conexión
+        6. Actualiza status bar con recuento de workers conectados
+
+        :param wid: ID único del Worker (asignado por PS).
+        :type wid: int
+
+        :param addr: Dirección de red del Worker (formato "IP:puerto").
+        :type addr: str
+
+        :returns: None
+        :rtype: None
+        """
         self._workers[wid] = addr
         tag = f"w{wid}"
         color = self.WORKER_COLORS[wid % len(self.WORKER_COLORS)]
@@ -855,20 +1118,88 @@ class PSApp:
         self._log(f"[W{wid}] Conectado desde {addr}")
         self._status.set(f"Worker {wid} conectado | Total: {len(self._workers)}")
 
-    def _on_disconnected(self, wid) -> None:
+    def _on_disconnected(self, wid: int) -> None:
+        """
+        Maneja evento de desconexionesión de un Worker.
+
+        Acciones:
+        1. Remueve Worker from self._workers dictionary
+        2. Elimina fila correspondiente de tabla Treeview
+        3. Actualiza botones (deshabilita "Iniciar entrenamiento" si no quedan workers)
+        4. Loguea evento de desconexión
+
+        :param wid: ID del Worker desconectado.
+        :type wid: int
+
+        :returns: None
+        :rtype: None
+        """
         self._workers.pop(wid, None)
         if self._tree.exists(f"w{wid}"):
             self._tree.delete(f"w{wid}")
         self._refresh_buttons()
         self._log(f"[W{wid}] Desconectado.")
 
-    def _on_step(self, step, loss, acc, stale) -> None:
+    def _on_step(self, step: int, loss: float, acc: float, stale: int) -> None:
+        """
+        Actualiza métricas instantáneas de entrenamiento.
+
+        Se llama después de cada step de entrenamiento en algún Worker.
+        Actualiza los labels de status bar con valores actuales (sin agregar a historial).
+
+        Métricas mostradas:
+        - Step: número de step actual (con separadores de miles)
+        - Loss: pérdida actual con 4 decimales
+        - Acc: precisión actual con 2 decimales (%)
+        - Staleness: versión máxima desincronización observada
+
+        :param step: Número del step de entrenamiento global.
+        :type step: int
+
+        :param loss: Valor de pérdida (loss) del batch actual.
+        :type loss: float
+
+        :param acc: Precisión en porcentaje (0-100).
+        :type acc: float
+
+        :param stale: Máximo staleness observado (versión del modelo más antigua en uso).
+        :type stale: int
+
+        :returns: None
+        :rtype: None
+        """
         self._m_step.set(f"Step: {step:,}")
         self._m_loss.set(f"Loss: {loss:.4f}")
         self._m_acc.set(f"Acc: {acc:.2f}%")
         self._m_stale.set(f"Staleness: {stale}")
 
-    def _on_report(self, step, loss, acc) -> None:
+    def _on_report(self, step: int, loss: float, acc: float) -> None:
+        """
+        Agrega métricas a historial y actualiza gráficas (cada steps_per_report steps).
+
+        Se dispara periódicamente (cada N steps según steps_per_report).
+        Agrega puntos al historial de entrenamiento para reconstrucción de gráficas.
+
+        Acciones:
+        1. Agrega (step, loss, acc) a historial
+        2. Registra número de workers activos en este reporte
+        3. Redibuja gráficas (ejes loss, acc, workers)
+        4. Calcula tiempo transcurrido desde inicio
+        5. Actualiza status bar con resumen
+        6. Loguea el reporte
+
+        :param step: Número de step global del reporte.
+        :type step: int
+
+        :param loss: Pérdida promedio en ventana de training.
+        :type loss: float
+
+        :param acc: Precisión promedio en ventana de training (%).
+        :type acc: float
+
+        :returns: None
+        :rtype: None
+        """
         self._steps_hist.append(step)
         self._loss_hist.append(loss)
         self._acc_hist.append(acc)
@@ -881,7 +1212,32 @@ class PSApp:
         )
         self._log(f"[Step {step:,}] loss={loss:.4f} | acc={acc:.2f}%")
 
-    def _on_val(self, step, loss, acc) -> None:
+    def _on_val(self, step: int, loss: float, acc: float) -> None:
+        """
+        Agrega métricas de validación a historial y actualiza gráficas.
+
+        Se dispara cuando termina una evaluación en validación (llamada a _cmd_evaluate).
+        Agrega puntos al historial de validación que se grafican como scatter plot
+        superpuesto sobre las curvas de entrenamiento.
+
+        Acciones:
+        1. Agrega (step, loss, acc) a histórico de validación
+        2. Redibuja gráficas (superpone scatter points sobre curvas de training)
+        3. Loguea resultado de validación
+        4. Actualiza status bar con métricas de validación
+
+        :param step: Step del modelo global al momento de la evaluación.
+        :type step: int
+
+        :param loss: Pérdida en validación.
+        :type loss: float
+
+        :param acc: Precisión en validación (%).
+        :type acc: float
+
+        :returns: None
+        :rtype: None
+        """
         self._val_steps.append(step)
         self._val_loss.append(loss)
         self._val_acc.append(acc)
@@ -889,7 +1245,25 @@ class PSApp:
         self._log(f"[Val] step={step:,} | acc={acc:.2f}% | loss={loss:.4f}")
         self._status.set(f"Validación | acc={acc:.2f}% | loss={loss:.4f}")
 
-    def _on_error(self, exc) -> None:
+    def _on_error(self, exc: Exception) -> None:
+        """
+        Maneja excepciones capturadas en hilos background.
+
+        Acciones:
+        1. Loguea excepción en widget Text
+        2. Muestra diálogo de error al usuario
+        3. Si estaba en TRAINING: revierte a LISTENING (mantiene setup)
+        4. Actualiza interfaz
+
+        Permite al usuario recuperarse de errores sin reiniciar todo
+        (e.g., error de red, timeout en evaluación).
+
+        :param exc: Excepción capturada (será convertida a string).
+        :type exc: Exception
+
+        :returns: None
+        :rtype: None
+        """
         self._log(f"[ERROR] {exc}")
         messagebox.showerror("Error", str(exc))
         if self._state == self._S_TRAINING:
@@ -901,6 +1275,25 @@ class PSApp:
     # ================================================================
 
     def _update_plots(self) -> None:
+        """
+        Redibuja las tres gráficas de monitoreo en tiempo real.
+
+        Procesa histor- tales:
+        1. Eje izquierda (Pérdida): Línea de training con puntos scatter de validación
+        2. Eje centro (Precisión): Línea de training con puntos scatter de validación
+        3. Eje derecha (Workers): Gráfico de pasos mostrando número de workers activos
+
+        Limpia ejes previos, redibuja configuración (grid, límites), y renderiza
+        puntos nuevos. Se llama después de eventos report y val_result.
+
+        Colores:
+        - Training (línea): Rojo (#F44336) para loss, Azul (#2196F3) para accuracy
+        - Validación (scatter): Naranja (#FF9800)
+        - Workers (step): Verde (#4CAF50)
+
+        :returns: None
+        :rtype: None
+        """
         for ax in (self._ax_loss, self._ax_acc, self._ax_wk):
             ax.clear()
         self._setup_axes()
@@ -954,6 +1347,22 @@ class PSApp:
         self._canvas.draw()
 
     def _clear_plots(self) -> None:
+        """
+        Limpia todos los historéticos de métricas y borra gráficas.
+
+        Vacía listas de historial:
+        - _steps_hist, _loss_hist, _acc_hist: training
+        - _val_steps, _val_loss, _val_acc: validación
+        - _workers_hist: conteo de workers
+
+        Luego redibuja ejes vacios. No afecta el entrenamiento en progreso
+        (los eventos step/report seguirán llegándole a la cola).
+
+        Ústil para limpiar gráficas sin reiniciar el PS ni detener el entrenamiento.
+
+        :returns: None
+        :rtype: None
+        """
         for lst in (
             self._steps_hist,
             self._loss_hist,
@@ -971,6 +1380,28 @@ class PSApp:
     # ================================================================
 
     def _log(self, msg: str) -> None:
+        """
+        Añade un mensaje al widget de log con manejo de overflow automático.
+
+        Inserta mensaje al final del widget Text, añade salto de línea,
+        y mantiene buffer limitado a últimos 300 renglones para evitar
+        agotamiento de memoria.
+
+        Automáticamente desplaza al final del log (scroll) y mantiene
+        el widget deshabilitado cuando no se está escribiendo.
+
+        Formato esperado: "
+        - "[PS] Mensaje del servidor"
+        - "[W0] Mensaje del Worker 0"
+        - "[Val] Mensaje de validación"
+        - "[ERROR] Mensaje de error"
+
+        :param msg: Cadena a agregar al log (sin salto de línea).
+        :type msg: str
+
+        :returns: None
+        :rtype: None
+        """
         self._log_txt.configure(state=tk.NORMAL)
         self._log_txt.insert(tk.END, msg + "\n")
         lines = int(self._log_txt.index(tk.END).split(".")[0])
@@ -986,6 +1417,25 @@ class PSApp:
 
 
 def main() -> None:
+    """
+    Punto de entrada principal: inicializa GUI del Parameter Server.
+
+    Crea ventana tkinter raíz, instancia aplicación PSApp, y configura
+    handler de cierre. Detecta intento de cierre (X button) y solicita
+    confirmación si hay entrenamiento en progreso.
+
+    Cleanup en caso de cierre:
+    1. Si TRAINING: confirma "¿Detener entrenamiento y salir?"
+    2. Si PS existe: intenta ps.stop() para liberar recursos limpiamente
+    3. Destruye ventana tkinter
+    4. Exit proceso con os._exit(0)
+
+    El exitway forzado (os._exit) asegura terminación incluso si hay
+    threads daemon aún en ejecución.
+
+    :returns: None
+    :rtype: None
+    """
     root = tk.Tk()
     app = PSApp(root)
 

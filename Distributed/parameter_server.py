@@ -100,30 +100,6 @@ class RunningMetrics:
 class ParameterServer:
     """
     Parameter Server asíncrono para entrenamiento distribuido en ImageNet.
-
-    Ciclo de vida recomendado:
-        ps = ParameterServer(...)
-        ps.set_cnn(cnn)
-        ps.set_mlp(mlp_state)
-        ps.listen()
-        ps.stop()
-
-    :param host:              IP de escucha.
-    :param port:              Puerto TCP.
-    :param learning_rate:     LR del MLP para SGD local de cada Worker.
-    :param learning_rate_cnn: LR de la CNN para SGD local (solo en modo E2E/simple).
-                              En modo resnet18 (freeze), este valor viaja en PARAMS
-                              pero el Worker lo ignora porque la CNN está congelada.
-    :param staleness_lambda:  Corrección de staleness (0.0 = sin corrección).
-    :param steps_per_report:  Steps entre llamadas a on_report.
-    :param metrics_window:    Tamaño de la ventana deslizante.
-    :param batch_size:        Tamaño de batch para SGD local (enviado a Workers en CONFIG).
-    :param image_size:        Resolución de imágenes (ancho y alto, cuadradas, enviado en CONFIG).
-    :param seed:              Semilla RNG para reproducibilidad (None = aleatorio, enviado en CONFIG).
-    :param on_step:           Callback por cada step: (step, loss, acc, staleness).
-    :param on_report:         Callback cada steps_per_report: (step, loss, acc).
-    :param on_worker_connected:    Callback: (worker_id, addr_str).
-    :param on_worker_disconnected: Callback: (worker_id,).
     """
 
     def __init__(
@@ -177,6 +153,9 @@ class ParameterServer:
         :param image_size: Tamaño de crop final post-descarga (defecto: 224).
                           Se distribuye a todos los Workers via CONFIG
         :type image_size: int
+
+        :param seed: Semilla RNG para reproducibilidad (None = aleatorio, enviado en CONFIG).
+        :type seed: Optional[int]
 
         :param on_step: Callback tras cada step de gradiente.
                        Firma: Callable[[int, float, float, float], None]
@@ -258,13 +237,19 @@ class ParameterServer:
 
     def set_cnn(self, cnn: CNNExtractor) -> None:
         """
-        Registra la CNN y serializa su estado en _cnn_state.
+        Registra la CNN global y serializa su estado inicial en _cnn_state.
 
         Debe llamarse idealmente ANTES de listen() para que los Workers
         que conecten reciban los pesos sin espera.
 
         Los tensores int64 (num_batches_tracked de BatchNorm) se guardan
         en _no_avg_keys y se excluyen del averaging en _apply_update.
+
+        :param cnn: Extractor CNN a registrar como modelo global.
+        :type cnn: CNNExtractor
+
+        :returns: None
+        :rtype: None
         """
         self._cnn = cnn
         base = getattr(cnn._model, "model", cnn._model)  # Accede al modelo interno
@@ -294,7 +279,12 @@ class ParameterServer:
         Registra el estado inicial del MLP en formato PyTorch state_dict.
 
         Claves esperadas: fc1.weight, fc1.bias, fc2.weight, fc2.bias,
-                          fc3.weight, fc3.bias.
+        fc3.weight, fc3.bias.
+
+        :param mlp_state: Estado del MLP (diccionario de pesos/sesgos en numpy).
+        :type mlp_state: Dict[str, np.ndarray]
+        :returns: None
+        :rtype: None
         """
         with self._params_lock:
             self._mlp_state = {key: value.copy() for key, value in mlp_state.items()}
@@ -393,16 +383,25 @@ class ParameterServer:
 
     def _handle_new_connection(self, conn: socket.socket, addr: tuple) -> None:
         """
-        Handshake completo para un Worker nuevo.
+        Handshake completo para un Worker nuevo recien conectado.
 
         Secuencia:
           1. Recibir READY
           2. Enviar WORKER_ID
-          3. Esperar a que CNN + MLP estén listos (máx 120 s)
+          3. Esperar a que CNN + MLP esten listos (max 120 s)
           4. Enviar CNN_WEIGHTS (siempre, nunca opcional)
-          5. Esperar CNN_ACK con verificación de arquitectura
+          5. Esperar CNN_ACK con verificacion de arquitectura
           6. Enviar START
           7. Loop _serve_worker
+
+        :param conn: Socket de conexion entrante.
+        :type conn: socket.socket
+
+        :param addr: Tupla (IP, puerto) del cliente.
+        :type addr: tuple
+
+        :returns: None
+        :rtype: None
         """
         # ----------------- 1. READY -----------------
         try:
@@ -609,7 +608,7 @@ class ParameterServer:
                         break
 
                 elif mtype == MsgType.UPDATES:
-                    self._apply_update(wid, msg["payload"])
+                    self._apply_update(msg["payload"])
 
         finally:
             _log.ps(f"Worker {wid} desconectado.")
@@ -619,7 +618,7 @@ class ParameterServer:
     # ACTUALIZACIÓN ASÍNCRONA
     # ================================================================
 
-    def _apply_update(self, wid: int, payload: dict) -> None:
+    def _apply_update(self, payload: dict) -> None:
         """
         Aplica los pesos actualizados con corrección de staleness.
 
@@ -631,6 +630,12 @@ class ParameterServer:
         no se promedian: mantienen el valor del PS. Promediar un contador
         de batches no tiene significado semántico y puede distorsionar
         el comportamiento de BatchNorm en eval().
+
+        :param payload: Diccionario con actualización del Worker: loss, accuracy, version_read, mlp_weights, cnn_weights.
+        :type payload: dict
+
+        :returns: None
+        :rtype: None
         """
         loss = payload.get("loss", 0.0)
         acc = payload.get("accuracy", 0.0)
@@ -708,17 +713,29 @@ class ParameterServer:
         hf_token: Optional[str] = None,
     ) -> Tuple[float, float]:
         """
-        Evaluación rápida en el split de validación de ImageNet.
+        Evaluación rápida del modelo global en el split de validación de ImageNet.
 
-        Lo que hace es:
-            1. Copia pesos actuales
+        Proceso:
+            1. Copia pesos actuales del estado global
             2. Carga la CNN con esos pesos
             3. Reconstruye el MLP
-            4. Pasa datos de validación
-            5. Calcula accuracy y loss
+            4. Procesa batches de validación
+            5. Calcula accuracy y loss promedio
 
-        :param max_batches: 50 × 256 = 12,800 imágenes por defecto.
-        :return: (accuracy_pct, mean_loss)
+        :param dataset_name: Nombre del dataset en HuggingFace Hub.
+        :type dataset_name: str
+
+        :param max_batches: Numero de batches a evaluar (50 x 256 = 12,800 imagenes por defecto).
+        :type max_batches: int
+
+        :param batch_size: Imagenes por batch de evaluacion.
+        :type batch_size: int
+
+        :param hf_token: Token de autenticacion HuggingFace.
+        :type hf_token: Optional[str]
+
+        :returns: Tupla (accuracy_percentaje, mean_loss)
+        :rtype: Tuple[float, float]
         """
         from Utils.imagenet_streaming import ValidationStream
         from Model.mlp_pytorch import MLPPyTorch
@@ -793,7 +810,16 @@ class ParameterServer:
     # ================================================================
 
     def get_state(self) -> Tuple[Dict[str, np.ndarray], Dict[str, np.ndarray], int]:
-        """Devuelve (mlp_state, cnn_state, version) — copia thread-safe."""
+        """
+        Obtiene copia thread-safe del estado actual del modelo global.
+
+        Devuelve una tupla con copias de los pesos del MLP, CNN y la versión
+        actual. Las copias evitan carreras de datos cuando múltiples threads
+        acceden simultáneamente.
+
+        :returns: Tupla (mlp_state, cnn_state, version) donde mlp_state y cnn_state son Dict[str, np.ndarray] y version es int.
+        :rtype: Tuple[Dict[str, np.ndarray], Dict[str, np.ndarray], int]
+        """
         with self._params_lock:
             return (
                 {key: value.copy() for key, value in self._mlp_state.items()},
@@ -802,6 +828,19 @@ class ParameterServer:
             )
 
     def _disconnect_worker(self, wid: int) -> None:
+        """
+        Desconecta un Worker enviándole mensaje STOP y cerrando el socket.
+
+        Remueve el Worker de las estructuras internas (_sockets, _addrs, _worker_freeze)
+        de forma thread-safe. Intenta enviar STOP antes de cerrar; ignora errores
+        de red (Worker puede haber desconectado ya).
+
+        :param wid: Id único del Worker a desconectar.
+        :type wid: int
+
+        :returns: None
+        :rtype: None
+        """
         with self._workers_lock:
             sock = self._sockets.pop(wid, None)
             self._addrs.pop(wid, None)
@@ -814,6 +853,20 @@ class ParameterServer:
                 pass
 
     def _remove_worker(self, wid: int) -> None:
+        """
+        Remueve un Worker sin comunicación activa y dispara callback on_worker_disconnected.
+
+        Se diferencia de _disconnect_worker en que NO envía STOP (asume que el 
+        Worker ya desconectó) y SÍ dispara el callback on_worker_disconnected para
+        notificar a la aplicación que un Worker se fue. Se usa en el finally de
+        _serve_worker cuando la conexión se cae.
+
+        :param wid: Id único del Worker a remover.
+        :type wid: int
+
+        :returns: None
+        :rtype: None
+        """
         with self._workers_lock:
             sock = self._sockets.pop(wid, None)
             self._addrs.pop(wid, None)

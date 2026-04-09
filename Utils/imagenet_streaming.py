@@ -137,6 +137,12 @@ def _extract_label(sample: dict) -> int:
         label=0, cls=5    → 0   ✓  (sin el fix: devolvería 5)
         label=None, cls=3 → 3   ✓
         label=None, cls=None → 0 ✓
+
+    :param sample: Diccionario de muestra del dataset con campos 'label', 'cls' u otros.
+    :type sample: dict
+
+    :returns: Identificador numérico de clase (0-999 en ImageNet-1k). Retorna 0 como fallback.
+    :rtype: int
     """
     lbl = sample.get("label")
     if lbl is not None:
@@ -168,15 +174,6 @@ class ImageNetStream:
         4. Transformar imágenes
         5. Crear batches
         6. Entregar batches infinitamente
-
-    :param dataset_name:   Nombre del dataset en HF Hub.
-    :param worker_rank:    Índice de este Worker (para sharding).
-    :param num_workers:    Total de Workers.
-    :param batch_size:     Imágenes por batch.
-    :param image_size:     Tamaño de crop final.
-    :param shuffle_buffer: Imágenes en buffer de shuffle (0 = sin shuffle).
-    :param seed:           Semilla del shuffle.
-    :param hf_token:       Token HF.
     """
 
     def __init__(
@@ -190,6 +187,41 @@ class ImageNetStream:
         seed: Optional[int] = None,
         hf_token: Optional[str] = None,
     ) -> None:
+        """
+        Inicializa iterador de streaming ImageNet-1k con sharding automático de Workers.
+
+        Configura pipeline de descarga perezosa desde HuggingFace: cada Worker obtiene
+        su propia porción del dataset de entrenamiento sin solapamientos. Crea transformaciones
+        de imagen según image_size. Inicializa buffers internos para batch assembly y
+        estadísticas de progreso.
+
+        :param dataset_name: Nombre del dataset en HuggingFace Hub (default: ILSVRC/imagenet-1k).
+        :type dataset_name: str
+
+        :param worker_rank: Índice único de este Worker (0-based) para sharding del dataset.
+        :type worker_rank: int
+
+        :param num_workers: Número total de Workers en entrenamiento distribuido.
+        :type num_workers: int
+
+        :param batch_size: Imágenes por batch (default: 64).
+        :type batch_size: int
+
+        :param image_size: Tamaño de crop final en píxeles (default: 224).
+        :type image_size: int
+
+        :param shuffle_buffer: Imágenes en buffer de shuffle (0 = sin shuffle, default: 1000).
+        :type shuffle_buffer: int
+
+        :param seed: Semilla RNG para reproducibilidad del shuffle (None = aleatorio).
+        :type seed: Optional[int]
+
+        :param hf_token: Token de autenticación HuggingFace (requerido para datasets privados).
+        :type hf_token: Optional[str]
+
+        :returns: None
+        :rtype: None
+        """
         self.dataset_name = dataset_name
         self.worker_rank = worker_rank
         self.num_workers = num_workers
@@ -204,7 +236,7 @@ class ImageNetStream:
 
     def _open_dataset(self):
         """
-        Usa Lazy Loading y divide el dataset de entrenamiento desde HuggingFace Hub.
+        Abre y divide el dataset de entrenamiento desde HuggingFace Hub con lazy loading.
 
         Carga dataset con streaming=True (sin caché local), aplica división por Worker
         (cada Worker obtiene muestras contiguas), y buffer de shuffle opcional para
@@ -566,12 +598,6 @@ class ValidationStream:
 
     Usado por el PS para evaluación periódica del modelo global.
     No es infinito: StopIteration al agotar el split.
-
-    :param dataset_name: Dataset HF.
-    :param batch_size:   Imágenes por batch.
-    :param image_size:   Tamaño de crop.
-    :param max_batches:  Limitar a N batches (None = todos los 50,000 imgs).
-    :param hf_token:     Token HF.
     """
 
     def __init__(
@@ -582,6 +608,27 @@ class ValidationStream:
         max_batches: Optional[int] = None,
         hf_token: Optional[str] = None,
     ) -> None:
+        """
+        Inicializa iterador de validacion para evaluacion del modelo global.
+
+        :param dataset_name: Nombre del dataset en HuggingFace Hub.
+        :type dataset_name: str
+
+        :param batch_size: Numero de imagenes por batch de evaluacion.
+        :type batch_size: int
+
+        :param image_size: Tamano del crop final en pixeles (default: 224).
+        :type image_size: int
+
+        :param max_batches: Limitar a N batches; None = todos los ~50,000 de validacion.
+        :type max_batches: Optional[int]
+
+        :param hf_token: Token de autenticacion HuggingFace (si dataset requiere).
+        :type hf_token: Optional[str]
+
+        :returns: None
+        :rtype: None
+        """
         self.dataset_name = dataset_name
         self.batch_size = batch_size
         self.max_batches = max_batches
