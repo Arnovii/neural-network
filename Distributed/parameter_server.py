@@ -856,7 +856,7 @@ class ParameterServer:
         """
         Remueve un Worker sin comunicación activa y dispara callback on_worker_disconnected.
 
-        Se diferencia de _disconnect_worker en que NO envía STOP (asume que el 
+        Se diferencia de _disconnect_worker en que NO envía STOP (asume que el
         Worker ya desconectó) y SÍ dispara el callback on_worker_disconnected para
         notificar a la aplicación que un Worker se fue. Se usa en el finally de
         _serve_worker cuando la conexión se cae.

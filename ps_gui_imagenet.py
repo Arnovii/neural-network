@@ -591,7 +591,9 @@ class PSApp:
         )
         ttk.Separator(parent, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=2)
 
-    def _entry(self, parent: ttk.Frame, label: str, var: tk.Variable, width: int = 22) -> ttk.Entry:
+    def _entry(
+        self, parent: ttk.Frame, label: str, var: tk.Variable, width: int = 22
+    ) -> ttk.Entry:
         """
         Crea un par etiqueta+entrada de texto para ingreso de parámetros.
 

@@ -330,7 +330,7 @@ class CNNExtractor:
 
         :param weights_bytes: Representación binaria del estado a cargar.
         :type weights_bytes: bytes
-        
+
         :returns: None
         :rtype: None
         """

@@ -823,7 +823,7 @@ class WorkerNode:
 
         :param cnn_state: State numpy del PS (vacío en modo freeze → no-op).
         :type cnn_state: Dict[str, np.ndarray]
-        
+
         :returns: None
         :rtype: None
         """
