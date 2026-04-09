@@ -60,7 +60,7 @@ El sistema se divide en cinco capas funcionales:
 
 El componente central es el Servidor de Parámetros (`Distributed/parameter_server.py`). Como sugiere su nombre, es un servidor TCP que escucha en un puerto específico (por defecto 9999) y acepta conexiones de Workers. Mantiene en memoria:
 
-- El estado de la CNN global (44 MB si es ResNet-18 preentrenada, 6 MB si es SimpleCNN)
+- El estado de la CNN global (44 MB si es ResNet-18 preentrenada, ~5 MB si es SimpleCNN mejorada con bloques residuales)
 - El estado del MLP global (~4.5 MB)
 - Un contador de versión que incrementa cada vez que se actualiza
 - Métricas agregadas (loss y accuracy sobre una ventana deslizante)

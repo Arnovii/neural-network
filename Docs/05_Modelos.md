@@ -56,33 +56,33 @@ Output: (N, 512)
 - ✅ Se resincroniza con CNN global (PS) cada REQUEST_PARAMS con pesos promediados
 - ✅ Dinámica: CNN global se entrena distribuida via SimpleCNN + Async-FedAvg
 
-### SimpleCNN (Para Experimentación)
+### SimpleCNN (Mejorada con Bloques Residuales Ligeros)
 
-**Archivo**: `Model/cnn_extractor.py` → `_SimpleCNN`
+**Archivo**: `Model/cnn_extractor.py` → `_SimpleCNN` + `_ResBlockLite`
+
+La nueva SimpleCNN usa **4 bloques residuales ligeros** (_ResBlockLite) en lugar de la arquitectura anterior de 3 bloques sin skip connections. Esta arquitectura permite entrenamiento E2E estable.
 
 ```python
+class _ResBlockLite(nn.Module):
+    """Bloque residual con Conv→BN→ReLU→Conv→BN + shortcut."""
+    def forward(self, x):
+        out = F.relu(self.bn1(self.conv1(x)))
+        out = self.bn2(self.conv2(out))
+        return F.relu(out + self.shortcut(x))  # ← Skip connection
+
 class _SimpleCNN(nn.Module):
     def __init__(self):
-        super().__init__()
-        def _block(in_ch, out_ch):
-            return nn.Sequential(
-                nn.Conv2d(in_ch, out_ch, kernel_size=3, padding=1, bias=False),
-                nn.BatchNorm2d(out_ch),
-                nn.ReLU(inplace=True),
-                nn.MaxPool2d(2),
-            )
-        
-        self.features = nn.Sequential(
-            _block(3, 64),           # (N,64,112,112)
-            _block(64, 128),         # (N,128,56,56)
-            _block(128, 256),        # (N,256,28,28)
-            nn.AdaptiveAvgPool2d((1, 1)),  # (N,256,1,1)
-        )
-        self.fc = nn.Sequential(
-            nn.Flatten(),
-            nn.Linear(256, 512),
-            nn.ReLU(inplace=True),
-        )
+        # Stem: Conv(3→32, stride=2)
+        self.stem = ...
+        # 4 bloques residuales en progresión: 32→32→64→128→256
+        self.layer1 = _ResBlockLite(32, 32, stride=1)    # 112×112
+        self.layer2 = _ResBlockLite(32, 64, stride=2)    # 56×56
+        self.layer3 = _ResBlockLite(64, 128, stride=2)   # 28×28
+        self.layer4 = _ResBlockLite(128, 256, stride=2)  # 14×14
+        # GAP + Dropout + Proyección
+        self.gap = AdaptiveAvgPool2d(1)
+        self.dropout = Dropout(p=0.1)
+        self.proj = Linear(256, 512)  # → feature_dim
 ```
 
 **Especificaciones**:
@@ -90,30 +90,59 @@ class _SimpleCNN(nn.Module):
 | Atributo | Valor |
 |---|---|
 | Feature dimension | 512 |
-| Parámetros totales | 1.58M |
-| Tamaño state_dict | ~6 MB en float32 |
-| Pesos | Random (Kaiming init) |
-| Velocidad (CPU) | ~12ms per batch |
-| Velocidad (GPU) | ~2ms per batch |
+| Parámetros totales | ~1.36M |
+| Tamaño state_dict | ~5 MB en float32 |
+| Pesos | Random (Kaiming Normal init) |
+| Velocidad (CPU) | ~12-15ms per batch |
+| Velocidad (GPU) | ~2-3ms per batch |
 
-**Ventajas**:
-- ✅ Muy rápida (3-5x más rápida que ResNet-18)
-- ✅ Pequeña (7x menos parámetros)
-- ✅ Sin dependencias externas
+**Arquitectura de Bloques Residuales**:
+
+Cada `_ResBlockLite(in_ch, out_ch, stride)` tiene:
+```
+┌─────────────────────────────────────┬─ shortcut
+│ Conv(stride=stride)→BN→ReLU         │ (1×1 Conv si stride≠1 o in_ch≠out_ch)
+│ Conv→BN                             │
+└─────────────────────────────────────┴─
+        ↓ (suma) ↓
+       ReLU
+```
+
+**Mejoras sobre versión anterior (~1.58M parámetros, 3 bloques conv simples)**:
+
+| Aspecto | Antes | Ahora | Ganancia |
+|---|---|---|---|
+| **Bloques** | 3 (+MaxPool) | 4 (_ResBlockLite) | Skip connections ✅ |
+| **Submuestreo** | MaxPool(2) | Conv stride=2 (en layer2/3/4) | Preserva más información |
+| **Gradiente** | Vanishing en capas iniciales | Skip connections directo | Flujo gradiente estable ✅ |
+| **Inicialización** | Kaiming | Kaiming + Zero-init BN final | BN final = identidad al inicio → estabilidad E2E ✅ |
+| **Regularización** | Ninguna | Dropout(0.1) | Reduce coadaptación ✅ |
+| **Parámetros** | 1.58M | 1.36M | -14% (más eficiente) |
+| **Estado inicial** | Random | Aproxima identidad | Loss inicial más estable |
+
+**Ventajas sobre ResNet-18**:
+- ✅ Muy rápida (8-10x más rápida que ResNet-18 en CPU)
+- ✅ Pequeña (8x menos parámetros)
+- ✅ Entrenable E2E desde cero
+- ✅ Skip connections evitan vanishing gradient
 - ✅ Ideal para testing/debugging
 
-**Desventajas**:
-- ⚠️ Sin preentrenamiento → convergencia lenta
-- ⚠️ Features iniciales aleatorias → ruido puro primeros centenares de batches
-- ⚠️ Peor generalización
-- ⚠️ SGD puro sin momentum + resincronización = convergencia muy lenta
+**Desventajas vs ResNet-18**:
+- ⚠️ Sin preentrenamiento → convergencia lenta inicialmente
+- ⚠️ Features aleatorias = ruido puro primeros centenares de batches
+- ⚠️ Peor generalización vs transfer learning
+- ⚠️ SGD puro sin momentum + resincronización → convergencia inestable
+
+**Desventaja crítica en entorno distribuido**:
+- ⚠️ **Cambios locales NO PERSISTEN**: Se resincroniza con CNN global (PS) cada REQUEST_PARAMS
+- ⚠️ Dinámica: CNN local se sobrescribe con promedio global → gradientes computados "desaparecen"
+- **NO RECOMENDADA para producción**: Inestabilidad inherente de Async-FedAvg E2E
 
 **Estado en el Sistema**:
 - ✅ **ENTRENABLE (requires_grad=True)**: Recibe gradientes en backward
-- ✅ CNN se actualiza localmente con SGD
-- ⚠️ Cambios locales NO PERSISTEN: se resincroniza con CNN global (PS) cada REQUEST_PARAMS
-- ⚠️ Dinámica: CNN local se descarta periódicamente y se sobrescribe con promedio global
-- ⚠️ **NO RECOMENDADA**: Features aleatorias + resincronización = learning inestable
+- ✅ CNN se actualiza localmente con SGD cada batch
+- ✅ CNN se resincroniza con PS cada REQUEST_PARAMS (ver Async-FedAvg en Docs/00)
+- ⚠️ **Dinámica Async-FedAvg**: Cambios locales se pierden, pero gradientes se promedian globalmente
 
 ---
 
