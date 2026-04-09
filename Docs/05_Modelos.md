@@ -158,21 +158,6 @@ state_dict → BytesIO buffer → torch.save() → bytes
 bytes → BytesIO buffer → torch.load() → state_dict
 ```
 
-#### Extracción en Batches (Para Validación)
-
-```python
-def extract_batched(X, batch_size=512, verbose=False):
-    """
-    Extraer features de N imágenes sin agotar VRAM.
-    
-    :param X:           (N, 3, H, W) float32
-    :param batch_size:  Imágenes por mini-batch interno
-    :param verbose:     Imprimir progreso
-    :return:            (N, 512) float32
-    """
-    # Itera en mini-batches
-    # Retorna concatenación de todos
-```
 
 ---
 

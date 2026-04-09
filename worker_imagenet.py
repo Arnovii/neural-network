@@ -138,7 +138,6 @@ def main() -> None:
         seed=args.seed,
         hf_token=hf_token,
         accum_steps=args.accum_steps,
-        verbose=not args.quiet,
     ).run()
 
 

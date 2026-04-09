@@ -116,9 +116,6 @@ class WorkerNode:
     :param accum_steps: Número de batches a acumular antes de enviar UPDATES al PS.
     :type accum_steps: int
 
-    :param verbose: Imprimir logs de progreso cada 10 batches.
-    :type verbose: bool
-
     :note: batch_size, image_size y seed se reciben del PS mediante mensaje CONFIG durante conexión. lr y lr_cnn se reciben del PS mediante PARAMS en cada iteración.
 
     :raises ConnectionError: Si falla la conexión inicial con el Parameter Server.
@@ -138,7 +135,6 @@ class WorkerNode:
         seed: Optional[int] = None,
         hf_token: Optional[str] = None,
         accum_steps: int = 1,
-        verbose: bool = True,
     ) -> None:
         # Configuración de red
         self.server_host = server_host
@@ -160,7 +156,6 @@ class WorkerNode:
         self.seed = seed
         self.device = torch.device(device)
         self.accum_steps = accum_steps
-        self.verbose = verbose
 
         # Recibidos via CONFIG del PS
         self.batch_size: Optional[int] = None
@@ -659,7 +654,7 @@ class WorkerNode:
             avg_acc = total_acc / total_n
             self._batches_done += self.accum_steps
 
-            if self.verbose and self._batches_done % 10 == 0:
+            if self._batches_done % 10 == 0:
                 _log.worker_msg(
                     self._worker_id,
                     f"batch={self._batches_done} | "

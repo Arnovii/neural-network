@@ -185,7 +185,7 @@ def _training_loop(self) -> None:
         avg_acc = total_acc / total_n
         self._batches_done += self.accum_steps
 
-        if self.verbose and self._batches_done % 10 == 0:
+        if self._batches_done % 10 == 0:
             assert self._stream is not None
             self._log(
                 f"batch={self._batches_done} | "
@@ -398,11 +398,6 @@ def _serialize_mlp(self) -> Dict[str, np.ndarray]:
      │    └────────────────────────────────── batches entrenadas
      └───────────────────────────────────── worker ID
 ```
-
-### Niveles de Detalle
-
-- **verbose=False**: Solo conexión/desconexión
-- **verbose=True**: Log cada 10 batches
 
 ---
 

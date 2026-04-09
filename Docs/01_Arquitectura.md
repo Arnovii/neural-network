@@ -110,7 +110,6 @@
   "_stream": PrefetchBuffer,                # datos con prefetch
   "_batches_done": int,                     # contador de batches
   "device": torch.device,                   # cpu/cuda/mps
-  "verbose": bool                           # logging verboso
 }
 ```
 

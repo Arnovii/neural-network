@@ -14,7 +14,7 @@ FLUJO CORRECTO:
 MEJORAS VS VERSIÓN ANTERIOR:
   - CNN+MLP se cargan en hilo background → la GUI no se congela (~50MB ResNet-18)
   - Indicador visual "Cargando..." mientras descarga pesos
-  - Logging limpio: sin logs por iteración (verbose reducido)
+  - Logging limpio: sin logs por iteración (solo mensajes críticos)
   - num_batches_tracked excluido del averaging en el PS
   - Label bug corregido en imagenet_streaming.py
 """
