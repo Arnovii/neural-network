@@ -57,7 +57,7 @@ El repositorio incluye documentación exhaustiva en el subdirectorio `./Docs/`:
 
 ✅ **Arquitecturas CNN soportadas**:
   - ResNet-18 con pesos IMAGENET1K_V1 preentrenados (~50M parámetros)
-  - SimpleCNN custom de 3 bloques (~1M parámetros)
+  - SimpleCNN mejorado con 4 bloques residuales ligeros (~1.36M parámetros)
 
 ✅ **Clasificador MLP configurable** (feature_dim → hidden1 → hidden2 → 1000 clases)
 
@@ -144,7 +144,7 @@ El repositorio incluye documentación exhaustiva en el subdirectorio `./Docs/`:
 #### **Modelos**
 - **CNN Extractor**: Transforma imágenes (3, 224, 224) → (512) features
   - ResNet-18: 50M params, preentrenado
-  - SimpleCNN: 1M params, custom
+  - SimpleCNN: ~1.36M params, custom con skip connections
 - **MLP Classifier**: Clasifica 1000 clases sobre features CNN
 
 #### **Comunicación**
@@ -548,7 +548,7 @@ python ps_gui_imagenet.py
 - **Default**: `resnet18`
 - **Opciones**:
   - `resnet18`: ResNet-18 con pesos IMAGENET1K_V1 (50M parámetros)
-  - `simple`: SimpleCNN custom de 3 bloques (1M parámetros)
+  - `simple`: SimpleCNN mejorado de 4 bloques residuales (~1.36M parámetros)
 - **Impacto**:
   - ResNet-18: Mejor convergencia (pesos preentrenados), más lento
   - SimpleCNN: Más rápido, menos parámetros, convergencia más lenta
