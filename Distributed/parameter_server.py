@@ -232,7 +232,7 @@ class ParameterServer:
         # Workers
         self._sockets: Dict[int, socket.socket] = {}
         self._addrs: Dict[int, str] = {}
-        self._worker_freeze: Dict[int, bool] = {}  # wid → freeze_cnn
+        self._worker_freeze: Dict[int, bool] = {}  # wid -> freeze_cnn
         self._next_id: int = 0
         self._workers_lock = threading.Lock()
 
@@ -653,22 +653,20 @@ class ParameterServer:
             if cnn_weights:
                 for key in self._cnn_state:
                     if key in self._no_avg_keys:
-                        continue  # num_batches_tracked: no promediar
-                    if key in cnn_weights:
-                        curr = self._cnn_state[key].astype(
-                            np.float64
-                        )  # Previene errores numéricos
-                        incoming = cnn_weights[key]
-                        if incoming.dtype not in (
-                            np.float32,
-                            np.float64,
-                        ):  # Convierte si hace falta
-                            incoming = incoming.astype(np.float64)
-                        self._cnn_state[key] = (
-                            curr + alpha * (incoming - curr)
-                        ).astype(
-                            self._cnn_state[key].dtype
-                        )  # Mantiene compatibilidad con PyTorch
+                        continue
+                    if key not in cnn_weights:
+                        continue
+                    arr = self._cnn_state[key]   # float32 ya en el tipo correcto
+                    inc = cnn_weights[key]
+                    # OPTIMIZACIÓN: FedAvg en float32 directamente.
+                    # La diferencia numérica vs float64 es ~1e-7 relativa,
+                    # negligible para señales de gradiente (~1e-3 a 1e-5).
+                    # arr += alpha*(inc-arr) es in-place: evita asignación de nuevo array.
+                    # Versión anterior: astype(float64) → aritmética → astype(float32)
+                    # → 2 copias extra + aritmética 2× más lenta en numpy.
+                    if inc.dtype != arr.dtype:
+                        inc = inc.astype(arr.dtype)
+                    arr += alpha * (inc - arr)
 
             self._version += 1
             step = self._version

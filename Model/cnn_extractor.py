@@ -10,12 +10,22 @@ ARQUITECTURAS:
                Se construye CONGELADA (requires_grad=False, eval).
                Semántica: extractor de características fijo.
 
-  "simple"   → CNN propia de 3 bloques Conv→BN→ReLU→MaxPool.
+  "simple"   → CNN propia con bloques residuales ligeros (ResBlockLite).
+               4 bloques residuales + proyección a 512.
                feature_dim = 512. Sin pesos preentrenados.
                Se construye ENTRENABLE (requires_grad=True, eval).
                Semántica: red entrenable desde cero en modo E2E.
 
-DIFERENCIA CLAVE VS VERSIÓN ANTERIOR:
+MEJORAS VS VERSIÓN ANTERIOR (_SimpleCNN):
+  - 3 bloques sin skip → 4 ResBlockLite con skip connections
+    Ventaja: gradientes fluyen directamente a capas iniciales (sin vanishing)
+  - MaxPool entre bloques → stride=2 en Conv (preserva información espacial)
+  - Sin fc expansiva (256→512) → conv final produce 256ch + proj fc(256→512)
+  - Zero-init de BN final de cada bloque residual (estabiliza inicio E2E)
+  - Dropout(0.1) antes de la proyección (regularización ligera)
+  - Kaiming Normal init (mejor que Uniform para redes con skip)
+
+CLAVE:
   El requires_grad y preentrenamiento se determinan automáticamente por
   arquitectura en __init__, sin parámetro `pretrained` ni dependencias frágiles.
 """
@@ -29,87 +39,151 @@ from typing import Optional
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 FEATURE_DIM = 512
 
 
 # ================================================================
-# CNN SIMPLE
+# BLOQUE RESIDUAL LIGERO
+# ================================================================
+
+
+class _ResBlockLite(nn.Module):
+    """
+    Bloque residual ligero: Conv→BN→ReLU→Conv→BN + shortcut.
+
+    Beneficios sobre un bloque conv simple:
+      - Skip connection: gradiente fluye directamente desde la salida
+        a la entrada, evitando vanishing gradient en E2E training.
+      - Zero-init del BN final: al inicio, el bloque actúa como identidad
+        (out ≈ shortcut), lo que estabiliza las primeras iteraciones de SGD.
+      - Stride en la primera Conv (en lugar de MaxPool): preserva más
+        información espacial que el pooling de máximo.
+
+    :param in_ch:   Canales de entrada.
+    :param out_ch:  Canales de salida.
+    :param stride:  Stride de la primera Conv (1 = sin downsampling).
+    """
+
+    def __init__(self, in_ch: int, out_ch: int, stride: int = 1) -> None:
+        super().__init__()
+        self.conv1 = nn.Conv2d(in_ch, out_ch, 3, stride=stride, padding=1, bias=False)
+        self.bn1   = nn.BatchNorm2d(out_ch)
+        self.conv2 = nn.Conv2d(out_ch, out_ch, 3, padding=1, bias=False)
+        self.bn2   = nn.BatchNorm2d(out_ch)
+
+        # Shortcut: proyección 1×1 si hay cambio de canales o stride>1
+        self.shortcut: nn.Module = (
+            nn.Sequential(
+                nn.Conv2d(in_ch, out_ch, 1, stride=stride, bias=False),
+                nn.BatchNorm2d(out_ch),
+            )
+            if stride != 1 or in_ch != out_ch
+            else nn.Identity()
+        )
+
+        # Zero-init del BN final del camino residual:
+        # Hace que el bloque inicie como identidad (out = shortcut + 0·residual).
+        # Con todos los bloques iniciados así, la red completa aproxima la identidad
+        # al inicio, lo que estabiliza el loss en las primeras iteraciones E2E.
+        nn.init.zeros_(self.bn2.weight)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        out = F.relu(self.bn1(self.conv1(x)), inplace=True)
+        out = self.bn2(self.conv2(out))
+        return F.relu(out + self.shortcut(x), inplace=True)
+
+
+# ================================================================
+# CNN SIMPLE MEJORADA
 # ================================================================
 
 
 class _SimpleCNN(nn.Module):
     """
-    CNN de 3 bloques: Conv→BN→ReLU→MaxPool + proyección a 512.
+    CNN con 4 bloques residuales ligeros + proyección a 512.
 
-    Diseñada para imágenes de cualquier resolución. Produce un
-    vector de 512 features compatible con el MLP clasificador.
+    Arquitectura:
+      Stem:   Conv(3→32, stride=2) + BN + ReLU
+      Layer1: ResBlockLite(32→32,  stride=1)
+      Layer2: ResBlockLite(32→64,  stride=2)
+      Layer3: ResBlockLite(64→128, stride=2)
+      Layer4: ResBlockLite(128→256, stride=2)
+      GAP:    AdaptiveAvgPool2d(1×1)
+      Drop:   Dropout(p=0.1)
+      Proj:   Linear(256→512)
+
+    Con imagen 224×224:
+      Stem   → 112×112
+      Layer2 →  56×56
+      Layer3 →  28×28
+      Layer4 →  14×14
+      GAP    →   1×1
+      Proj   →    512
+
+    Parámetros: ~1.36M (vs 502K de la versión anterior).
+    El overhead de serialización TCP es ~5 MB por round-trip,
+    manejable en redes locales (LAN) y razonable incluso en WAN.
+
+    Ventajas sobre la versión anterior:
+      - Skip connections: gradiente llega sin atenuación a las capas iniciales
+      - Stride=2 en Conv: preserva información espacial (vs MaxPool que descarta)
+      - Zero-init BN final: estabiliza las primeras iteraciones E2E
+      - Dropout(0.1): regularización ligera, reduce coadaptación
+      - Kaiming Normal: mejor calibración de varianza para redes profundas
     """
 
     def __init__(self) -> None:
-        """
-        Inicializa el codificador CNN de 3 bloques (Conv→BN→ReLU→MaxPool).
-
-        Construye capas de extracción de características convolucionales seguidas de
-        pooling adaptativo y cabeza de proyección produciendo 512 características dimensionales.
-        Imágenes de entrada de cualquier tamaño soportado debido a AdaptiveAvgPool2d.
-
-        Arquitectura:
-          - Bloque 1: Conv2d(3,64) → BN → ReLU → MaxPool2d(2)
-          - Bloque 2: Conv2d(64,128) → BN → ReLU → MaxPool2d(2)
-          - Bloque 3: Conv2d(128,256) → BN → ReLU → MaxPool2d(2)
-          - AdaptiveAvgPool2d((1,1))
-          - Cabeza FC: Flatten → Linear(256,512) → ReLU
-
-        :returns: None
-        :rtype: None
-
-        :raises None
-        """
         super().__init__()
 
-        def _block(in_ch: int, out_ch: int) -> nn.Sequential:
-            return nn.Sequential(
-                nn.Conv2d(in_ch, out_ch, kernel_size=3, padding=1, bias=False),
-                nn.BatchNorm2d(
-                    out_ch
-                ),  # Normaliza cada canal, haciendo el entrenamiento más estable
-                nn.ReLU(inplace=True),  # Introduce no-linealidad
-                nn.MaxPool2d(2),  # Reduce tamaño a la mitad
-            )
+        # Stem: reducción inicial de resolución sin pérdida de información
+        self.stem = nn.Sequential(
+            nn.Conv2d(3, 32, kernel_size=3, stride=2, padding=1, bias=False),
+            nn.BatchNorm2d(32),
+            nn.ReLU(inplace=True),
+        )
 
-        self.features = nn.Sequential(
-            _block(3, 64),
-            _block(64, 128),
-            _block(128, 256),
-            nn.AdaptiveAvgPool2d(
-                (1, 1)
-            ),  # Convierte cualquier tamaño en (batch_size, 256, 1, 1)
-        )
-        self.fc = nn.Sequential(
-            nn.Flatten(),  # Pasa de (256,1,1) a (256)
-            nn.Linear(
-                256, FEATURE_DIM
-            ),  # Crea el vector final de características (256 -> 512)
-            nn.ReLU(inplace=True),  # Añade no-linealidad final
-        )
+        # 4 bloques residuales en progresión de canales
+        self.layer1 = _ResBlockLite(32,  32,  stride=1)
+        self.layer2 = _ResBlockLite(32,  64,  stride=2)
+        self.layer3 = _ResBlockLite(64,  128, stride=2)
+        self.layer4 = _ResBlockLite(128, 256, stride=2)
+
+        self.gap     = nn.AdaptiveAvgPool2d(1)
+        self.dropout = nn.Dropout(p=0.1)
+        self.proj    = nn.Linear(256, FEATURE_DIM)
+
+        self._init_weights()
+
+    def _init_weights(self) -> None:
+        """
+        Kaiming Normal para Conv y Linear; ones/zeros para BN.
+
+        No sobreescribe el zero-init ya aplicado en _ResBlockLite.bn2.weight.
+        """
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode="fan_out", nonlinearity="relu")
+            elif isinstance(m, nn.BatchNorm2d):
+                # bn2.weight en ResBlockLite ya fue zero-init — no sobreescribir
+                if m.weight is not None and m.weight.data.abs().sum() > 0:
+                    nn.init.ones_(m.weight)
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+            elif isinstance(m, nn.Linear):
+                nn.init.kaiming_normal_(m.weight, mode="fan_out", nonlinearity="relu")
+                nn.init.zeros_(m.bias)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Extrae características de 512 dimensiones del batch de imágenes.
-
-        Pasa batch de entrada a través de capas de extracción de características
-        convolucionales y cabeza totalmente conectada.
-
-        :param x: Tensor batch de imágenes (batch_size, 3, height, width) en rango [0, 1] o [0, 255]
-        :type x: torch.Tensor
-
-        :returns: Tensores de características (batch_size, 512) float32
-        :rtype: torch.Tensor
-
-        :raises RuntimeError: Si ancho/alto de entrada < 8 (incompatible con strides de MaxPool)
-        """
-        return self.fc(self.features(x))
+        x = self.stem(x)
+        x = self.layer1(x)
+        x = self.layer2(x)
+        x = self.layer3(x)
+        x = self.layer4(x)
+        x = self.gap(x)
+        x = self.dropout(x)
+        return self.proj(x.flatten(1))
 
 
 # ================================================================
@@ -135,7 +209,7 @@ class CNNExtractor:
     _train_batch pone 'simple' en train() antes del forward para actualizar
     las running stats de BatchNorm durante el entrenamiento.
 
-    :param arch:   'resnet18' o 'simple' (determina automaticamente trainable + pesos).
+    :param arch:   'resnet18' o 'simple' (determina automáticamente trainable + pesos).
     :param device: Dispositivo PyTorch ('cpu', 'cuda', 'mps').
     :param seed:   Semilla RNG (default: None = aleatorio, solo afecta a 'simple').
     """
@@ -148,175 +222,70 @@ class CNNExtractor:
         device: str = "cpu",
         seed: Optional[int] = None,
     ) -> None:
-        """
-        Inicializa el extractor CNN para feature extraction desde ImageNet.
-
-        El comportamiento de preentrenamiento y entrenamientos se determina automaticamente por arquitectura:
-        - 'resnet18': Carga pesos IMAGENET1K_V1, congelada permanentemente (requires_grad=False).
-        - 'simple': CNN de 3 bloques Conv2d sin pretrain, entrenable E2E (requires_grad=True).
-
-        :param arch: Arquitectura CNN ('resnet18' o 'simple').
-                     - 'resnet18': ResNet-18 con pesos ImageNet (congelada).
-                     - 'simple': CNN personalizada de 3 bloques (entrenable).
-        :type arch: str
-        :param device: Dispositivo PyTorch ('cpu', 'cuda', 'cuda:0', 'mps').
-                      Modelos congelados: se copian a este device y se cargan una sola vez.
-        :type device: str
-        :param seed: Semilla RNG para PyTorch (default: None = aleatorio).
-                    Solo afecta a la arquitectura 'simple'.
-        :type seed: Optional[int]
-
-        :raises ValueError: Si arch no está en ARCHITECTURES.
-        """
         if arch not in self.ARCHITECTURES:
             raise ValueError(f"arch debe ser {self.ARCHITECTURES}, recibido: {arch!r}")
 
-        self.arch = arch
-        self.seed = seed
+        self.arch   = arch
+        self.seed   = seed
         self.device = torch.device(device)
 
         if seed is not None:
             torch.manual_seed(seed)
 
-        # Determinar si entrenable automáticamente por arquitectura:
-        # resnet18 → congelada (requires_grad=False, pesos preentrenados)
-        # simple   → entrenable (requires_grad=True, pesos aleatorios)
-        trainable = arch == "simple"
-        self._model = self._build(arch, trainable).to(self.device)
+        trainable    = (arch == "simple")
+        self._model  = self._build(arch, trainable).to(self.device)
 
-        # Establecer requires_grad según si es entrenable o congelada
         for p in self._model.parameters():
             p.requires_grad_(trainable)
 
-        # Ambas en eval() inicialmente. _train_batch pondrá 'simple' en train()
-        # antes del forward para que BatchNorm actualice sus running stats.
         self._model.eval()
 
     @staticmethod
     def _build(arch: str, trainable: bool) -> nn.Module:
-        """
-        Construye y retorna la arquitectura CNN solicitada.
-
-        Instancia ResNet-18 con preentrenamiento ImageNet o la CNN
-        personalizada SimpleCNN. Ambas arquitecturas producen 512 características.
-
-        :param arch: Nombre de arquitectura ('resnet18' o 'simple')
-        :type arch: str
-
-        :param trainable: Si False y arch='resnet18', carga pesos IMAGENET1K_V1 (congelada). \
-                         Si True y arch='simple', inicializa CNN entrenable sin preentrenamiento.
-        :type trainable: bool
-
-        :returns: Modulo PyTorch inicializado
-        :rtype: nn.Module
-
-        :raises ValueError: Si arch no esta en ['resnet18', 'simple']
-        """
         if arch == "simple":
             return _SimpleCNN()
 
         import torchvision.models as tvm
-
         weights = "IMAGENET1K_V1" if not trainable else None
-        model = tvm.resnet18(weights=weights)
-        model.fc = nn.Identity()  # type: ignore  # expone vector de 512 features
+        model   = tvm.resnet18(weights=weights)
+        model.fc = nn.Identity()  # type: ignore[assignment]
         return model
 
     @property
     def feature_dim(self) -> int:
-        """
-        Obtiene dimensión de característica de salida de este CNN.
-
-        Siempre retorna 512 (fijo por ambas arquitecturas ResNet-18 y SimpleCNN).
-
-        :returns: Dimensionalidad del vector de características
-        :rtype: int
-
-        :raises None
-        """
         return FEATURE_DIM
 
-    # -------------------------- Serialización de pesos (para distribuir por TCP)--------------------------
+    # ── Serialización ─────────────────────────────────────────────
 
     def _get_weights_bytes(self) -> bytes:
-        """
-        Serializa pesos del modelo CNN a bytes para distribución por TCP.
-
-        Exporta el state_dict completo del modelo usando torch.save() a buffer BytesIO,
-        produciendo string de bytes para transmisión por red a Workers. Usado por
-        ParameterServer para empaquetar y difundir pesos CNN actualizados.
-
-        Formato: torch.save(state_dict, BytesIO) → bytes
-
-        :returns: State_dict serializado (formato PyTorch)
-        :rtype: bytes
-
-        :raises RuntimeError: Si serialización de state_dict falla (modelo corrupto)
-        """
-        buf = io.BytesIO()  # Crea un buffer en memoria
+        """Serializa el state_dict a bytes para enviar por TCP."""
+        buf = io.BytesIO()
         torch.save(self._model.state_dict(), buf)
-        return buf.getvalue()  # Retorna el paquete de bytes
+        return buf.getvalue()
 
     def load_weights_from_bytes(self, weights_bytes: bytes) -> None:
         """
-        Carga pesos del modelo CNN desde bytes serializados (del ParameterServer).
+        Carga pesos desde bytes recibidos del PS por TCP.
 
-        Deserializa state_dict recibido por TCP (formato torch.save) y aplica
-        al modelo local. Usado durante loop de entrenamiento del Worker cuando
-        se sincroniza pesos CNN globales del ParameterServer para cómputo de gradientes.
-
-        Establece modelo a modo eval después de cargar para deshabilitar actualizaciones
-        de dropout/batch norm.
-
-        :param weights_bytes: State_dict serializado de ParameterServer._get_weights_bytes()
-        :type weights_bytes: bytes
-
-        :returns: None
-        :rtype: None
-
-        :raises RuntimeError: Si pesos incompatibles con arquitectura actual
-        :raises pickle.UnpicklingError: Si stream de bytes corrupto o formato inválido
+        load_state_dict no modifica requires_grad — el estado correcto
+        establecido en __init__ se preserva después de cada sync.
         """
-        buf = io.BytesIO(weights_bytes)  # Lee desde buffer
+        buf   = io.BytesIO(weights_bytes)
         state = torch.load(buf, map_location=self.device, weights_only=True)
-        self._model.load_state_dict(state)  # Reemplaza todos los pesos actuales
+        self._model.load_state_dict(state)
         self._model.eval()
 
     def _weights_hash(self) -> str:
-        """
-        Computa hash MD5 de pesos actuales del modelo (primeros 8 caracteres hex).
-
-        Se puede usar para logging y debugging para verificar sincronización de pesos entre
-        ParameterServer y Workers. Mismo pesos producen mismo hash.
-
-        :returns: Primeros 8 caracteres del digest hex MD5 de tensores de pesos concatenados
-        :rtype: str
-
-        :raises None
-        """
-        hash = hashlib.md5()
+        """Hash MD5 (8 hex) de los pesos actuales — para logging."""
+        h = hashlib.md5()
         for t in self._model.state_dict().values():
-            hash.update(t.cpu().numpy().tobytes())
-        return hash.hexdigest()[:8]
+            h.update(t.cpu().numpy().tobytes())
+        return h.hexdigest()[:8]
 
-    # -------------------------- Extracción de features --------------------------
+    # ── Extracción de features ────────────────────────────────────
 
     def set_trainable(self, trainable: bool) -> None:
-        """
-        Habilita o deshabilita cómputo de gradientes y modo train/eval para el CNN.
-
-        Establece requires_grad en todos los parámetros e intercambia modelo entre train()
-        (habilita dropout, actualizaciones de batch norm) y eval() (inferencia determinista).
-
-        :param trainable: Si True, habilita gradientes y modo train. Si False, deshabilita \
-                         gradientes e intercambia a modo eval (solo-inferencia).
-        :type trainable: bool
-
-        :returns: None
-        :rtype: None
-
-        :raises None
-        """
+        """Activa o desactiva gradientes y modo train/eval."""
         for p in self._model.parameters():
             p.requires_grad_(trainable)
         self._model.train() if trainable else self._model.eval()
@@ -332,38 +301,27 @@ class CNNExtractor:
 
         Usado por el PS durante la evaluación de validación.
 
-        :param X: Imágenes (N, 3, H, W) float32.
-        :type X: np.ndarray
-
+        :param X:          Imágenes (N, 3, H, W) float32.
         :param batch_size: Imágenes por batch.
-        :type batch_size: int
-
-        :param verbose: Imprimir progreso.
-        :type verbose: bool
-
-        :return: Features (N, feature_dim) float32.
+        :param verbose:    Imprimir progreso.
+        :return:           Features (N, feature_dim) float32.
         """
-        num_images = len(X)
+        N      = len(X)
+        parts  = []
+        starts = range(0, N, batch_size)
 
-        # Permite recorrer por bloques
-        parts = []
-        starts = range(0, num_images, batch_size)
-
-        for index, start in enumerate(starts, 1):
+        for i, start in enumerate(starts, 1):
             chunk = X[start : start + batch_size]
-            with torch.inference_mode():  # No calcula gradientes
-                t = torch.from_numpy(chunk).to(self.device)  # Convierte NumPy a PyTorch
-                parts.append(
-                    self._model(t).cpu().numpy()
-                )  # Pasa por la red y vuelve a NumPy
+            with torch.inference_mode():
+                t = torch.from_numpy(chunk).to(self.device)
+                parts.append(self._model(t).cpu().numpy())
             if verbose:
-                done = min(start + batch_size, num_images)
+                done = min(start + batch_size, N)
                 print(
-                    f"\r  [CNN] {done}/{num_images} imgs ({index}/{len(starts)} batches)",
-                    end="",
-                    flush=True,
+                    f"\r  [CNN] {done}/{N} imgs ({i}/{len(starts)} batches)",
+                    end="", flush=True,
                 )
 
         if verbose:
             print()
-        return np.concatenate(parts, axis=0)  # Junta todos los batches
+        return np.concatenate(parts, axis=0)
