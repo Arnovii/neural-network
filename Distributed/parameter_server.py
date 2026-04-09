@@ -656,7 +656,7 @@ class ParameterServer:
                         continue
                     if key not in cnn_weights:
                         continue
-                    arr = self._cnn_state[key]   # float32 ya en el tipo correcto
+                    arr = self._cnn_state[key]  # float32 ya en el tipo correcto
                     inc = cnn_weights[key]
                     # OPTIMIZACIÓN: FedAvg en float32 directamente.
                     # La diferencia numérica vs float64 es ~1e-7 relativa,

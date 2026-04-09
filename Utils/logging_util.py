@@ -106,26 +106,6 @@ class FormattedLogger:
         """
         self.log("ps", msg, progress, metric)
 
-    def worker(self, msg: str, progress=None, metric=None):
-        """
-        Registra mensaje con formateo de fase 'worker'.
-
-        Método de conveniencia que llama log() con phase='worker'.
-
-        :param msg: Texto del mensaje.
-        :type msg: str
-
-        :param progress: Información de progreso opcional.
-        :type progress: Optional[str]
-
-        :param metric: Información de métrica opcional.
-        :type metric: Optional[str]
-
-        :returns: None
-        :rtype: None
-        """
-        self.log("worker", msg, progress, metric)
-
     def worker_msg(self, worker_id, msg: str, progress=None, metric=None):
         """
         Registra mensaje con formateo de fase 'worker' incluido el Worker ID.

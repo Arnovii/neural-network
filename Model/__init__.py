@@ -14,7 +14,7 @@ Este paquete encapsula la arquitectura de dos capas con DOS MODOS distintos:
    La CNN implementa:
    - __init__(arch, pretrained, device, seed): Establece requires_grad según arquitectura
    - _build(): Construye modelo y congela/descongela según arquitectura
-   - extract_batched(): Extrae features de batch de imágenes (forward solo, sin grad)
+   - forward(x): Extrae features desde batch de imágenes
    - _get_weights_bytes(): Serializa state_dict para TCP
    - load_weights_from_bytes(): Carga state_dict desde TCP
 
@@ -30,7 +30,6 @@ Este paquete encapsula la arquitectura de dos capas con DOS MODOS distintos:
    Implementa:
    - forward(): Pase forward (fc1→ReLU→fc2→ReLU→fc3)
    - state_dict_numpy(): Exporta pesos a Dict[str, np.ndarray] para PS
-   - load_state_dict_numpy(): Carga pesos desde Dict[str, np.ndarray] del PS
 
 MÓDULOS
 =======
@@ -43,7 +42,7 @@ cnn_extractor : module
       * arch='simple' → requires_grad=True (CNN participa en E2E backprop)
     - _build(): Construcción de arquitectura + aplicación de requires_grad
     - feature_dim: Propiedad (siempre 512)
-    - extract_batched(): Forward pass de imágenes (sin gradientes)
+    - forward(x): Forward pass de imágenes
     - _get_weights_bytes(): Serialización para TCP
     - load_weights_from_bytes(): Deserialización desde TCP
 
@@ -53,7 +52,6 @@ mlp_pytorch : module
     - __init__(feature_dim, hidden1, hidden2, n_classes)
     - forward(x): Pase forward (N, feature_dim) → (N, n_classes)
     - state_dict_numpy(): Exporta parámetros como Dict[str, np.ndarray]
-    - load_state_dict_numpy(state): Carga parámetros desde Dict[str, np.ndarray]
 
 EXPORTACIONES PRINCIPALES
 ==========================
@@ -91,7 +89,7 @@ FLUJO TÍPICO (SimpleCNN E2E)
     mlp = MLPPyTorch(feature_dim=512, hidden1=1024, hidden2=512, n_classes=1000)
 
     # Loop de entrenamiento E2E
-    features = cnn.extract_batched(image_batch)  # (N, 512), CNN forward sin grad
+    features = cnn(image_batch)  # (N, 512), CNN forward
     logits = mlp(features)  # (N, 1000)
     loss = F.cross_entropy(logits, labels)
     loss.backward()  # ← Backprop: MLP + CNN ambos reciben gradientes
@@ -112,7 +110,7 @@ FLUJO TÍPICO (ResNet-18 MLP-only)
     mlp = MLPPyTorch(feature_dim=512, hidden1=1024, hidden2=512, n_classes=1000)
 
     # Loop de entrenamiento MLP-only
-    features = cnn.extract_batched(image_batch)  # (N, 512), CNN frozen
+    features = cnn(image_batch)  # (N, 512), CNN frozen
     logits = mlp(features)  # (N, 1000)
     loss = F.cross_entropy(logits, labels)
     loss.backward()  # ← Backprop: Solo MLP recibe gradientes (CNN congelada)

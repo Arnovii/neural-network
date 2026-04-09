@@ -532,7 +532,7 @@ class PSApp:
     def _set_config_enabled(self, enabled: bool) -> None:
         """
         Desactiva o activa todos los widgets de configuración.
-        
+
         :param enabled: True para activar, False para desactivar.
         """
         state = tk.NORMAL if enabled else tk.DISABLED

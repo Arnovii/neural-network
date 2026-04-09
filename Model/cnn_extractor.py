@@ -32,7 +32,6 @@ CLAVE:
 
 from __future__ import annotations
 
-import hashlib
 import io
 from typing import Optional
 
@@ -69,9 +68,9 @@ class _ResBlockLite(nn.Module):
     def __init__(self, in_ch: int, out_ch: int, stride: int = 1) -> None:
         super().__init__()
         self.conv1 = nn.Conv2d(in_ch, out_ch, 3, stride=stride, padding=1, bias=False)
-        self.bn1   = nn.BatchNorm2d(out_ch)
+        self.bn1 = nn.BatchNorm2d(out_ch)
         self.conv2 = nn.Conv2d(out_ch, out_ch, 3, padding=1, bias=False)
-        self.bn2   = nn.BatchNorm2d(out_ch)
+        self.bn2 = nn.BatchNorm2d(out_ch)
 
         # Shortcut: proyección 1×1 si hay cambio de canales o stride>1
         self.shortcut: nn.Module = (
@@ -145,14 +144,14 @@ class _SimpleCNN(nn.Module):
         )
 
         # 4 bloques residuales en progresión de canales
-        self.layer1 = _ResBlockLite(32,  32,  stride=1)
-        self.layer2 = _ResBlockLite(32,  64,  stride=2)
-        self.layer3 = _ResBlockLite(64,  128, stride=2)
+        self.layer1 = _ResBlockLite(32, 32, stride=1)
+        self.layer2 = _ResBlockLite(32, 64, stride=2)
+        self.layer3 = _ResBlockLite(64, 128, stride=2)
         self.layer4 = _ResBlockLite(128, 256, stride=2)
 
-        self.gap     = nn.AdaptiveAvgPool2d(1)
+        self.gap = nn.AdaptiveAvgPool2d(1)
         self.dropout = nn.Dropout(p=0.1)
-        self.proj    = nn.Linear(256, FEATURE_DIM)
+        self.proj = nn.Linear(256, FEATURE_DIM)
 
         self._init_weights()
 
@@ -225,15 +224,15 @@ class CNNExtractor:
         if arch not in self.ARCHITECTURES:
             raise ValueError(f"arch debe ser {self.ARCHITECTURES}, recibido: {arch!r}")
 
-        self.arch   = arch
-        self.seed   = seed
+        self.arch = arch
+        self.seed = seed
         self.device = torch.device(device)
 
         if seed is not None:
             torch.manual_seed(seed)
 
-        trainable    = (arch == "simple")
-        self._model  = self._build(arch, trainable).to(self.device)
+        trainable = arch == "simple"
+        self._model = self._build(arch, trainable).to(self.device)
 
         for p in self._model.parameters():
             p.requires_grad_(trainable)
@@ -246,8 +245,9 @@ class CNNExtractor:
             return _SimpleCNN()
 
         import torchvision.models as tvm
+
         weights = "IMAGENET1K_V1" if not trainable else None
-        model   = tvm.resnet18(weights=weights)
+        model = tvm.resnet18(weights=weights)
         model.fc = nn.Identity()  # type: ignore[assignment]
         return model
 
@@ -270,58 +270,7 @@ class CNNExtractor:
         load_state_dict no modifica requires_grad — el estado correcto
         establecido en __init__ se preserva después de cada sync.
         """
-        buf   = io.BytesIO(weights_bytes)
+        buf = io.BytesIO(weights_bytes)
         state = torch.load(buf, map_location=self.device, weights_only=True)
         self._model.load_state_dict(state)
         self._model.eval()
-
-    def _weights_hash(self) -> str:
-        """Hash MD5 (8 hex) de los pesos actuales — para logging."""
-        h = hashlib.md5()
-        for t in self._model.state_dict().values():
-            h.update(t.cpu().numpy().tobytes())
-        return h.hexdigest()[:8]
-
-    # ── Extracción de features ────────────────────────────────────
-
-    def set_trainable(self, trainable: bool) -> None:
-        """Activa o desactiva gradientes y modo train/eval."""
-        for p in self._model.parameters():
-            p.requires_grad_(trainable)
-        self._model.train() if trainable else self._model.eval()
-
-    def extract_batched(
-        self,
-        X: np.ndarray,
-        batch_size: int = 512,
-        verbose: bool = False,
-    ) -> np.ndarray:
-        """
-        Extrae features en mini-batches.
-
-        Usado por el PS durante la evaluación de validación.
-
-        :param X:          Imágenes (N, 3, H, W) float32.
-        :param batch_size: Imágenes por batch.
-        :param verbose:    Imprimir progreso.
-        :return:           Features (N, feature_dim) float32.
-        """
-        N      = len(X)
-        parts  = []
-        starts = range(0, N, batch_size)
-
-        for i, start in enumerate(starts, 1):
-            chunk = X[start : start + batch_size]
-            with torch.inference_mode():
-                t = torch.from_numpy(chunk).to(self.device)
-                parts.append(self._model(t).cpu().numpy())
-            if verbose:
-                done = min(start + batch_size, N)
-                print(
-                    f"\r  [CNN] {done}/{N} imgs ({i}/{len(starts)} batches)",
-                    end="", flush=True,
-                )
-
-        if verbose:
-            print()
-        return np.concatenate(parts, axis=0)

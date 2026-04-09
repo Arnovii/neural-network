@@ -114,12 +114,3 @@ class MLPPyTorch(nn.Module):
             name: param.data.cpu().numpy().copy()
             for name, param in self.named_parameters()
         }
-
-    def load_state_dict_numpy(self, state: Dict[str, np.ndarray]) -> None:
-        """Carga parámetros desde Dict[str, np.ndarray] (formato del PS)."""
-        with torch.no_grad():
-            for name, param in self.named_parameters():
-                if name in state:
-                    param.data.copy_(
-                        torch.from_numpy(state[name]).to(param.device)
-                    )  # Convierte el array NumPy a tensor PyTorch y mueve al dispositivo correcto

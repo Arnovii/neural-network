@@ -527,8 +527,8 @@ class WorkerNode:
                 lr=lr,  # default (sobreescrito por los grupos)
             )
             # _all_params para clipping: lista completa CNN+MLP precalculada
-            self._all_params = (
-                list(self._cnn._model.parameters()) + list(self._mlp.parameters())
+            self._all_params = list(self._cnn._model.parameters()) + list(
+                self._mlp.parameters()
             )
         else:
             # Modo freeze: solo MLP, sin optimizador formal
