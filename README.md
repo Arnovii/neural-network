@@ -508,17 +508,17 @@ python worker_imagenet.py --server-host 192.168.1.10 --rank 1 --num-workers 2
 python ps_gui_imagenet.py
 
 # Luego en la GUI:
-# 1. Click "Encender servidor" → Carga CNN+MLP en background
-# 2. Configurar parámetros (Learning rate, batch size, etc.)
-# 3. Click "Iniciar entrenamiento"
-# 4. Ver gráficas live de loss, accuracy, workers
+# 1. Click "Encender servidor" → Estado LOADING: carga CNN+MLP, deshabilita configuración
+# 2. Espera que se conecten Workers (estado LISTENING)
+# 3. Primer step automático → Estado TRAINING: gráficas live se activan
+# 4. Ver gráficas live actualizándose (loss, accuracy, workers activos)
 ```
 
 **Características de la GUI**:
-- Panel izquierdo: Configuración de parámetros
+- Panel izquierdo: Configuración de parámetros (habilitada solo en OFFLINE)
 - Arriba a la derecha: Tabla de Workers conectados con estado
 - Centro derecha: Gráficas live (loss, accuracy, workers activos)
-- Abajo: Log de eventos
+- Abajo: Log de eventos en tiempo real
 
 ---
 

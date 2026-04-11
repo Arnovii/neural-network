@@ -7,13 +7,15 @@ FLUJO CORRECTO:
   1. "Encender servidor" → carga CNN+MLP en hilo background (sin congelar GUI)
                          → ps.set_cnn() + ps.set_mlp() + ps.listen()
                          → estado LISTENING
-  2. Worker conecta     → PS bloquea su handshake hasta que CNN+MLP estén listos
-                         → siempre True porque se cargaron en paso 1
-  3. "Iniciar entrenamiento" → estado TRAINING (Workers ya entrenando)
+  2. Worker conecta     → PS envía CNN_WEIGHTS + START automáticamente
+                         → Worker comienza entrenamiento indefinidamente
+  3. GUI recibe primer evento on_step() → transiciona automáticamente a TRAINING
+                         → muestra gráficas en tiempo real
 
 MEJORAS VS VERSIÓN ANTERIOR:
   - CNN+MLP se cargan en hilo background → la GUI no se congela (~50MB ResNet-18)
   - Indicador visual "Cargando..." mientras descarga pesos
+  - Transición automática a TRAINING → interfaz más intuitiva (sin botón confuso)
   - Logging limpio: sin logs por iteración (solo mensajes críticos)
   - num_batches_tracked excluido del averaging en el PS
   - Label bug corregido en imagenet_streaming.py
@@ -452,9 +454,6 @@ class PSApp:
         self._btn_listen = ttk.Button(
             frm, text="Encender servidor", command=self._cmd_listen
         )
-        self._btn_train = ttk.Button(
-            frm, text="▶  Iniciar entrenamiento", command=self._cmd_train
-        )
         self._btn_shutdown = ttk.Button(
             frm, text="■  Detener todo", command=self._cmd_shutdown
         )
@@ -463,17 +462,15 @@ class PSApp:
         )
         for btn in (
             self._btn_listen,
-            self._btn_train,
             self._btn_shutdown,
             self._btn_clear,
         ):
             btn.pack(fill=tk.X, pady=3)
         self._config_widgets.extend(
-            [self._btn_listen, self._btn_train, self._btn_clear]
+            [self._btn_listen, self._btn_clear]
         )
 
         ToolTip(self._btn_listen, "Carga CNN+MLP y abre socket TCP")
-        ToolTip(self._btn_train, "Activa el entrenamiento (Workers ya están esperando)")
         ToolTip(self._btn_shutdown, "Envía STOP a todos los Workers y cierra el PS")
         ToolTip(self._btn_clear, "Limpia gráficas sin detener entrenamiento")
 
@@ -714,22 +711,21 @@ class PSApp:
 
         Estados posibles:
         - OFFLINE: Solo "Encender servidor" habilitado
-        - LOADING: Solo "Detener" habilitado
-        - LISTENING: "Iniciar entrenamiento" (si hay workers) + "Detener"
-        - TRAINING: "Evaluar" + "Detener" habilitados
+        - LOADING: Solo "Detener" habilitado (mientras carga CNN+MLP)
+        - LISTENING: "Detener" habilitado, esperando primer step de entrenamiento
+        - TRAINING: "Evaluar" (en validación) + "Detener" habilitados
+
+        La transición LISTENING → TRAINING es automática cuando llega el primer
+        evento on_step() (sin necesidad de botón manual).
 
         También actualiza indicador visual del servidor (label con color y estado).
 
         :returns: None
         :rtype: None
         """
-        has_w = bool(self._workers)
         s = self._state
         self._btn_listen.configure(
             state=tk.NORMAL if s == self._S_OFFLINE else tk.DISABLED
-        )
-        self._btn_train.configure(
-            state=tk.NORMAL if s == self._S_LISTENING and has_w else tk.DISABLED
         )
         self._btn_shutdown.configure(
             state=tk.NORMAL
@@ -814,6 +810,7 @@ class PSApp:
 
         self._state = self._S_LOADING
         self._refresh_buttons()
+        self._set_config_enabled(False)
         mode_str = "freeze" if arch == "resnet18" else "E2E"
         self._status.set(
             f"Cargando {arch} ({mode_str})... (puede tardar en la primera vez)"
@@ -888,38 +885,6 @@ class PSApp:
         threading.Thread(target=_init, daemon=True).start()
         self.root.after(100, self._poll)
 
-    def _cmd_train(self) -> None:
-        """
-        Inicia el entrenamiento distribuido asíncrono en todos los Workers.
-
-        Requisitos previos:
-        - Servidor en estado LISTENING (CNN+MLP cargados, escuchando TCP)
-        - Al menos 1 Worker debe estar conectado
-
-        Acciones:
-        1. Valida estado (LISTENING) y existencia de workers
-        2. Cambia estado a TRAINING
-        3. Registra timestamp de inicio (self._t_start) para cálculo de elapsed time
-        4. Desactiva todos los controles de configuración (bloquea parámetros)
-        5. Envía mensaje START a todos los Workers vía ps.train()
-
-        Workers entran a loop indefinido:
-        REQUEST_PARAMS → sincronizar con versión actual → train batch → enviar UPDATES
-
-        Cambio de estado: LISTENING → TRAINING.
-        Interfaz: configura descongelada → congelada.
-
-        :returns: None
-        :rtype: None
-        """
-        if self._state != self._S_LISTENING or not self._workers:
-            return
-        self._state = self._S_TRAINING
-        self._t_start = time.perf_counter()
-        self._refresh_buttons()
-        self._set_config_enabled(False)
-        self._log("[PS] Entrenamiento activado. Workers entrenando.")
-        self._status.set("Entrenamiento asíncrono en progreso...")
 
     def _cmd_shutdown(self) -> None:
         """
@@ -1095,9 +1060,12 @@ class PSApp:
         1. Registra el Worker en diccionario self._workers[wid] = addr
         2. Agrega fila a tabla Treeview con (ID, dirección, "Activo")
         3. Asigna color único al Worker usando lista WORKER_COLORS (cíclica)
-        4. Actualiza botones (habilita "Iniciar entrenamiento" si hay workers)
-        5. Loguea mensaje de conexión
-        6. Actualiza status bar con recuento de workers conectados
+        4. Loguea mensaje de conexión
+        5. Actualiza status bar con recuento de workers conectados
+
+        Nota: El Worker comienza entrenamiento automáticamente (PS envía START
+        después del handshake). La GUI transicionará a TRAINING automáticamente
+        cuando reciba el primer evento on_step()
 
         :param wid: ID único del Worker (asignado por PS).
         :type wid: int
@@ -1122,12 +1090,12 @@ class PSApp:
 
     def _on_disconnected(self, wid: int) -> None:
         """
-        Maneja evento de desconexionesión de un Worker.
+        Maneja evento de desconexión de un Worker.
 
         Acciones:
-        1. Remueve Worker from self._workers dictionary
+        1. Remueve Worker de diccionario self._workers
         2. Elimina fila correspondiente de tabla Treeview
-        3. Actualiza botones (deshabilita "Iniciar entrenamiento" si no quedan workers)
+        3. Actualiza botones (refresca estado de GUI)
         4. Loguea evento de desconexión
 
         :param wid: ID del Worker desconectado.
@@ -1148,6 +1116,10 @@ class PSApp:
 
         Se llama después de cada step de entrenamiento en algún Worker.
         Actualiza los labels de status bar con valores actuales (sin agregar a historial).
+
+        En el primer step (cuando aún estamos en LISTENING), transiciona automáticamente
+        a TRAINING: esto indica que el entrenamiento asíncrono ha comenzado y los
+        Workers están enviando gradientes.
 
         Métricas mostradas:
         - Step: número de step actual (con separadores de miles)
@@ -1170,6 +1142,14 @@ class PSApp:
         :returns: None
         :rtype: None
         """
+        # Auto-transición LISTENING → TRAINING en el primer step
+        if self._state == self._S_LISTENING:
+            self._state = self._S_TRAINING
+            self._t_start = time.perf_counter()
+            self._refresh_buttons()
+            self._log("[PS] ✓ Primer step recibido — Entrenamiento asíncrono activo.")
+            self._status.set("Entrenamiento asíncrono en progreso...")
+
         self._m_step.set(f"Step: {step:,}")
         self._m_loss.set(f"Loss: {loss:.4f}")
         self._m_acc.set(f"Acc: {acc:.2f}%")

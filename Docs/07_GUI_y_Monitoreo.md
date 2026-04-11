@@ -52,7 +52,6 @@ La interfaz gráfica es el **front-end de control y monitoreo** del sistema dist
 │                         │  [Step 100] loss=6.87 | acc=2.34%           │
 │  ┌─────────────────────┐│                                             │
 │  │ [Encender Servidor] ││                                             │
-│  │ [Iniciar Entrena..] ││                                             │
 │  │ [■  Detener Todo]   ││                                             │
 │  │ [Limpiar Gráficas]  ││                                             │
 │  └─────────────────────┘│                                             │
@@ -79,30 +78,34 @@ La interfaz gráfica es el **front-end de control y monitoreo** del sistema dist
    │ click "Encender Servidor"
    ↓
 ┌─────────────────────────────────────────┐
-│         LISTENING State                 │
+│     LOADING State (background thread)   │
+│     • Descargar pesos ResNet-18 (~50MB) │
+│     • Inicializar MLP (Kaiming init)    │
+│     • Llamar ps.set_cnn(), ps.set_mlp() │
+│     • Deshabilitar configuración        │
+└──┬──────────────────────────────────────┘
+   │ (CNN+MLP listos, espera Workers)
+   ↓
+┌─────────────────────────────────────────┐
+│      LISTENING State                    │
 │ • TCP accept loop activo                │
-│ • Esperando Workers                     │
-│ • Pre-cargar CNN y MLP en background    │
-└──┬────────┬────────────────────────────┘
-   │        │ click "Iniciar Entrenamiento"
-   │        ↓
-   │     ┌─────────────────────────────────────────┐
-   │     │  LOADING (background thread)            │
-   │     │  • Descargar pesos ResNet-18 (~50MB)    │
-   │     │  • Inicializar MLP (Kaiming init)       │
-   │     │  • Llamar ps.set_cnn(), ps.set_mlp()    │
-   │     └──┬──────────────────────────────┬───────┘
-   │        │ (listo)                      │ (error)
-   │        ↓                              ↓
-   │     ┌────────────────────────┐    ERROR: messagebox
-   │     │   TRAINING State       │→──────────────→ LISTENING
-   │     │ • workers entrenando   │
-   │     │ • poll() cada 100ms    │
-   │     │ • gráficas actualizando│
-   │     └──┬─────────────────────┘
-   │        │ click "Detener todo"
-   │        ↓
-   └──→ OFFLINE (limpiar, close socket)
+│ • Esperando primer evento on_step()     │
+└──┬──────────────────────────────────────┘
+   │ (llega primer step automáticamente)
+   ↓
+┌─────────────────────────────────────────┐
+│      TRAINING State (AUTO)              │
+│ • on_step() transiciona automáticamente │
+│ • workers entrenando                    │
+│ • gráficas actualizándose               │
+└──┬──────────────────────────────────────┘
+   │ click "Detener todo"
+   ↓
+┌─────────────────────────────────────────┐
+│          OFFLINE                        │
+│ • Limpiar conexiones                    │
+│ • Rehabilitar configuración             │
+└─────────────────────────────────────────┘
 ```
 
 ### Eventos y Callbacks
@@ -162,8 +165,7 @@ La interfaz gráfica es el **front-end de control y monitoreo** del sistema dist
 
 | Botón | Acción | Precondición |
 |---|---|---|
-| `Encender Servidor` | Inicia PS + carga modelo | Estado OFFLINE |
-| `Iniciar Entrena.` | Inicia background setup | LISTENING + ≥1 Worker |
+| `Encender Servidor` | Inicia PS + carga modelo (estado LOADING) | Estado OFFLINE |
 | `Detener Todo` | STOP signal a Workers | LISTENING o TRAINING |
 | `Limpiar Gráficas` | Reset history | Siempre habilitado |
 | `Evaluar` | Validación en dataset val | TRAINING |
