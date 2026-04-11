@@ -57,7 +57,9 @@ El repositorio incluye documentación exhaustiva en el subdirectorio `./Docs/`:
 
 ✅ **Arquitecturas CNN soportadas**:
   - ResNet-18 con pesos IMAGENET1K_V1 preentrenados (~50M parámetros)
-  - SimpleCNN mejorado con 4 bloques residuales ligeros (~1.36M parámetros)
+  - SimpleCNN mejorado con 4 bloques residuales ligeros (~1.36M parámetros, stride 32×, Dropout 0.2)
+
+✅ **Augmentación de datos avanzada**: ColorJitter (brightness, contrast, saturation, hue) + RandomErasing post-normalización
 
 ✅ **Clasificador MLP configurable** (feature_dim → hidden1 → hidden2 → 1000 clases)
 
@@ -533,12 +535,47 @@ python ps_gui_imagenet.py
   - 0.01: Convergencia rápida pero posible inestabilidad
   - 0.0001: Muy lento
 
+#### Linear Scaling Rule (suggest_lr)
+- **Función**: `suggest_lr(lr_base, n_workers)` = `lr_base × √n_workers`
+- **Propósito**: Escalar learning rate proporcionalmente al número de Workers
+- **Justificación**: Al aumentar Workers, se agregan más gradientes por ciclo. La raíz cuadrada mitiga inestabilidad
+- **Ejemplo**:
+  ```
+  lr_base = 0.001, n_workers = 4 → suggest_lr = 0.001 × 2 = 0.002
+  lr_base = 0.001, n_workers = 16 → suggest_lr = 0.001 × 4 = 0.004
+  ```
+- **Uso**: Recomendado para configuraciones con múltiples Workers (≥2)
+
+#### Weight Decay (L2 Regularization)
+- **Default**: 1e-4 (0.0001)
+- **Rango**: (0.0, 1.0)
+- **Aplicación**: Solo en modo E2E (Fine-tuning). No se aplica en modo Freeze
+- **Efecto**: Regularización L2 que penaliza pesos grandes, mitiga overfitting
+- **Compatibilidad**: Compatible con FedAvg (los pesos regularizados se promedian normalmente)
+- **Recomendaciones**:
+  - 1e-4: Balance recomendado (default)
+  - 1e-3: Mayor regularización, convergencia más pausada
+  - 0.0: Sin regularización (desconsejado para ImageNet)
+
+#### Label Smoothing
+- **Default**: 0.1
+- **Rango**: (0.0, 1.0)
+- **Aplicación**: Ambos modos (Freeze + E2E)
+- **Efecto**: Suaviza las etiquetas (one-hot → distribución suave) en CrossEntropy, evita overconfidence
+- **Fórmula**: `soft_label = (1 - label_smoothing) * one_hot + label_smoothing / num_classes`
+- **Compatibilidad**: Compatible con todos los optimizadores y arquitecturas CNN
+- **Recomendaciones**:
+  - 0.1: Balance recomendado (default)
+  - 0.0: Sin suavizado (one-hot estricto)
+  - 0.2: Mayor suavizado, generalización más robusta
+
 #### Staleness Lambda (λ)
 - **Default**: 0.1
 - **Rango**: (0.0, 1.0)
 - **Efecto**: Corrección de asiduidad: α(s) = 1/(1+λ·s)
   - s = número de actualizaciones que pasaron desde que este Worker leyó los parámetros
   - α: factor de aplicación de actualizaciones (0 = ignorar, 1 = aplicar directo)
+- **Nota BatchNorm**: Los parámetros `running_mean` y `running_var` de BatchNorm se excluyen del promediado FedAvg. Solo se promedian pesos y sesgos trainables
 - **Recomendaciones**:
   - 0.1: Balance óptimo (recomendado)
   - 0.5: Mayor corrección si red es lenta

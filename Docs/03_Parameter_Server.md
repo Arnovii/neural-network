@@ -13,6 +13,53 @@ El Parameter Server (PS) es el **corazón centralizador** del sistema distribuid
 
 ---
 
+## Utilidades Públicas
+
+### Función: suggest_lr(lr_base, n_workers)
+
+**Propósito**: Calcular el learning rate escalado para entrenamientoasíncrono distribuido.
+
+```python
+from Distributed.parameter_server import suggest_lr
+
+lr_recomendado = suggest_lr(lr_base=0.01, n_workers=4)
+# Retorna: 0.01 × sqrt(4) = 0.02
+```
+
+**Fundamento matemático** (Linear Scaling Rule adaptada):
+
+En entrenamiento distribuido **síncrono**, la regla lineal clásica (Goyal et al. 2017) recomienda:
+```
+lr_escalado = lr_base × n_workers
+```
+
+Pero en entrenamiento **ASÍNCRONO** con FedAvg + corrección de staleness, la escala lineal es demasiado agresiva. El staleness ya atenúa gradientes antiguos, por lo que se usa:
+```
+lr_sugerido = lr_base × √n_workers
+```
+
+**Ejemplos**:
+- 1 worker: `suggest_lr(0.01, 1)` = 0.01 (sin cambio)
+- 2 workers: `suggest_lr(0.01, 2)` ≈ 0.0141 (escala √2 ≈ 1.41)
+- 4 workers: `suggest_lr(0.01, 4)` = 0.02 (escala √4 = 2)
+- 9 workers: `suggest_lr(0.01, 9)` = 0.03 (escala √9 = 3)
+
+**Uso práctico**:
+
+```python
+# En ps_imagenet.py
+ps = ParameterServer(
+    host="0.0.0.0",
+    port=9999,
+    learning_rate=suggest_lr(0.01, num_expected_workers=4),  # ← Escala automática
+    learning_rate_cnn=suggest_lr(0.001, num_expected_workers=4)
+)
+```
+
+**Nota**: La función es **informativa**. No modifica el sistema ni la dinámica de entrenamiento; solo calcula el LR recomendado. El usuario debe asignar el valor manualmente o como referencia.
+
+---
+
 ## Inicialización de Modelos
 
 ### Carga de CNN
@@ -21,7 +68,6 @@ El Parameter Server (PS) es el **corazón centralizador** del sistema distribuid
 # En ps_imagenet.py / ps_gui_imagenet.py
 cnn = CNNExtractor(
     arch="resnet18",        # Opciones: "resnet18" o "simple"
-    pretrained=True,        # Si True: ImageNet1K_V1 weights
     device="cpu",           # PS siempre en CPU (optimización)
     seed=None               # None = aleatorio, int = reproducible
 )
@@ -34,19 +80,46 @@ ps.set_cnn(cnn)
 def set_cnn(self, cnn: CNNExtractor) -> None:
     self._cnn = cnn
     base = getattr(cnn._model, "model", cnn._model)
-    with self._params_lock:
-        self._cnn_state = {
-            name: tensor.cpu().numpy().copy()
-            for name, tensor in base.state_dict().items()
-        }
-    _log.ps(f"CNN lista: arch={cnn.arch}, feature_dim={cnn.feature_dim}")
+    no_avg: set = set()
+    for name, tensor in base.state_dict().items():
+        arr = tensor.cpu().numpy().copy()
+        # Excluir contadores (int64, no parámetros)
+        if arr.dtype == np.int64:
+            no_avg.add(name)
+        # Excluir estadísticas de BatchNorm (se usan del Worker más reciente)
+        elif "running_mean" in name or "running_var" in name:
+            no_avg.add(name)
+    # ... resto del código
+    _log.ps(
+        f"CNN lista: arch={cnn.arch} | feature_dim={cnn.feature_dim} | "
+        f"no_avg={len(no_avg)} (running={n_running}, tracked={n_tracked})"
+    )
 ```
 
 **Tamaño de CNN state_dict**:
 - ResNet-18: ~44 MB (11M parámetros × 4 bytes float32)
-- Simple CNN: ~6 MB (1.5M parámetros)
+- Simple CNN: ~6 MB (1.36M parámetros)
 
-### Carga de MLP
+**Claves excluidas del FedAvg promedio** (conjunto _no_avg_keys):
+1. `num_batches_tracked` (int64): Contador interno de BatchNorm = no parametrizable
+2. `running_mean`, `running_var` (float32): Estadísticas descriptivas locales de cada Worker
+
+Razón de excluir running_mean/var: Cada Worker ve un shard diferente de ImageNet. Promediar sus estadísticas introduce sesgo:
+```
+E[FedAvg(running_mean_W1, running_mean_W2)] ≠ running_mean_global  (distribuciones distintas)
+```
+
+Solución: El PS acepta las estadísticas del Worker más reciente (último en enviar UPDATES), que son correctas para ese Worker y suficientemente estables para inferencia.
+
+**Ejemplo de log**:
+```
+CNN lista: arch=resnet18 | feature_dim=512 | no_avg=1038 (running=1024, tracked=14)
+```
+Desglose: 1038 tensores no promediables = 1024 running stats + 14 contadores
+
+---
+
+## Carga de MLP
 
 ```python
 # En ps_imagenet.py / ps_gui_imagenet.py

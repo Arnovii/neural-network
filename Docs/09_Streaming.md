@@ -150,13 +150,22 @@ def _transform_batch(self, batch):
         #    (Mantiene aspect entre 0.75-1.0, resize a 224x224)
         img = self.crop_transform(img)
         
-        # 2. RandomHorizontalFlip (50% chance)
-        if random.random() < 0.5:
-            img = img.transpose(PIL.Image.FLIP_LEFT_RIGHT)
+        # 2. ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.05)
+        #    Perturbación ligera de color para invarianza perceptual
+        img_tensor = self.color_jitter(img)
         
-        # 3. Convertir a Tensor y normalizar ImageNet stats
-        img_tensor = self.to_tensor(img)  # [3, 224, 224], values [0..1]
+        # 3. RandomHorizontalFlip (50% chance)
+        if random.random() < 0.5:
+            img_tensor = img_tensor.transpose(PIL.Image.FLIP_LEFT_RIGHT)
+        
+        # 4. Convertir a Tensor y normalizar ImageNet stats
+        img_tensor = self.to_tensor(img_tensor)  # [3, 224, 224], values [0..1]
         img_tensor = self.normalize(img_tensor)  # ImageNet mean/std
+        
+        # 5. RandomErasing(p=0.25, scale=(0.02, 0.2))
+        #    Borra rectángulo aleatorio post-normalización (regularización por oclusión)
+        if random.random() < 0.25:
+            img_tensor = self.random_erase(img_tensor)
         
         images.append(img_tensor)
         labels.append(label)

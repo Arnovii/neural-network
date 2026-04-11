@@ -72,16 +72,21 @@ class _ResBlockLite(nn.Module):
 
 class _SimpleCNN(nn.Module):
     def __init__(self):
-        # Stem: Conv(3→32, stride=2)
-        self.stem = ...
+        # Stem: Conv(stride=2) + MaxPool(stride=2) → stride efectivo 4×
+        self.stem = nn.Sequential(
+            nn.Conv2d(3, 32, kernel_size=3, stride=2, padding=1),
+            nn.BatchNorm2d(32),
+            nn.ReLU(),
+            nn.MaxPool2d(kernel_size=3, stride=2, padding=1),  # ← Nuevo
+        )
         # 4 bloques residuales en progresión: 32→32→64→128→256
-        self.layer1 = _ResBlockLite(32, 32, stride=1)    # 112×112
-        self.layer2 = _ResBlockLite(32, 64, stride=2)    # 56×56
-        self.layer3 = _ResBlockLite(64, 128, stride=2)   # 28×28
-        self.layer4 = _ResBlockLite(128, 256, stride=2)  # 14×14
+        self.layer1 = _ResBlockLite(32, 32, stride=1)    # 56×56
+        self.layer2 = _ResBlockLite(32, 64, stride=2)    # 28×28
+        self.layer3 = _ResBlockLite(64, 128, stride=2)   # 14×14
+        self.layer4 = _ResBlockLite(128, 256, stride=2)  # 7×7 [stride = 32×]
         # GAP + Dropout + Proyección
         self.gap = AdaptiveAvgPool2d(1)
-        self.dropout = Dropout(p=0.1)
+        self.dropout = Dropout(p=0.2)  # Aumentado: 0.1 → 0.2
         self.proj = Linear(256, 512)  # → feature_dim
 ```
 
@@ -116,7 +121,8 @@ Cada `_ResBlockLite(in_ch, out_ch, stride)` tiene:
 | **Submuestreo** | MaxPool(2) | Conv stride=2 (en layer2/3/4) | Preserva más información |
 | **Gradiente** | Vanishing en capas iniciales | Skip connections directo | Flujo gradiente estable ✅ |
 | **Inicialización** | Kaiming | Kaiming + Zero-init BN final | BN final = identidad al inicio → estabilidad E2E ✅ |
-| **Regularización** | Ninguna | Dropout(0.1) | Reduce coadaptación ✅ |
+| **Regularización** | Ninguna | Dropout(0.2) | Reduce coadaptación (más fuerte) ✅ |
+| **Stride efectivo** | 16× | 32× | Igual que ResNet-18 ✅ |
 | **Parámetros** | 1.58M | 1.36M | -14% (más eficiente) |
 | **Estado inicial** | Random | Aproxima identidad | Loss inicial más estable |
 
@@ -144,6 +150,34 @@ Cada `_ResBlockLite(in_ch, out_ch, stride)` tiene:
 - ✅ CNN se resincroniza con PS cada REQUEST_PARAMS (ver Async-FedAvg en Docs/00)
 - ⚠️ **Dinámica Async-FedAvg**: Cambios locales se pierden, pero gradientes se promedian globalmente
 
+### Forward Pass de SimpleCNN: Transformación de Shapes
+
+```python
+def forward(self, x: torch.Tensor) -> torch.Tensor:
+    """SimpleCNN: 224×224 RGB → 512-dimensional feature vector."""
+    x = self.stem(x)        # (B,3,224,224) → (B,32,56,56)   [stride 4×]
+    x = self.layer1(x)      # (B,32,56,56)  → (B,32,56,56)   [identity]
+    x = self.layer2(x)      # (B,32,56,56)  → (B,64,28,28)   [stride 2×]
+    x = self.layer3(x)      # (B,64,28,28)  → (B,128,14,14)  [stride 2×]
+    x = self.layer4(x)      # (B,128,14,14) → (B,256,7,7)    [stride 2×]
+    x = self.gap(x)         # (B,256,7,7)   → (B,256,1,1)    [adaptive pool]
+    x = x.flatten(1)        # (B,256,1,1)   → (B,256)        [batch flatten]
+    x = self.dropout(x)     # (B,256)       → (B,256)        [regularización]
+    return self.proj(x)     # (B,256)       → (B,512)        [proyección lineal]
+```
+
+**Stride efectivo acumulado**:
+- Stem + MaxPool: 4×
+- Layer2: 2×
+- Layer3: 2×
+- Layer4: 2×
+- **Total**: 4 × 2 × 2 × 2 = **32×** (igual que ResNet-18)
+
+**Por qué importa el stride 32×**:
+- Receptive field grande: cada neurona ve ≈ 1024×1024 píxeles de entrada efectivos
+- Layer4 output 7×7 dice "224/32 ≈ 7" ✓ (verifica cálculo)
+- Compresión espacial: 224² pixels → 7² activaciones = 1024x reduction = compresión eficiente
+
 ---
 
 ## Interfaz Pública: CNNExtractor
@@ -151,7 +185,6 @@ Cada `_ResBlockLite(in_ch, out_ch, stride)` tiene:
 ```python
 cnn = CNNExtractor(
     arch="resnet18",           # "resnet18" o "simple"
-    pretrained=True,           # Si True: ImageNet1K_V1
     device="cuda",             # Device de PyTorch
     seed=None                  # None = aleatorio, int = reproducible
 )
