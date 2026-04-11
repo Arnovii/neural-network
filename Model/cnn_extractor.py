@@ -33,7 +33,6 @@ CLAVE:
 from __future__ import annotations
 
 import io
-import pickle
 from typing import Optional
 
 import numpy as np
@@ -314,20 +313,13 @@ class CNNExtractor:
     def _get_weights_bytes(self) -> bytes:
         """
         Serializa el state_dict del modelo a bytes para envío por TCP.
-        
-        OPTIMIZACIÓN: Usa pickle.dumps directamente sobre dict numpy en lugar de
-        torch.save() para evitar overhead en redes TCP. Para ResNet-18 (50M params),
-        esto es ~5x más rápido que torch.save().
 
         :returns: Representación binaria del estado del modelo.
         :rtype: bytes
         """
-        # Convierte state_dict a numpy para pickle (más rápido)
-        state_dict_np = {
-            name: tensor.detach().cpu().numpy()
-            for name, tensor in self._model.state_dict().items()
-        }
-        return pickle.dumps(state_dict_np, protocol=pickle.HIGHEST_PROTOCOL)
+        buf = io.BytesIO()
+        torch.save(self._model.state_dict(), buf)
+        return buf.getvalue()
 
     def load_weights_from_bytes(self, weights_bytes: bytes) -> None:
         """
@@ -335,8 +327,6 @@ class CNNExtractor:
 
         load_state_dict no modifica requires_grad — el estado correcto
         establecido en __init__ se preserva después de cada sincronización.
-        
-        OPTIMIZACIÓN: Deserializa directamente desde pickle (evita torch.load overhead).
 
         :param weights_bytes: Representación binaria del estado a cargar.
         :type weights_bytes: bytes
@@ -344,11 +334,7 @@ class CNNExtractor:
         :returns: None
         :rtype: None
         """
-        # Deserializa desde pickle y convierte numpy → torch
-        state_dict_np = pickle.loads(weights_bytes)
-        state_dict = {
-            name: torch.from_numpy(arr)
-            for name, arr in state_dict_np.items()
-        }
-        self._model.load_state_dict(state_dict)
+        buf = io.BytesIO(weights_bytes)
+        state = torch.load(buf, map_location=self.device, weights_only=True)
+        self._model.load_state_dict(state)
         self._model.eval()

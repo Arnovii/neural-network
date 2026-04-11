@@ -630,7 +630,7 @@ class ParameterServer:
         no se promedian: mantienen el valor del PS. Promediar un contador
         de batches no tiene significado semántico y puede distorsionar
         el comportamiento de BatchNorm en eval().
-        
+
         VALIDACIÓN DE NaN: Si loss o accuracy contienen NaN, se rechaza la
         actualización y se registra un error. Esto previene que pesos corruptos
         se promedien en el modelo global.
@@ -646,7 +646,7 @@ class ParameterServer:
         version_read = payload.get("version_read", 0)
         mlp_weights = payload.get("mlp_weights")
         cnn_weights = payload.get("cnn_weights")
-        
+
         # VALIDACIÓN: Rechaza actualizaciones con NaN
         if np.isnan(loss) or np.isnan(acc):
             _log.error(
