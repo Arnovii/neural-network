@@ -19,10 +19,10 @@ MODOS DE ENTRENAMIENTO (determinados automáticamente por arquitectura CNN):
     - gradient clipping conjunto (CNN + MLP) antes del SGD step
     - cnn_weights enviado al PS → FedAvg sobre CNN global
 
-OPTIMIZADOR: SGD puro con gradient clipping.
+OPTIMIZADOR: SGD con weight decay y gradient clipping.
   No se usa Adam porque sus momentos (m, v) son locales al Worker y se
   dessincronizan cuando el PS hace FedAvg con 2+ workers.
-  SGD sin estado extra garantiza que cada paso sea correcto respecto
+  SGD sin estado acumulado garantiza que cada paso sea correcto respecto
   a los pesos actuales del PS.
 
   El PS envía dos LRs en PARAMS:
@@ -34,6 +34,23 @@ OPTIMIZADOR: SGD puro con gradient clipping.
   El optimizador se recrea en cada sincronización con el PS para evitar
   que el estado de momentum (si se usara en el futuro) quede desincronizado.
 
+WEIGHT DECAY (L2 regularización):
+  SGD se construye con weight_decay=1e-4 en modo E2E.
+  Ecuación efectiva por paso: θ_{t+1} = (1 - lr·wd)·θ_t - lr·∇L
+  Actúa como penalización cuadrática sobre la norma de los pesos,
+  evitando que la CNN aprenda representaciones sobreajustadas en las
+  primeras épocas de entrenamiento desde cero.
+  Compatible con FedAvg: el PS promedia θ después del decay aplicado
+  localmente — el promedio de (θ con decay) es (promedio θ) con decay.
+
+LABEL SMOOTHING:
+  CrossEntropyLoss se construye con label_smoothing=0.1.
+  En lugar de optimizar hacia distribuciones one-hot, suaviza el target:
+  p_smooth(y) = 0.9 si y es la clase correcta, 0.1/(K-1) para las demás.
+  Beneficio: reduce overconfidence de los logits, penaliza predicciones
+  de altísima confianza y mejora la calibración del clasificador.
+  No afecta la arquitectura ni los pesos enviados al PS.
+
 GRADIENT CLIPPING:
   clip_grad_norm_(all_params, max_norm=1.0) antes del SGD step.
   Estabiliza el entrenamiento E2E sin necesidad de un LR muy pequeño.
@@ -44,6 +61,8 @@ OPTIMIZACIONES IMPLEMENTADAS:
   3. Y_np: torch.from_numpy() directo (el stream ya produce int64, sin astype)
   4. SGD E2E: torch.optim.SGD con param_groups (C++ backend, sin bucle Python)
   5. Freeze mode: bucle manual inline (solo MLP, pocas capas, no necesita optim)
+  6. Label smoothing=0.1 en CrossEntropyLoss (ambos modos)
+  7. Weight decay=1e-4 en SGD (modo E2E)
 """
 
 import socket
@@ -64,6 +83,8 @@ _log = get_logger(use_colors=True)
 
 _IMAGENET_CLASSES = 1000
 _GRAD_CLIP_MAX_NORM = 1.0  # Umbral de gradient clipping (E2E)
+_LABEL_SMOOTHING = 0.1  # Suavizado de etiquetas en CrossEntropyLoss
+_WEIGHT_DECAY = 1e-4  # L2 regularización en SGD (modo E2E)
 
 
 class WorkerNode:
@@ -529,6 +550,7 @@ class WorkerNode:
                     {"params": list(self._mlp.parameters()), "lr": lr},
                 ],
                 lr=lr,  # default (sobreescrito por los grupos)
+                weight_decay=_WEIGHT_DECAY,  # L2 regularización: θ += -wd·θ por paso
             )
             # _all_params para clipping: lista completa CNN+MLP precalculada
             self._all_params = list(self._cnn._model.parameters()) + list(
@@ -756,7 +778,9 @@ class WorkerNode:
             self._mlp.train()
             self._mlp.zero_grad()
             logits = self._mlp(features)
-            loss_t = nn.functional.cross_entropy(logits, Y)
+            loss_t = nn.functional.cross_entropy(
+                logits, Y, label_smoothing=_LABEL_SMOOTHING
+            )
             loss_t.backward()
 
             # Bucle manual inline: solo 6 parámetros del MLP.
@@ -777,7 +801,9 @@ class WorkerNode:
 
             features = self._cnn._model(X)
             logits = self._mlp(features)
-            loss_t = nn.functional.cross_entropy(logits, Y)
+            loss_t = nn.functional.cross_entropy(
+                logits, Y, label_smoothing=_LABEL_SMOOTHING
+            )
             loss_t.backward()
 
             # Gradient clipping sobre lista precalculada (no se reconstruye aquí)

@@ -19,6 +19,19 @@ TRANSFORMS:
   Train: RandomResizedCrop(224) + HorizontalFlip + Normalize(ImageNet stats)
   Val:   Resize(256) + CenterCrop(224) + Normalize(ImageNet stats)
 
+AUGMENTATION (get_train_transform):
+    ColorJitter (brightness/contrast/saturation=0.2, hue=0.05):
+      Perturba aleatoriamente el color de cada imagen.
+      Ayuda a la CNN a aprender representaciones invariantes al color,
+      especialmente útil en modo simple donde la CNN parte de cero.
+      Overhead: ~3-5 ms por batch — negligible.
+    RandomErasing (p=0.25, scale=(0.02, 0.2)):
+      Borra un rectángulo aleatorio del tensor normalizado (25% de probabilidad).
+      Simula oclusiones parciales; actúa como regularizador similar a Dropout
+      pero a nivel de input. Mejora generalización sin cambiar la arquitectura.
+      Se aplica DESPUÉS de Normalize porque trabaja sobre el tensor final.
+      Overhead: ~1-2 ms por batch — negligible.
+
 LABEL EXTRACTION:
   Se usa is-None check (no or-chain) para evitar que label=0 (clase tench)
   sea tratado como falsy y sustituido por el campo alternativo.
@@ -61,6 +74,15 @@ def get_train_transform(image_size: int = 224) -> T.Compose:
     En esto:
         Tensor (3 × 224 × 224), normalizado y listo para la red
 
+    Orden del pipeline:
+      1. RandomResizedCrop    — recorte y redimensionado aleatorio (data augmentation base)
+      2. ColorJitter          — perturbación de color (brightness/contrast/saturation/hue)
+      3. RandomHorizontalFlip — flip horizontal aleatorio
+      4. ToImage              — conversión a formato PyTorch
+      5. ToDtype(float32)     — normalización de rango a [0.0, 1.0]
+      6. Normalize            — normalización con stats ImageNet (mean/std)
+      7. RandomErasing        — borrado aleatorio de rectángulo (post-normalización)
+
     :param image_size: Tamaño de crop cuadrado en píxeles (default: 224).
     :type image_size: int
 
@@ -72,12 +94,18 @@ def get_train_transform(image_size: int = 224) -> T.Compose:
             T.RandomResizedCrop(
                 image_size, antialias=True
             ),  # Recorta una parte de la imagen y la redimensiona a 224×224
+            T.ColorJitter(
+                brightness=0.2, contrast=0.2, saturation=0.2, hue=0.05
+            ),  # Perturbación ligera de color
             T.RandomHorizontalFlip(),  # A veces gira la imagen
             T.ToImage(),  # Convierte la imagen (PIL) a formato que PyTorch entiende
             T.ToDtype(
                 torch.float32, scale=True
             ),  # Convierte valores de 0-255 -> 0.0–1.0
             T.Normalize(mean=MEAN, std=STD),  # Ajusta los valores de la imagen
+            T.RandomErasing(
+                p=0.25, scale=(0.02, 0.2), ratio=(0.3, 3.3), value=0
+            ),  # Regularización por oclusión
         ]
     )
 

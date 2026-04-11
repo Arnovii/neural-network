@@ -32,12 +32,20 @@ AVERAGING DE CNN:
   Los pesos flotantes (convoluciones, BN running stats) se promedian con FedAvg.
   num_batches_tracked (int64, contador interno de BN) se excluye del averaging
   ya que su promedio no tiene sentido semántico — se mantiene el valor del PS.
+
+FUNCIÓN AUXILIAR: suggest_lr(lr_base, n_workers)
+  Calcula el learning rate sugerido para entrenamiento con múltiples Workers
+  usando la Linear Scaling Rule adaptada para FedAvg asíncrono:
+    lr_sugerido = lr_base × √n_workers
+  No modifica el sistema — es puramente informativa.
+  Con 1 worker: sin cambio. Con 4 workers: lr × 2.
 """
 
 import socket
 import threading
 import time
 import collections
+import math as _math
 from typing import Callable, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -48,6 +56,53 @@ from Model.cnn_extractor import CNNExtractor
 from Utils.logging_util import get_logger
 
 _log = get_logger(use_colors=True)
+
+
+# ================================================================
+# UTILIDAD: LINEAR SCALING RULE PARA LR
+# ================================================================
+
+
+def suggest_lr(lr_base: float, n_workers: int) -> float:
+    """
+    Calcula el learning rate sugerido según la Linear Scaling Rule.
+
+    En entrenamiento distribuido síncrono, la regla lineal de Goyal et al.
+    (2017) recomienda escalar lr ∝ n_workers para mantener la misma
+    dinámica de descenso de gradiente que con un solo worker.
+
+    En entrenamiento ASÍNCRONO con FedAvg y corrección de staleness,
+    la escala lineal es demasiado agresiva: el staleness ya atenúa
+    algunos updates, por lo que se usa escala por raíz cuadrada:
+
+        lr_sugerido = lr_base × √n_workers
+
+    Esta fórmula es más conservadora y apropiada cuando los workers
+    tienen asincronía variable (staleness heterogéneo).
+
+    Con 1 worker: lr_sugerido = lr_base (sin cambio).
+    Con 4 workers: lr_sugerido ≈ 2 × lr_base.
+
+    La función es informativa — no modifica el sistema. Úsela como
+    referencia al configurar learning_rate en ParameterServer.
+
+    :param lr_base:    LR de referencia para 1 worker.
+    :type lr_base:     float
+
+    :param n_workers:  Número de Workers que se planea conectar.
+    :type n_workers:   int
+
+    :returns: LR ajustado según √n_workers.
+    :rtype:   float
+
+    :example:
+        >>> suggest_lr(0.01, 1)   # → 0.01
+        >>> suggest_lr(0.01, 4)   # → 0.02
+        >>> suggest_lr(0.001, 2)  # → 0.00141...
+    """
+    if n_workers <= 1:
+        return lr_base
+    return lr_base * _math.sqrt(n_workers)
 
 
 # ================================================================
