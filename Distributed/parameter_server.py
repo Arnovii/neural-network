@@ -314,9 +314,14 @@ class ParameterServer:
         # Recorremos los pesos del modelo
         for name, tensor in base.state_dict().items():
             arr = tensor.cpu().numpy().copy()
+            # Excluir num_batches_tracked (int64): es un contador, no un parámetro
             if arr.dtype == np.int64 or tensor.dtype == torch.int64:
-                # num_batches_tracked: almacenar como int64, excluir del averaging
-                # No lo promedia ya que es un contador
+                no_avg.add(name)
+            # Excluir running_mean y running_var de BatchNorm:
+            # son estadísticas descriptivas locales de cada Worker.
+            # Promediarlas con FedAvg introduce sesgo cuando cada Worker
+            # tiene un shard diferente de datos (distribución local ≠ global).
+            elif "running_mean" in name or "running_var" in name:
                 no_avg.add(name)
             cnn_state[name] = arr  # Guardamos pesos
 
@@ -324,9 +329,12 @@ class ParameterServer:
             self._cnn_state = cnn_state
             self._no_avg_keys = no_avg
 
+        n_running = sum(1 for k in no_avg if "running" in k)
+        n_tracked = sum(1 for k in no_avg if "tracked" in k)
         _log.ps(
             f"CNN lista: arch={cnn.arch} | feature_dim={cnn.feature_dim} | "
-            f"params={len(cnn_state)} | no_avg={len(no_avg)}"
+            f"params={len(cnn_state)} | no_avg={len(no_avg)} "
+            f"(running={n_running}, tracked={n_tracked})"
         )
 
     def set_mlp(self, mlp_state: Dict[str, np.ndarray]) -> None:
