@@ -1,7 +1,5 @@
 """Utils/logging_util.py — Logger unificado para el sistema distribuido."""
 
-from typing import Optional
-
 
 class FormattedLogger:
     PHASES = {
@@ -55,8 +53,8 @@ class FormattedLogger:
         self,
         phase: str,
         message: str,
-        progress: Optional[str] = None,
-        metric: Optional[str] = None,
+        progress: str | None = None,
+        metric: str | None = None,
     ) -> None:
         """
         Registra mensaje formateado con información de progreso y métrica opcionales.
@@ -71,10 +69,10 @@ class FormattedLogger:
         :type message: str
 
         :param progress: Información de progreso opcional (ej: "100 / 1000").
-        :type progress: Optional[str]
+        :type progress: str | None
 
         :param metric: String de métrica opcional (ej: "loss=0.23").
-        :type metric: Optional[str]
+        :type metric: str | None
 
         :returns: None
         :rtype: None
@@ -96,10 +94,10 @@ class FormattedLogger:
         :type msg: str
 
         :param progress: Información de progreso opcional.
-        :type progress: Optional[str]
+        :type progress: str | None
 
         :param metric: Información de métrica opcional.
-        :type metric: Optional[str]
+        :type metric: str | None
 
         :returns: None
         :rtype: None
@@ -113,16 +111,16 @@ class FormattedLogger:
         Agrega prefijo [Wid] al mensaje para identificación del Worker.
 
         :param worker_id: ID del Worker (int o None para mostrar '?')
-        :type worker_id: Optional[int]
+        :type worker_id: int | None
 
         :param msg: Texto del mensaje.
         :type msg: str
 
         :param progress: Información de progreso opcional.
-        :type progress: Optional[str]
+        :type progress: str | None
 
         :param metric: Información de métrica opcional.
-        :type metric: Optional[str]
+        :type metric: str | None
 
         :returns: None
         :rtype: None
@@ -141,10 +139,10 @@ class FormattedLogger:
         :type msg: str
 
         :param progress: Información de progreso opcional.
-        :type progress: Optional[str]
+        :type progress: str | None
 
         :param metric: Información de métrica opcional.
-        :type metric: Optional[str]
+        :type metric: str | None
 
         :returns: None
         :rtype: None

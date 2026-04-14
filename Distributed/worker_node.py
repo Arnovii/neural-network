@@ -66,7 +66,7 @@ OPTIMIZACIONES IMPLEMENTADAS:
 """
 
 import socket
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple
 
 import numpy as np
 import torch
@@ -129,10 +129,10 @@ class WorkerNode:
     :type prefetch_batches: int
 
     :param seed: Semilla para RNG (None = determinismo deshabilitado, aleatorio).
-    :type seed: Optional[int]
+    :type seed: int | None
 
     :param hf_token: Token de autenticación de HuggingFace (requerido para ILSVRC/imagenet-1k).
-    :type hf_token: Optional[str]
+    :type hf_token: str | None
 
     :param accum_steps: Número de batches a acumular antes de enviar UPDATES al PS.
     :type accum_steps: int
@@ -153,8 +153,8 @@ class WorkerNode:
         device: str = "cpu",
         shuffle_buffer: int = 1000,
         prefetch_batches: int = 4,
-        seed: Optional[int] = None,
-        hf_token: Optional[str] = None,
+        seed: int | None = None,
+        hf_token: str | None = None,
         accum_steps: int = 1,
     ) -> None:
         # Configuración de red
@@ -179,15 +179,15 @@ class WorkerNode:
         self.accum_steps = accum_steps
 
         # Recibidos via CONFIG del PS
-        self.batch_size: Optional[int] = None
-        self.image_size: Optional[int] = None
+        self.batch_size: int | None = None
+        self.image_size: int | None = None
 
         # Estado interno del worker
-        self._worker_id: Optional[int] = None
-        self._sock: Optional[socket.socket] = None
-        self._cnn: Optional[CNNExtractor] = None
-        self._mlp: Optional[MLPPyTorch] = None
-        self._stream: Optional[PrefetchBuffer] = None
+        self._worker_id: int | None = None
+        self._sock: socket.socket | None = None
+        self._cnn: CNNExtractor | None = None
+        self._mlp: MLPPyTorch | None = None
+        self._stream: PrefetchBuffer | None = None
         self._batches_done = 0
 
         # Determinado en _load_cnn() a partir del arch recibido del PS.
@@ -198,7 +198,7 @@ class WorkerNode:
 
         # Optimizador SGD con param_groups (E2E, modo simple)
         # Se recrea en _rebuild_optimizer tras cada sync de LRs
-        self._sgd: Optional[optim.SGD] = None
+        self._sgd: optim.SGD | None = None
 
         # Lista precalculada CNN+MLP params para gradient clipping (modo E2E)
         # Se actualiza en _rebuild_optimizer para evitar reconstrucción por batch
@@ -872,7 +872,7 @@ class WorkerNode:
     def _sync_mlp(
         self,
         mlp_state: Dict[str, np.ndarray],
-        existing: Optional[MLPPyTorch],
+        existing: MLPPyTorch | None,
     ) -> MLPPyTorch:
         """
         Sincroniza los parámetros del MLP local con el estado global del PS.
@@ -893,7 +893,7 @@ class WorkerNode:
         :type mlp_state: Dict[str, np.ndarray]
 
         :param existing: Instancia existente de MLPPyTorch o None.
-        :type existing: Optional[MLPPyTorch]
+        :type existing: MLPPyTorch | None
 
         :returns: Instancia de MLPPyTorch sincronizada.
         :rtype: MLPPyTorch

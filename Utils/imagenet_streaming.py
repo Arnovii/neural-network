@@ -41,7 +41,7 @@ import io
 import queue
 import threading
 import time
-from typing import Generator, Iterator, Optional, Tuple
+from typing import Generator, Iterator, Tuple
 
 import numpy as np
 import torch
@@ -212,8 +212,8 @@ class ImageNetStream:
         batch_size: int = 64,
         image_size: int = 224,
         shuffle_buffer: int = 1000,
-        seed: Optional[int] = None,
-        hf_token: Optional[str] = None,
+        seed: int | None = None,
+        hf_token: str | None = None,
     ) -> None:
         """
         Inicializa iterador de streaming ImageNet-1k con sharding automático de Workers.
@@ -242,10 +242,10 @@ class ImageNetStream:
         :type shuffle_buffer: int
 
         :param seed: Semilla RNG para reproducibilidad del shuffle (None = aleatorio).
-        :type seed: Optional[int]
+        :type seed: int | None
 
         :param hf_token: Token de autenticación HuggingFace (requerido para datasets privados).
-        :type hf_token: Optional[str]
+        :type hf_token: str | None
 
         :returns: None
         :rtype: None
@@ -304,7 +304,7 @@ class ImageNetStream:
         return remote_iterator
 
     @staticmethod
-    def _to_pil(raw) -> Optional[Image.Image]:
+    def _to_pil(raw) -> Image.Image | None:
         """
         Convierte datos de imagen crudos a PIL Image en formato RGB.
 
@@ -319,7 +319,7 @@ class ImageNetStream:
         :type raw: Union[bytes, PIL.Image.Image, Any]
 
         :returns: PIL Image en modo RGB, o None si la conversión falló
-        :rtype: Optional[PIL.Image.Image]
+        :rtype: PIL.Image.Image | None
 
         :raises None: Errores de descompresión capturados silenciosamente, retorna None
         """
@@ -480,8 +480,8 @@ class PrefetchBuffer:
         self._source = source
         self._q: queue.Queue = queue.Queue(maxsize=buffer_size)
         self._stop = threading.Event()
-        self._thread: Optional[threading.Thread] = None
-        self._error: Optional[Exception] = None
+        self._thread: threading.Thread | None = None
+        self._error: Exception | None = None
 
     def start(self) -> None:
         """
@@ -633,8 +633,8 @@ class ValidationStream:
         dataset_name: str = "ILSVRC/imagenet-1k",
         batch_size: int = 256,
         image_size: int = 224,
-        max_batches: Optional[int] = None,
-        hf_token: Optional[str] = None,
+        max_batches: int | None = None,
+        hf_token: str | None = None,
     ) -> None:
         """
         Inicializa iterador de validacion para evaluacion del modelo global.
@@ -649,10 +649,10 @@ class ValidationStream:
         :type image_size: int
 
         :param max_batches: Limitar a N batches; None = todos los ~50,000 de validacion.
-        :type max_batches: Optional[int]
+        :type max_batches: int | None
 
         :param hf_token: Token de autenticacion HuggingFace (si dataset requiere).
-        :type hf_token: Optional[str]
+        :type hf_token: str | None
 
         :returns: None
         :rtype: None
@@ -734,8 +734,8 @@ def build_worker_stream(
     image_size: int = 224,
     shuffle_buffer: int = 1000,
     prefetch_batches: int = 4,
-    seed: Optional[int] = None,
-    hf_token: Optional[str] = None,
+    seed: int | None = None,
+    hf_token: str | None = None,
 ) -> PrefetchBuffer:
     """
     Construye pipeline completo de prefetch para un Worker distribuido.
@@ -765,10 +765,10 @@ def build_worker_stream(
     :type prefetch_batches: int
 
     :param seed: Semilla RNG para reproducibilidad (default: None)
-    :type seed: Optional[int]
+    :type seed: int | None
 
     :param hf_token: Token HuggingFace para autenticación (default: None)
-    :type hf_token: Optional[str]
+    :type hf_token: str | None
 
     :returns: PrefetchBuffer listo para llamar .start() e iterar
     :rtype: PrefetchBuffer

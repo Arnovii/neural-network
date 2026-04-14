@@ -63,7 +63,7 @@ CNNExtractor : class
     - arch: 'resnet18' (CONGELADA, MLP-only) | 'simple' (ENTRENABLE, E2E)
     - pretrained: True (carga IMAGENET1K_V1 para resnet18)
     - device: 'cpu' | 'cuda' | 'cuda:0' | 'mps'
-    - seed: Optional[int] (default None, para reproducibilidad en SimpleCNN)
+    - seed: int | None (default None, para reproducibilidad en SimpleCNN)
 
     NOTA: requires_grad se establece en __init__ y NUNCA cambia durante entrenamiento.
     - ResNet-18: requires_grad=False PERMANENTEMENTE (feature extractor)

@@ -46,7 +46,7 @@ import threading
 import time
 import collections
 import math as _math
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Tuple
 
 import numpy as np
 import torch
@@ -168,11 +168,11 @@ class ParameterServer:
         metrics_window: int = 50,
         batch_size: int = 64,
         image_size: int = 224,
-        seed: Optional[int] = None,
-        on_step: Optional[Callable] = None,
-        on_report: Optional[Callable] = None,
-        on_worker_connected: Optional[Callable] = None,
-        on_worker_disconnected: Optional[Callable] = None,
+        seed: int | None = None,
+        on_step: Callable | None = None,
+        on_report: Callable | None = None,
+        on_worker_connected: Callable | None = None,
+        on_worker_disconnected: Callable | None = None,
     ) -> None:
         """
         Inicializa el Parameter Server para entrenamiento Async-SGD distribuido.
@@ -210,27 +210,27 @@ class ParameterServer:
         :type image_size: int
 
         :param seed: Semilla RNG para reproducibilidad (None = aleatorio, enviado en CONFIG).
-        :type seed: Optional[int]
+        :type seed: int | None
 
         :param on_step: Callback tras cada step de gradiente.
                        Firma: Callable[[int, float, float, float], None]
                        Args: (step, loss, acc, staleness_factor)
-        :type on_step: Optional[Callable]
+        :type on_step: Callable | None
 
         :param on_report: Callback tras agregación de métricas.
                          Firma: Callable[[int, float, float], None]
                          Args: (step, avg_loss, avg_acc)
-        :type on_report: Optional[Callable]
+        :type on_report: Callable | None
 
         :param on_worker_connected: Callback cuando Worker conecta.
                                    Firma: Callable[[int, str], None]
                                    Args: (worker_id, address)
-        :type on_worker_connected: Optional[Callable]
+        :type on_worker_connected: Callable | None
 
         :param on_worker_disconnected: Callback cuando Worker desconecta.
                                       Firma: Callable[[int], None]
                                       Args: (worker_id,)
-        :type on_worker_disconnected: Optional[Callable]
+        :type on_worker_disconnected: Callable | None
         """
         self.host = host
         self.port = port
@@ -261,7 +261,7 @@ class ParameterServer:
         self._version: int = 0
 
         # CNN (para distribución inicial y evaluación)
-        self._cnn: Optional[CNNExtractor] = None
+        self._cnn: CNNExtractor | None = None
 
         # Workers
         self._sockets: Dict[int, socket.socket] = {}
@@ -282,8 +282,8 @@ class ParameterServer:
         self._history_lock = threading.Lock()
 
         # Control
-        self._server_sock: Optional[socket.socket] = None
-        self._accept_thread: Optional[threading.Thread] = None
+        self._server_sock: socket.socket | None = None
+        self._accept_thread: threading.Thread | None = None
         self._shutdown = threading.Event()
 
     # ================================================================
@@ -786,7 +786,7 @@ class ParameterServer:
         dataset_name: str = "ILSVRC/imagenet-1k",
         max_batches: int = 50,
         batch_size: int = 256,
-        hf_token: Optional[str] = None,
+        hf_token: str | None = None,
     ) -> Tuple[float, float]:
         """
         Evaluación rápida del modelo global en el split de validación de ImageNet.
@@ -808,7 +808,7 @@ class ParameterServer:
         :type batch_size: int
 
         :param hf_token: Token de autenticacion HuggingFace.
-        :type hf_token: Optional[str]
+        :type hf_token: str | None
 
         :returns: Tupla (accuracy_percentaje, mean_loss)
         :rtype: Tuple[float, float]

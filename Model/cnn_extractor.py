@@ -40,8 +40,6 @@ CLAVE:
 from __future__ import annotations
 
 import io
-from typing import Optional
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -492,7 +490,7 @@ class CNNExtractor:
         Semilla RNG para reproducibilidad. Solo afecta a arch='simple'.
         Default: None (sin semilla, aleatorio).
     :type seed:
-        Optional[int]
+        int | None
 
     :raises ValueError:
         Si arch no está en ('simple', 'resnet18').
@@ -529,7 +527,7 @@ class CNNExtractor:
         self,
         arch: str = "resnet18",
         device: str = "cpu",
-        seed: Optional[int] = None,
+        seed: int | None = None,
     ) -> None:
         """
         Inicializa extractor CNN con arquitectura y dispositivo especificados.
@@ -564,7 +562,7 @@ class CNNExtractor:
             Solo afecta to arch='simple' (SIMPLE CNN).
             No afecta a arch='resnet18' (pesos prefijos de ImageNet).
         :type seed:
-            Optional[int]
+            int | None
 
         :returns:
             Nada. Inicializa self._model, self.arch, self.device, self.seed.
