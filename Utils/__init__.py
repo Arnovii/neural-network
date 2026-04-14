@@ -3,8 +3,8 @@ Utils — Utilidades para streaming de datos, logging y exportación de resultad
 
 Proporciona funcionalidades esenciales para el pipeline de entrenamiento distribuido
 asíncrono sobre ImageNet-1k que soporta DOS MODOS:
-  1. SimpleCNN E2E: CNN + MLP entrenables (E2E backprop)
-  2. ResNet-18 MLP-only: CNN congelada, solo MLP entrenable
+  1. SimpleCNN: Entrena ambas redes (CNN + MLP backprop habilitado, 11.4M params)
+  2. ResNet-18 preentrenada (MLP-only): CNN congelada con pesos ImageNet, solo MLP entrenable
 
 Streaming y logging funcionan idénticamente en ambos modos:
 

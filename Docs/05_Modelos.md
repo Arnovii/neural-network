@@ -56,38 +56,46 @@ Output: (N, 512)
 - ✅ Se resincroniza con CNN global (PS) cada REQUEST_PARAMS con pesos promediados
 - ✅ Dinámica: CNN global se entrena distribuida via SimpleCNN + Async-FedAvg
 
-### SimpleCNN (Mejorada con Bloques Residuales Ligeros)
+### SIMPLE CNN (ResNet-18 desde Cero)
 
-**Archivo**: `Model/cnn_extractor.py` → `_SimpleCNN` + `_ResBlockLite`
+**Archivo**: `Model/cnn_extractor.py` → `_ResNet18FromScratch` + `_BasicBlock`
 
-La nueva SimpleCNN usa **4 bloques residuales ligeros** (_ResBlockLite) en lugar de la arquitectura anterior de 3 bloques sin skip connections. Esta arquitectura permite entrenamiento E2E estable.
+La SIMPLE CNN es una arquitectura **ResNet-18 estándar construida desde cero** (sin pesos preentrenados). Utiliza bloques residuales básicos (_BasicBlock) organizados en 4 capas progresivas con skip connections fuertes, optimizada para entrenamiento E2E en Async-SGD distribuido con staleness.
 
 ```python
-class _ResBlockLite(nn.Module):
-    """Bloque residual con Conv→BN→ReLU→Conv→BN + shortcut."""
-    def forward(self, x):
-        out = F.relu(self.bn1(self.conv1(x)))
-        out = self.bn2(self.conv2(out))
-        return F.relu(out + self.shortcut(x))  # ← Skip connection
+class _BasicBlock(nn.Module):
+    """Bloque residual estándar de ResNet: Conv→BN→ReLU→Conv→BN + shortcut."""
+    expansion = 1
+    def __init__(self, in_ch: int, out_ch: int, stride: int = 1):
+        # Conv(3×3, stride) + BN + ReLU
+        # Conv(3×3) + BN (sin ReLU, se aplica após shortcut)
+        # Shortcut: identidad o Conv(1×1) si stride > 1 o cambio de canales
+        # Zero-init en BN final → bloque inicia como identidad
 
-class _SimpleCNN(nn.Module):
+class _ResNet18FromScratch(nn.Module):
     def __init__(self):
-        # Stem: Conv(stride=2) + MaxPool(stride=2) → stride efectivo 4×
-        self.stem = nn.Sequential(
-            nn.Conv2d(3, 32, kernel_size=3, stride=2, padding=1),
-            nn.BatchNorm2d(32),
-            nn.ReLU(),
-            nn.MaxPool2d(kernel_size=3, stride=2, padding=1),  # ← Nuevo
-        )
-        # 4 bloques residuales en progresión: 32→32→64→128→256
-        self.layer1 = _ResBlockLite(32, 32, stride=1)    # 56×56
-        self.layer2 = _ResBlockLite(32, 64, stride=2)    # 28×28
-        self.layer3 = _ResBlockLite(64, 128, stride=2)   # 14×14
-        self.layer4 = _ResBlockLite(128, 256, stride=2)  # 7×7 [stride = 32×]
-        # GAP + Dropout + Proyección
+        # Stem: Conv(3→64, 7×7, stride=2) + BN + ReLU + MaxPool(stride=2) → stride 4×
+        self.conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3)
+        self.bn1 = nn.BatchNorm2d(64)
+        self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
+        
+        # 4 layers con 2 BasicBlocks cada uno en progresión: 64→128→256→512
+        self.layer1 = self._make_layer(_BasicBlock, 64, 64, 2, stride=1)    # 56×56
+        self.layer2 = self._make_layer(_BasicBlock, 64, 128, 2, stride=2)   # 28×28
+        self.layer3 = self._make_layer(_BasicBlock, 128, 256, 2, stride=2)  # 14×14
+        self.layer4 = self._make_layer(_BasicBlock, 256, 512, 2, stride=2)  # 7×7 [stride = 32×]
+        
+        # GAP + Dropout + Proyección lineal
         self.gap = AdaptiveAvgPool2d(1)
-        self.dropout = Dropout(p=0.2)  # Aumentado: 0.1 → 0.2
-        self.proj = Linear(256, 512)  # → feature_dim
+        self.dropout = nn.Dropout(p=0.5)
+        self.proj = nn.Linear(512, 512)  # → feature_dim = 512
+    
+    def _make_layer(self, block, in_ch, out_ch, blocks, stride):
+        """Construir capa con N bloques residuales."""
+        layers = [block(in_ch, out_ch, stride)]
+        for _ in range(1, blocks):
+            layers.append(block(out_ch, out_ch, stride=1))
+        return nn.Sequential(*layers)
 ```
 
 **Especificaciones**:
@@ -95,54 +103,70 @@ class _SimpleCNN(nn.Module):
 | Atributo | Valor |
 |---|---|
 | Feature dimension | 512 |
-| Parámetros totales | ~1.36M |
-| Tamaño state_dict | ~5 MB en float32 |
+| Parámetros totales | **11.7M** |
+| Tamaño state_dict | **~45.8 MB** en float32 |
 | Pesos | Random (Kaiming Normal init) |
-| Velocidad (CPU) | ~12-15ms per batch |
-| Velocidad (GPU) | ~2-3ms per batch |
+| Velocidad (CPU) | ~100-120ms per batch (64 imágenes) |
+| Velocidad (GPU) | ~15-20ms per batch |
 
 **Arquitectura de Bloques Residuales**:
 
-Cada `_ResBlockLite(in_ch, out_ch, stride)` tiene:
+Cada `_BasicBlock(in_ch, out_ch, stride)` tiene (estructura estándar ResNet-18):
 ```
-┌─────────────────────────────────────┬─ shortcut
-│ Conv(stride=stride)→BN→ReLU         │ (1×1 Conv si stride≠1 o in_ch≠out_ch)
-│ Conv→BN                             │
-└─────────────────────────────────────┴─
-        ↓ (suma) ↓
-       ReLU
+input
+  ├─ Conv(3×3, stride) → BN → ReLU → Conv(3×3) → BN ─┐
+  │                                                  (suma)
+  └─ Shortcut (identidad o Conv 1×1) ────────────────┤
+                                                     ↓
+                                                    ReLU
+                                                     ↓
+                                                   output
 ```
 
-**Mejoras sobre versión anterior (~1.58M parámetros, 3 bloques conv simples)**:
+**Zero-init BN final**: En cada bloque, el último BN inicia con scale=0 → el bloque es aproximadamente identidad al inicio → estabilidad de gradientes en primeros pasos.
 
-| Aspecto | Antes | Ahora | Ganancia |
+**Comparativa: SIMPLE CNN (11.7M) vs Alternativas**:
+
+| Aspecto | SIMPLE CNN (Actual) | SimpleCNN Anterior | ResNet-18 Preentrenada |
 |---|---|---|---|
-| **Bloques** | 3 (+MaxPool) | 4 (_ResBlockLite) | Skip connections ✅ |
-| **Submuestreo** | MaxPool(2) | Conv stride=2 (en layer2/3/4) | Preserva más información |
-| **Gradiente** | Vanishing en capas iniciales | Skip connections directo | Flujo gradiente estable ✅ |
-| **Inicialización** | Kaiming | Kaiming + Zero-init BN final | BN final = identidad al inicio → estabilidad E2E ✅ |
-| **Regularización** | Ninguna | Dropout(0.2) | Reduce coadaptación (más fuerte) ✅ |
-| **Stride efectivo** | 16× | 32× | Igual que ResNet-18 ✅ |
-| **Parámetros** | 1.58M | 1.36M | -14% (más eficiente) |
-| **Estado inicial** | Random | Aproxima identidad | Loss inicial más estable |
+| **Parámetros** | 11.7M | 1.36M | 11.7M |
+| **Pesos iniciales** | Random (Kaiming) | Random (Kaiming) | ImageNet1K_V1 |
+| **requires_grad** | True (entrenable) | True (entrenable) | False (congelada) |
+| **Stride efectivo** | 32× | 32× | 32× |
+| **Skip connections** | Sí (_BasicBlock) | Sí (_ResBlockLite) | Sí (standard) |
+| **Dropout** | 0.5 | 0.2 | Ninguno |
+| **Bloque residual** | Estándar ResNet | Custom ligero | Estándar ResNet |
+| **Velocidad CPU** | ~100ms/batch | ~12ms/batch | ~100ms/batch |
+| **Capacidad** | Suficiente para ImageNet-1k | Insuficiente (~1.4K params/clase) | Suficiente (~11.7K params/clase) |
+| **Convergencia inicialmente** | Lenta (sin pretrain) | Lenta (sin pretrain) | Rápida (transfer learning) |
+| **Modo de uso** | E2E training (ambas redes) | E2E training (ambas redes) | MLP-only (CNN congelada) |
 
-**Ventajas sobre ResNet-18**:
-- ✅ Muy rápida (8-10x más rápida que ResNet-18 en CPU)
-- ✅ Pequeña (8x menos parámetros)
-- ✅ Entrenable E2E desde cero
-- ✅ Skip connections evitan vanishing gradient
-- ✅ Ideal para testing/debugging
+**Ventajas de SIMPLE CNN**:
+- ✅ Arquitectura validada ResNet-18 standard → reproducible
+- ✅ Suficiente capacidad para ImageNet-1k (11.7M params = 11.7K params/clase)
+- ✅ Entrenable E2E desde cero → no requiere dataset preentrenamiento
+- ✅ Skip connections robustos → manejan bien staleness en Async-SGD
+- ✅ Comparable en velocidad a ResNet-18 preentrenada
+- ✅ Ideal para testing/debugging y entrenamiento distribuido
 
-**Desventajas vs ResNet-18**:
-- ⚠️ Sin preentrenamiento → convergencia lenta inicialmente
-- ⚠️ Features aleatorias = ruido puro primeros centenares de batches
-- ⚠️ Peor generalización vs transfer learning
-- ⚠️ SGD puro sin momentum + resincronización → convergencia inestable
+**Desventajas de SIMPLE CNN vs ResNet-18 preentrenada**:
+- ⚠️ Sin preentrenamiento → convergencia **muy lenta inicialmente** (primeros miles de batches)
+- ⚠️ Features iniciales aleatorias = efectivamente ruido en primeros steps
+- ⚠️ Peor generalización en validación (vs transfer learning con ImageNet preentrenada)
+- ⚠️ SGD puro sin momentum + resincronización global cada REQUEST_PARAMS → inestable
+- ⚠️ **NO RECOMENDADA para producción**
 
-**Desventaja crítica en entorno distribuido**:
-- ⚠️ **Cambios locales NO PERSISTEN**: Se resincroniza con CNN global (PS) cada REQUEST_PARAMS
-- ⚠️ Dinámica: CNN local se sobrescribe con promedio global → gradientes computados "desaparecen"
-- **NO RECOMENDADA para producción**: Inestabilidad inherente de Async-FedAvg E2E
+**Crítica en entorno distribuido Async-FedAvg**:
+- ⚠️ **Cambios locales NO PERSISTEN**: Se resincroniza con CNN global del PS cada REQUEST_PARAMS
+  - Worker entrena CNN localmente por accum_steps → gradientes computados
+  - Envía parámetros al PS → son promediados con otros Workers
+  - Recibe CNN global nuevamente → parámetros locales se **sobrescriben** con el promedio
+  - Efecto: Gradientes de este Worker "se pierden" en comunicación network
+- **Dinámica Async-FedAvg**: Cambios locales se descartan, pero gradientes se promedian **globalmente** vía PS
+  - CNN global entrena distribuida
+  - Convergencia es **comunal**, no local
+  - Staleness hace convergencia inestable
+- **NO RECOMENDADA para producción**: Inestabilidad inherente de Async-FedAvg E2E + sin pretrain
 
 **Estado en el Sistema**:
 - ✅ **ENTRENABLE (requires_grad=True)**: Recibe gradientes en backward
@@ -150,33 +174,56 @@ Cada `_ResBlockLite(in_ch, out_ch, stride)` tiene:
 - ✅ CNN se resincroniza con PS cada REQUEST_PARAMS (ver Async-FedAvg en Docs/00)
 - ⚠️ **Dinámica Async-FedAvg**: Cambios locales se pierden, pero gradientes se promedian globalmente
 
-### Forward Pass de SimpleCNN: Transformación de Shapes
+### Forward Pass de SIMPLE CNN: Transformación de Shapes
 
 ```python
 def forward(self, x: torch.Tensor) -> torch.Tensor:
-    """SimpleCNN: 224×224 RGB → 512-dimensional feature vector."""
-    x = self.stem(x)        # (B,3,224,224) → (B,32,56,56)   [stride 4×]
-    x = self.layer1(x)      # (B,32,56,56)  → (B,32,56,56)   [identity]
-    x = self.layer2(x)      # (B,32,56,56)  → (B,64,28,28)   [stride 2×]
-    x = self.layer3(x)      # (B,64,28,28)  → (B,128,14,14)  [stride 2×]
-    x = self.layer4(x)      # (B,128,14,14) → (B,256,7,7)    [stride 2×]
-    x = self.gap(x)         # (B,256,7,7)   → (B,256,1,1)    [adaptive pool]
-    x = x.flatten(1)        # (B,256,1,1)   → (B,256)        [batch flatten]
-    x = self.dropout(x)     # (B,256)       → (B,256)        [regularización]
-    return self.proj(x)     # (B,256)       → (B,512)        [proyección lineal]
+    """SIMPLE CNN (ResNet-18 desde cero): 224×224 RGB → 512-dimensional feature vector."""
+    # Stem: Conv(7×7, stride=2) + BN + ReLU + MaxPool(stride=2) → stride efectivo 4×
+    x = self.conv1(x)       # (B,3,224,224) → (B,64,112,112)
+    x = self.bn1(x)
+    x = F.relu(x)
+    x = self.maxpool(x)     # (B,64,112,112) → (B,64,56,56)   [stride 4×]
+    
+    # Layer1: 2 BasicBlocks(64→64), stride=1 → sin submuestreo espacial
+    x = self.layer1(x)      # (B,64,56,56)   → (B,64,56,56)   [identity blocks]
+    
+    # Layer2: 2 BasicBlocks(64→128), stride=2 en primer bloque
+    x = self.layer2(x)      # (B,64,56,56)   → (B,128,28,28)  [stride 2×]
+    
+    # Layer3: 2 BasicBlocks(128→256), stride=2 en primer bloque
+    x = self.layer3(x)      # (B,128,28,28)  → (B,256,14,14)  [stride 2×]
+    
+    # Layer4: 2 BasicBlocks(256→512), stride=2 en primer bloque
+    x = self.layer4(x)      # (B,256,14,14)  → (B,512,7,7)    [stride 2×]
+    
+    # Global Average Pooling: 7×7 → 1×1
+    x = self.gap(x)         # (B,512,7,7)    → (B,512,1,1)    [compute mean]
+    x = x.flatten(1)        # (B,512,1,1)    → (B,512)        [reshape]
+    
+    # Dropout + Proyección lineal
+    x = self.dropout(x)     # (B,512)        → (B,512)        [regularización p=0.5]
+    return self.proj(x)     # (B,512)        → (B,512)        [identity projection]
 ```
 
 **Stride efectivo acumulado**:
-- Stem + MaxPool: 4×
-- Layer2: 2×
-- Layer3: 2×
-- Layer4: 2×
+- Conv(7×7, stride=2): 2×
+- MaxPool(stride=2): 2×
+  - **Subtotal Stem**: 2 × 2 = 4×
+- Layer2 (stride=2): 2×
+- Layer3 (stride=2): 2×
+- Layer4 (stride=2): 2×
 - **Total**: 4 × 2 × 2 × 2 = **32×** (igual que ResNet-18)
 
+**Verificación de spatial reduction**:
+- Input: 224×224
+- Output feature map: 224 / 32 = 7×7 ✓
+
 **Por qué importa el stride 32×**:
-- Receptive field grande: cada neurona ve ≈ 1024×1024 píxeles de entrada efectivos
-- Layer4 output 7×7 dice "224/32 ≈ 7" ✓ (verifica cálculo)
-- Compresión espacial: 224² pixels → 7² activaciones = 1024x reduction = compresión eficiente
+- **Receptive field grande**: Cada neurona en layer4 ve ≈ 1024×1024 píxeles de entrada (receptive field = stride × 3×3 kernel size ≈ 30-50)
+- **Verificación matemática**: Layer4 output 7×7 → 224 / 32 = 7 ✓
+- **Compresión espacial eficiente**: 224² = 50,176 píxeles → 7² = 49 activaciones = **1024x reduction**
+- **Estandarización**: Stride 32× es el estándar de ResNet-18 → compatible con muchas aplicaciones downstream
 
 ---
 
@@ -195,8 +242,22 @@ cnn = CNNExtractor(
 #### Forward Pass (Extracción de Features)
 
 ```python
-# En PS (evaluación)
-features = cnn._model(images)  # (N, 512)
+# En PS (extracción de features)
+features_batch = cnn._model(image_batch)  # (N, 512)
+
+# En Training Loop (Worker, ResNet-18 preentrenada)
+image_batch = ...  # (64, 3, 224, 224) del dataset
+features = cnn._model(image_batch)  # CNN congelada → (64, 512)
+logits = mlp(features)  # MLP entrenable → (64, 1000)
+loss = F.cross_entropy(logits, labels)
+loss.backward()  # Solo MLP recibe gradientes (CNN congelada)
+
+# En Training Loop (Worker, SIMPLE CNN)
+image_batch = ...  # (64, 3, 224, 224) del dataset
+features = cnn._model(image_batch)  # CNN entrenable → (64, 512)
+logits = mlp(features)  # MLP entrenable → (64, 1000)
+loss = F.cross_entropy(logits, labels)
+loss.backward()  # **AMBAS** reciben gradientes (E2E backprop)
 
 # En Workers (training loop)
 with torch.inference_mode():

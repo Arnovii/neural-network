@@ -5,10 +5,10 @@ Este paquete encapsula la arquitectura de dos capas con DOS MODOS distintos:
 1. **CNN (PyTorch)**: Extractor de características desde imágenes (3, 224, 224)
    a representaciones vectoriales de 512 dimensiones. Arquitecturas:
 
-   - **ResNet-18 preentrenado** (ImageNet IMAGENET1K_V1): ~50M params
+   - **ResNet-18 preentrenado** (ImageNet IMAGENET1K_V1): ~11.7M params
      → CONGELADA (requires_grad=False) → Actúa como extractor fijo, NO se entrena
 
-   - **SimpleCNN custom**: 3 bloques Conv→BN→ReLU→MaxPool ~1M params
+   - **Simple CNN Custom**: Arquitectura estándar ResNet-18 sin pesos preentrenados (~11.4M params)
      → ENTRENABLE (requires_grad=True) → Participa en E2E backward pass
 
    La CNN implementa:
@@ -35,15 +35,15 @@ MÓDULOS
 =======
 
 cnn_extractor : module
-    Clase CNNExtractor: Extractor CNN con soporte ResNet-18 (CONGELADA) + SimpleCNN (ENTRENABLE).
+    Clase CNNExtractor: Extractor CNN con soporte ResNet-18 preentrenada (congelada) + SIMPLE CNN (entrenable).
     Comportamiento ESTABLECIDO EN __init__, NO es dinámico:
-    - __init__(arch, pretrained, device, seed): Establece requires_grad PERMANENTEMENTE
-      * arch='resnet18' → requires_grad=False (CNN nunca recibe gradientes)
-      * arch='simple' → requires_grad=True (CNN participa en E2E backprop)
+    - __init__(arch, device, seed): Establece requires_grad PERMANENTEMENTE
+      * arch='resnet18' → requires_grad=False (CNN congelada, pesos ImageNet preentrenados)
+      * arch='simple' → requires_grad=True (CNN entrenable, arquitectura SIMPLE CNN, 11.4M params)
     - _build(): Construcción de arquitectura + aplicación de requires_grad
     - feature_dim: Propiedad (siempre 512)
     - forward(x): Forward pass de imágenes
-    - _get_weights_bytes(): Serialización para TCP
+    - _get_weights_bytes(): Serialización para TCP (~45.8 MB)
     - load_weights_from_bytes(): Deserialización desde TCP
 
 mlp_pytorch : module

@@ -97,8 +97,8 @@ def set_cnn(self, cnn: CNNExtractor) -> None:
 ```
 
 **Tamaño de CNN state_dict**:
-- ResNet-18: ~44 MB (11M parámetros × 4 bytes float32)
-- Simple CNN: ~6 MB (1.36M parámetros)
+- ResNet-18: ~45 MB (11.7M parámetros × 4 bytes float32)
+- SIMPLE CNN: ~45 MB (11.7M parámetros × 4 bytes float32)
 
 **Claves excluidas del FedAvg promedio** (conjunto _no_avg_keys):
 1. `num_batches_tracked` (int64): Contador interno de BatchNorm = no parametrizable

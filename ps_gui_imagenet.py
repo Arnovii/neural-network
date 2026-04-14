@@ -466,9 +466,7 @@ class PSApp:
             self._btn_clear,
         ):
             btn.pack(fill=tk.X, pady=3)
-        self._config_widgets.extend(
-            [self._btn_listen, self._btn_clear]
-        )
+        self._config_widgets.extend([self._btn_listen, self._btn_clear])
 
         ToolTip(self._btn_listen, "Carga CNN+MLP y abre socket TCP")
         ToolTip(self._btn_shutdown, "Envía STOP a todos los Workers y cierra el PS")
@@ -884,7 +882,6 @@ class PSApp:
 
         threading.Thread(target=_init, daemon=True).start()
         self.root.after(100, self._poll)
-
 
     def _cmd_shutdown(self) -> None:
         """

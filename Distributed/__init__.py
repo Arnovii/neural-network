@@ -19,8 +19,8 @@ ARQUITECTURA
 **Workers**:
   - Nodos computacionales independientes que corren streaming de ImageNet-1k.
   - Loop autónomo: REQUEST_PARAMS → TRAIN → UPDATES, sin barreras entre Workers.
-  - SimpleCNN: Entrena ambas redes (CNN + MLP backprop habilitado)
-  - ResNet-18: Entrena solo MLP (CNN congelada con requires_grad=False)
+  - SimpleCNN: Entrena ambas redes (CNN + MLP backprop habilitado, 11.4M params)
+  - ResNet-18 preentrenada (MLP-only): CNN congelada con pesos ImageNet, solo MLP entrenable
   - Soportan gradient accumulation (accum_steps) para reducir overhead de comunicación.
   - Pueden ejecutarse en CPU o GPU (CUDA/MPS).
 

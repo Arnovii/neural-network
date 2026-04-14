@@ -10,13 +10,13 @@ Basado en análisis del código fuente completo (sin especulaciones)
 
 ### 1.1 El Problema: Entrenamiento de Redes Profundas en Datos Masivos
 
-Imaginemos que necesitamos entrenar un clasificador de 1000 categorías en ImageNet-1k, que contiene 1.2 millones de imágenes. Disponemos de dos arquitecturas: **ResNet-18** (120+ capas convolucionales, congelada) o **SimpleCNN** (entrenable E2E).
+Imaginemos que necesitamos entrenar un clasificador de 1000 categorías en ImageNet-1k, que contiene 1.2 millones de imágenes. Disponemos de dos arquitecturas: **ResNet-18** (120+ capas convolucionales, congelada) o **SIMPLE CNN** (entrenable E2E).
 
-Opcción 1 (SimpleCNN E2E):
+Opción 1 (SIMPLE CNN E2E):
 - Descargar 1.2 millones de imágenes (~150 gigabytes)
 - Procesar cada imagen forward a través de CNN + MLP
 - Retropropagar el gradiente a través de AMBAS redes
-- Actualizar 6 millones de parámetros CNN E2E + 2 millones de parámetros MLP
+- Actualizar 11.7 millones de parámetros CNN E2E + 2 millones de parámetros MLP
 
 Opción 2 (ResNet-18, MLP-only):
 - Descargar 1.2 millones de imágenes (~150 gigabytes)
@@ -60,7 +60,7 @@ El sistema se divide en cinco capas funcionales:
 
 El componente central es el Servidor de Parámetros (`Distributed/parameter_server.py`). Como sugiere su nombre, es un servidor TCP que escucha en un puerto específico (por defecto 9999) y acepta conexiones de Workers. Mantiene en memoria:
 
-- El estado de la CNN global (44 MB si es ResNet-18 preentrenada, ~5 MB si es SimpleCNN mejorada con bloques residuales)
+- El estado de la CNN global (~45 MB si es ResNet-18 preentrenada, ~45 MB si es SIMPLE CNN)
 - El estado del MLP global (~4.5 MB)
 - Un contador de versión que incrementa cada vez que se actualiza
 - Métricas agregadas (loss y accuracy sobre una ventana deslizante)
@@ -98,10 +98,10 @@ Los Workers y el PS se comunican a través de TCP con un protocolo binario perso
 
 El sistema tiene dos componentes de red neuronal entrenables:
 
-- **CNN Extractor** (`Model/cnn_extractor.py`): ResNet-18 preentrenada en ImageNet-1k (por defecto) o SimpleCNN (esquema de investigación). Tiene 512 neuronas de salida que constituyen el vector de características.
+- **CNN Extractor** (`Model/cnn_extractor.py`): ResNet-18 preentrenada en ImageNet-1k (por defecto) o SIMPLE CNN (esquema de investigación). Tiene 512 neuronas de salida que constituyen el vector de características.
 - **MLP Pytorch** (`Model/mlp_pytorch.py`): Clasificador de 3 capas completamente conectadas (512 → 1024 → 512 → 1000). Las primeras dos capas tienen ReLU, la última es lineal (sin activación porque CrossEntropyLoss la maneja internamente).
 
-**SimpleCNN**: CNN + MLP se entrenan juntas E2E. Los pesos se ajustan durante el entrenamiento, reciben gradientes, se actualizan con SGD localmente, y luego se resincronizandesde el PS para la siguiente iteración.
+**SIMPLE CNN**: CNN + MLP se entrenan juntas E2E. Los pesos se ajustan durante el entrenamiento, reciben gradientes, se actualizan con SGD localmente, y luego se resincronizandesde el PS para la siguiente iteración.
 
 **ResNet-18**: Solo el MLP se entrena. La CNN permanece congelada (requires_grad=False) permanentemente, actuando como extractor de características fijo. Se sincroniza globalmente por cuestiones de arquitectura uniforme, pero nunca recibe updates de gradientes.
 
@@ -112,7 +112,7 @@ HuggingFace Hub (ImageNet-1k)
     ↓ (descarga bajo demanda)
 Worker_0, Worker_1, ... Worker_N
     ↓ (preprocessing de imágenes)
-CNN (ResNet-18 o SimpleCNN)
+CNN (ResNet-18 o SIMPLE CNN)
     ↓ (features 512-dim)
 MLP (3 capas)
     ↓ (logits 1000-dim)
@@ -138,7 +138,7 @@ El usuario lanza el PS desde línea de comandos o GUI. El script de entrada (`ps
 
 2. **Crear instancia PS**: Se instancia un objeto ParameterServer con esos parámetros. Inicialmente, el PS no tiene CNNni MLP asignados.
 
-3. **Cargar modelos CNN y MLP**: Se crea una CNN en CPU: ResNet-18 preentrenada (con requires_grad=False, permanentemente congelada) O SimpleCNN (con requires_grad=True, entrenable E2E). También se crea un MLP nuevo. Sus pesos se convierten a numpy (para compatibilidad con serialización TCP).
+3. **Cargar modelos CNN y MLP**: Se crea una CNN en CPU: ResNet-18 preentrenada (con requires_grad=False, permanentemente congelada) O SIMPLE CNN (con requires_grad=True, entrenable E2E). También se crea un MLP nuevo. Sus pesos se convierten a numpy (para compatibilidad con serialización TCP).
 
 4. **Asignar modelos al PS**: Se llama a `ps.set_cnn(cnn)` y `ps.set_mlp(mlp.state_dict_numpy())`. El PS almacena internamente estos pesos como diccionarios de numpy arrays.
 
@@ -225,10 +225,10 @@ El Worker:
 2. Aplica transformaciones de Train (RandomResizedCrop, RandomHorizontalFlip, normalización)
 3. Pasa la imagen forward a través de CNN (que emite 512 features) y luego MLP (que emite 1000 logits)
 4. Calcula pérdida con CrossEntropyLoss
-5. **SimpleCNN**: Retropropaga el gradiente (backward) a través de MLP → CNN → todas las capas. Aplica SGD en AMBAS redes.
+5. **SIMPLE CNN**: Retropropaga el gradiente (backward) a través de MLP → CNN → todas las capas. Aplica SGD en AMBAS redes.
    **ResNet-18**: Retropropaga solo a través de MLP (CNN congelada nunca recibe gradientes). Aplica SGD solo a MLP.
 6. Aplica SGD: θ -= learning_rate * gradiente
-7. **CRÍTICO**: En SimpleCNN, ambas redes se actualizan. En ResNet-18, solo MLP cambia; CNN permanece congelada y nunca se actualiza.
+7. **CRÍTICO**: En SIMPLE CNN, ambas redes se actualizan. En ResNet-18, solo MLP cambia; CNN permanece congelada y nunca se actualiza.
 
 Este ciclo se repite accum_steps veces (ej 5 veces). Después de 5 entrenamientos, el Worker tiene CNN y MLP locales que han divergido del PS en formas específicas (los cambios acumulados de 5 SGD steps).
 
@@ -483,7 +483,7 @@ Mejora de throughput: 100% / 20% = 5× más rápido.
 
 ## 6. Modelo y Estrategia de Entrenamiento
 
-### 6.1 Arquitectura de la CNN: ResNet-18 vs SimpleCNN
+### 6.1 Arquitectura de la CNN: ResNet-18 vs SIMPLE CNN
 
 **ResNet-18 (Opción por defecto):**
 
@@ -494,7 +494,7 @@ Es una arquitectura convolucional profunda con "skip connections" (conexiones re
 
 Al preentrenar, la red ya ha aprendido características visuales de bajo nivel (bordes, texturas) y características de alto nivel (ojos, ruedas). Usar pesos preentrenados es más rápido en convergencia porque el espacio de parámetros comienza en una región buena.
 
-**SimpleCNN (Opción alternativa para experimentin):**
+**SIMPLE CNN (Opción alternativa para experimentación):**
 
 Es una invención del proyecto: arquitetura convolucionalomas pequenya (1.5M parámetros) sin preentrenamiento. Se inicializa aleatoriamente. Ventaja: investigación sobre cómo entrenar redes desde cero distribuidas. Desventaja: convergencia mucho más lenta.
 
@@ -597,9 +597,9 @@ Los logs del PS muestran típicamente:
 
 - **Loss y Accuracy son platos desde el inicio**: Posiblemente CNN + MLP no están conectados adecuadamente, o hay un bug en el forward pass.
 
-### 7.3 El Caso de SimpleCNN vs ResNet-18
+### 7.3 El Caso de SIMPLE CNN vs ResNet-18
 
-Con **SimpleCNN**:
+Con **SIMPLE CNN**:
 - Primeros 1000 batches: Loss permanece en ~6.8 (casi random), Accuracy ~0.2%
 - Esto es normal: la CNN debe aprender features desde cero
 - Eventualmente (después de 10k+ batches) comienza a bajar
@@ -696,7 +696,7 @@ Opciones:
 - ViT (Vision Transformer): ~300M parámetros, demasiado grande para educación
 - ResNet-50: 25.5M parámetros, aún manejable
 - ResNet-18: 11.7М parámetros, ligero pero capaz
-- SimpleCNN: propósito investigación
+- SIMPLE CNN: propósito investigación
 
 ResNet-18 es el sweet spot: moderado, preentrenado disponible en torchvision, no requiere hardware extremo, suficientemente profundo para E2E training interesante.
 

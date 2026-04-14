@@ -128,32 +128,32 @@
 **Archivo**: `Model/cnn_extractor.py`
 
 **Responsabilidades**:
-- Mantener CNN (ResNet-18 congelada o SimpleCNN entrenable) según arquitectura
+- Mantener CNN (ResNet-18 congelada o SIMPLE CNN entrenable) según arquitectura
 - Durante cada batch por Worker (ResNet-18):
   - CNN congelada: `requires_grad=False` (permanente)
   - Solo forward pass para extracción de features
   - SGD local NO se aplica a CNN
-- Durante cada batch por Worker (SimpleCNN):
+- Durante cada batch por Worker (SIMPLE CNN):
   - CNN entrenable: `requires_grad=True` (permanente)
   - Se ENTRENA: gradientes propagados en backward
   - Se SGD local (cambios ephemeral de ~accum_steps batches)
-- Se ENVÍA al PS en UPDATES (cambios locales de accum_steps batches si SimpleCNN, None si ResNet-18)
+- Se ENVÍA al PS en UPDATES (cambios locales de accum_steps batches si SIMPLE CNN, None si ResNet-18)
 - Se SOBRESCRIBE en siguiente REQUEST_PARAMS con CNN global del PS
-- **EFECTO CNN LocalResNet-18**: Congelada permanente, no cambia
-- **EFECTO CNN Local SimpleCNN**: cambios NO PERSISTEN (duran un ciclo REQUEST_PARAMS)
-- **GLOBAL**: PS promedia CNN recibida de SimpleCNN Workers → CNN entrena globalmente
+- **EFECTO CNN Local ResNet-18**: Congelada permanente, no cambia
+- **EFECTO CNN Local SIMPLE CNN**: cambios NO PERSISTEN (duran un ciclo REQUEST_PARAMS)
+- **GLOBAL**: PS promedia CNN recibida de SIMPLE CNN Workers → CNN entrena globalmente
 
 **Dinámica Especial**:
 - ResNet-18: CNN congelada localmente, fija permanentemente
-- SimpleCNN: CNN congelada en PRÁCTICA localmente (cambios se descartan cada ciclo REQUEST_PARAMS)
-- CNN global (PS via SimpleCNN Workers): se entrena mediante Async-FedAvg (acumula cambios promediados)
+- SIMPLE CNN: CNN congelada en PRÁCTICA localmente (cambios se descartan cada ciclo REQUEST_PARAMS)
+- CNN global (PS via SIMPLE CNN Workers): se entrena mediante Async-FedAvg (acumula cambios promediados)
 
 **Arquitecturas Soportadas**:
 
 | Arquitectura | feature_dim | Parámetros | Pesos | requires_grad | Caso de Uso |
 |---|---|---|---|---|---|
-| `resnet18` | 512 | ~11M | ImageNet1K_V1 | False (congelada) | Producción (convergencia rápida, MLP-only) |
-| `simple` | 512 | ~1.5M | Random init | True (entrenable) | Experimentación / Testing (E2E training) |
+| `resnet18` | 512 | ~11.7M | ImageNet1K_V1 | False (congelada) | Producción (convergencia rápida, MLP-only) |
+| `simple` | 512 | ~11.7M | Random init | True (entrenable) | Experimentación / Testing (E2E training) |
 
 **Interfaz Pública**:
 ```python
@@ -175,6 +175,7 @@ features = cnn._model(images)  # (N, 512)
 - Mantener arquitectura configurable (hidden1, hidden2)
 - He initialization para estabilidad numérica
 - Serializar/deserializar parámetros para TCP
+- **SIEMPRE SE ENTRENA**: En ambos modos (ResNet-18 y SIMPLE CNN), datos se multiplican con MLP y se reciben gradientes
 
 **Arquitectura**:
 ```

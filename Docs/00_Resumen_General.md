@@ -2,7 +2,7 @@
 
 ## Descripción General
 
-Este proyecto implementa un **sistema de entrenamiento distribuido asincrónico para ImageNet-1k** basado en una arquitectura **Parameter Server (PS)** con **Workers independientes**. El sistema realiza **entrenamiento E2E de CNN + MLP en SimpleCNN** o **entrenamiento de MLP únicamente en ResNet-18 congelada** de forma descentralizada y no bloqueante, permitiendo escalar el aprendizaje en múltiples máquinas.
+Este proyecto implementa un **sistema de entrenamiento distribuido asincrónico para ImageNet-1k** basado en una arquitectura **Parameter Server (PS)** con **Workers independientes**. El sistema realiza **entrenamiento E2E de CNN + MLP en SIMPLE CNN** o **entrenamiento de MLP únicamente en ResNet-18 congelada** de forma descentralizada y no bloqueante, permitiendo escalar el aprendizaje en múltiples máquinas.
 
 ### Problema Resuelto
 
@@ -29,7 +29,7 @@ En cada Worker, ciclo indefinido:
 3. FOR accum_steps batches:
    a. Forward: X → CNN (resnet18: congelada/requires_grad=False, simple: entrenable/requires_grad=True) → MLP
    b. Backward: ∇L calculado para MLP (2-3 capas) + CNN gradientes si simple
-      (resnet18: sin backprop en CNN, simple: backprop completo en CNN 120+ capas)
+      (resnet18: sin backprop en CNN, simple: backprop completo en CNN con 8 bloques)
    c. SGD local: 
       θ_mlp_local -= lr · ∇L_mlp  (siempre)
       θ_cnn_local -= lr · ∇L_cnn  (solo si simple, cambios ephemeral)
@@ -40,12 +40,12 @@ En cada Worker, ciclo indefinido:
 
 CRÍTICO:
 - ResNet-18: CNN congelada, solo MLP se entrena localmente y se sincroniza
-- SimpleCNN: CNN + MLP cambios locales NO PERSISTEN (se pierden en siguiente REQUEST_PARAMS)
+- SIMPLE CNN: CNN + MLP cambios locales NO PERSISTEN (se pierden en siguiente REQUEST_PARAMS)
   PERO CNN GLOBAL entrena via Async-FedAvg
 ```
 
 **Ventajas**:
-- ✅ SimpleCNN: Entrenamiento E2E completo (CNN + MLP actualizadas en cada Worker)
+- ✅ SIMPLE CNN: Entrenamiento E2E completo (CNN + MLP actualizadas en cada Worker)
 - ✅ ResNet-18: Transfer learning eficiente (solo MLP se entrena, CNN fija)
 - ✅ No hay barrera de sincronización global
 - ✅ Tolerancia a heterogeneidad (Workers rápidos/lentos)
@@ -53,8 +53,8 @@ CRÍTICO:
 - ✅ Mejor utilización de red (parámetros enviados asincronamente sin bloqueo)
 
 **Desventajas**:
-- ⚠️ **Convergencia lenta para SimpleCNN E2E**: SGD puro (sin momentum) + resincronización de pesos en cada step
-- ⚠️ **SimpleCNN sin pretrain**: Features iniciales aleatorias → primero centenares de batches con ruido puro
+- ⚠️ **Convergencia muy lenta para SIMPLE CNN E2E**: SGD puro (sin momentum) + resincronización de pesos en cada step + sin preentrenamiento
+- ⚠️ **SIMPLE CNN sin pretrain**: Features iniciales aleatorias → primero centenares de batches con ruido puro, convergencia extremadamente lenta
 - ⚠️ **ResNet-18 convergencia limitada**: CNN congelada restringe adaptación de features
 
 ## Componentes Principales
@@ -136,7 +136,7 @@ CRÍTICO:
 
 2. **No hay recuperación ante fallos**: Si un Worker se desconecta, los parámetros MLP locales se pierden (sin persistencia)
 
-3. **SimpleCNN se entrena globalmente (solo si se usa SimpleCNN)**: La CNN se recibe del PS (promediada), se entrena localmente durante accum_steps, se envía al PS, PS la promedia, se recibe nuevamente (ciclo REQUEST_PARAMS). ResNet-18 permanece congelada permanentemente (no se entrena ni globalmente ni localmente).
+3. **SIMPLE CNN se entrena globalmente** (solo si se usa SIMPLE CNN): La CNN se recibe del PS (promediada), se entrena localmente durante accum_steps, se envía al PS, PS la promedia, se recibe nuevamente (ciclo REQUEST_PARAMS). ResNet-18 permanece congelada permanentemente (no se entrena ni globalmente ni localmente).
 
 4. **Inicialización del MLP por Worker**: Si el PS no inicializa el MLP antes de que un Worker se conecte, el Worker crea una versión por defecto (puede causar desincronización)
 
