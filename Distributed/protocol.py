@@ -10,9 +10,9 @@ FLUJO COMPLETO POR WORKER:
 
     Worker                          Parameter Server
     ──────                          ────────────────
-    READY ────────────────────────► asigna ID
+    READY ────────────────────────► asigna ID único
           ◄─────────────────────── WORKER_ID
-          ◄─────────────────────── CONFIG  (batch_size, image_size)
+          ◄─────────────────────── CONFIG  (batch_size, image_size, rank, num_workers, seed)
           ◄─────────────────────── CNN_WEIGHTS  (pesos iniciales)
     CNN_ACK ──────────────────────►  (Worker cargó CNN)
           ◄─────────────────────── START
@@ -26,7 +26,7 @@ FLUJO COMPLETO POR WORKER:
 MENSAJES (10 — exactamente los necesarios):
     READY          Worker → PS    Handshake inicial
     WORKER_ID      PS → Worker    ID asignado
-    CONFIG         PS → Worker    batch_size e image_size para el Worker
+    CONFIG         PS → Worker    batch_size, image_size, rank, num_workers, seed
     CNN_WEIGHTS    PS → Worker    Pesos CNN iniciales (bytes serializados)
     CNN_ACK        Worker → PS    CNN cargada y lista
     START          PS → Worker    Señal de inicio del loop de entrenamiento

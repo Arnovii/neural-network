@@ -113,12 +113,6 @@ class WorkerNode:
     :param dataset_name: Nombre del dataset en HuggingFace Hub para streaming.
     :type dataset_name: str
 
-    :param worker_rank: Índice único de este Worker (0-based), usado para sharding del dataset.
-    :type worker_rank: int
-
-    :param num_workers: Cantidad total de Workers en el entrenamiento (necesario para sharding).
-    :type num_workers: int
-
     :param device: Dispositivo PyTorch donde ejecutar ('cpu', 'cuda', 'cuda:0', 'mps').
     :type device: str
 
@@ -137,7 +131,7 @@ class WorkerNode:
     :param accum_steps: Número de batches a acumular antes de enviar UPDATES al PS.
     :type accum_steps: int
 
-    :note: batch_size, image_size y seed se reciben del PS mediante mensaje CONFIG durante conexión. lr y lr_cnn se reciben del PS mediante PARAMS en cada iteración.
+    :note: worker_rank, num_workers, batch_size, image_size y seed se reciben del PS mediante mensaje CONFIG durante conexión. lr y lr_cnn se reciben del PS mediante PARAMS en cada iteración.
 
     :raises ConnectionError: Si falla la conexión inicial con el Parameter Server.
     :raises RuntimeError: Si hay mismatch de parámetros con la CNN recibida del PS.
@@ -148,8 +142,6 @@ class WorkerNode:
         server_host: str,
         server_port: int,
         dataset_name: str = "ILSVRC/imagenet-1k",
-        worker_rank: int = 0,
-        num_workers: int = 1,
         device: str = "cpu",
         shuffle_buffer: int = 1000,
         prefetch_batches: int = 4,
@@ -165,9 +157,9 @@ class WorkerNode:
         self.dataset_name = dataset_name
         self.hf_token = hf_token
 
-        # Identificadores para paralelismo
-        self.worker_rank = worker_rank
-        self.num_workers = num_workers
+        # Identificadores para paralelismo (recibidos desde PS en _connect)
+        self.worker_rank: int = 0  # Sobrescrito en _connect() con valor del PS
+        self.num_workers: int = 1  # Sobrescrito en _connect() con valor del PS
 
         # Buffer y prefetch
         self.shuffle_buffer = shuffle_buffer
@@ -282,7 +274,7 @@ class WorkerNode:
             raise ConnectionError(f"Esperaba WORKER_ID, recibí {msg['type']}")
         self._worker_id = msg["payload"]["worker_id"]
 
-        # Recibe CONFIG (batch_size, image_size, seed desde PS)
+        # Recibe CONFIG (batch_size, image_size, rank, num_workers, seed desde PS)
         msg = receive_message(self._sock)
         if msg["type"] != MsgType.CONFIG:
             raise ConnectionError(f"Esperaba CONFIG, recibí {msg['type']}")
@@ -290,9 +282,12 @@ class WorkerNode:
         self.batch_size = config["batch_size"]
         self.image_size = config["image_size"]
         self.seed = config.get("seed")  # Sobrescribe seed del usuario con el del PS
+        self.worker_rank = config.get("rank", 0)  # Rank asignado por PS
+        self.num_workers = config.get("num_workers", 1)  # Total de workers
         _log.worker_msg(
             self._worker_id,
-            f"CONFIG recibida: batch_size={self.batch_size}, image_size={self.image_size}, seed={self.seed}",
+            f"CONFIG recibida: rank={self.worker_rank}, num_workers={self.num_workers}, "
+            f"batch_size={self.batch_size}, image_size={self.image_size}, seed={self.seed}",
         )
 
     def _cleanup(self) -> None:

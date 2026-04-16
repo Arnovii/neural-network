@@ -82,29 +82,39 @@ send_message(sock, MsgType.WORKER_ID, {
 
 ### 3. CONFIG (PS → Worker)
 
-**Propósito**: Distribuir parámetros globales de configuración
+**Propósito**: Distribuir parámetros globales y asignación de shard
 
 ```python
 send_message(sock, MsgType.CONFIG, {
     "batch_size": 64,
-    "image_size": 224
+    "image_size": 224,
+    "rank": 0,
+    "num_workers": 3,
+    "seed": None
 })
 ```
 
 **Payload**:
 - `batch_size` (int): Tamaño del batch para streaming de imágenes
 - `image_size` (int): Tamaño de imagen (224 típicamente)
+- `rank` (int): Índice único asignado dinámicamente por PS (0-based)
+- `num_workers` (int): Total de workers conectados (se actualiza en cada nueva conexión)
+- `seed` (int | None): Semilla global para reproducibilidad
 
 **Rango**:
 - batch_size: 1-1024 típicamente
 - image_size: 224 (ResNet-18 estándar)
+- rank: 0 a num_workers-1
+- num_workers: 1 a infinito (dinámico)
 
 **Frecuencia**: Enviado una sola vez durante handshake, inmediatamente después de WORKER_ID
 
 **Impacto**: Worker utiliza estos parámetros para:
 - Configurar streaming de imágenes (image_size para transforms)
 - Establecer tamaño de batch para training loop
-- Asegurar sincronización global (todos los workers usan batch_size desde PS)
+- **Asignar shard del dataset** (usa rank y num_workers para HuggingFace)
+- **Garantizar sin solapamientos** entre workers
+- Asegurar sincronización global (todos los workers usan batch_size y seed desde PS)
 
 ---
 

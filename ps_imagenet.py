@@ -9,7 +9,6 @@ USO:
 OPCIONES:
     --host              IP de escucha                          (default: 0.0.0.0)
     --port              Puerto TCP                             (default: 9999)
-    --wait-workers      Workers a esperar antes de empezar     (default: 1)
     --lr                Learning rate para SGD local           (default: 0.001)
     --staleness-lambda  Factor de corrección de staleness      (default: 0.1)
     --hidden1           Neuronas capa oculta 1 del MLP         (default: 1024)
@@ -23,11 +22,17 @@ OPCIONES:
     --metrics-window    Tamaño ventana deslizante de métricas  (default: 200)
     --hf-token          Token HuggingFace (o usar HF_TOKEN env)
 
-EJEMPLO — 2 Workers, parar tras 50k steps:
-    python ps_imagenet.py --wait-workers 2 --max-steps 50000
+NOTA: El número de workers es dinámico. Los workers se conectan y desconectan
+      libremente. El PS asigna ranks automáticamente para garantizar sharding sin solapamientos.
+
+EJEMPLO — Entrenamiento con workers dinámicos:
+    Terminal 1: python ps_imagenet.py --max-steps 50000
+    Terminal 2: python worker_imagenet.py &
+    Terminal 3: python worker_imagenet.py --device cuda:1 &
+    Terminal 4: python worker_imagenet.py (en otra máquina) &
 
 EJEMPLO — ResNet-18 + GPU Workers:
-    python ps_imagenet.py --wait-workers 3 --lr 0.001 --staleness-lambda 0.05
+    python ps_imagenet.py --lr 0.001 --staleness-lambda 0.05 --max-steps 100000
 """
 
 import argparse
@@ -59,16 +64,17 @@ def main() -> None:
        - Establece callbacks para eventos (step, report, connected, disconnected)
        - Configura hiperparámetros Async-SGD (lr, staleness_lambda, metrics_window)
     5. **Apertura de servidor TCP**: ps.listen() inicia socket de escucha
-    6. **Espera de Workers**: Bloquea hasta que N Workers se conecten (--wait-workers)
+    6. **Inicio de entrenamiento**: Loop sin esperar número específico de workers
     7. **Loop de entrenamiento**:
        - Ejecuta indefinidamente o hasta max_steps
        - Registra métricas cada 50 steps (throughput en steps/sec)
        - Reporta visualmente cada --steps-per-report steps
+       - Acepta workers dinámicamente (conectar/desconectar en cualquier momento)
     8. **Cleanup**: ps.stop() cierra conexiones y libera recursos
     9. **Salida**: Imprime resumen de entrenamiento (steps totales, loss final, acc final)
 
     Callbacks internos:
-    - on_connected(): Incrementa contador de workers, señal ready si alcanza --wait-workers
+    - on_connected(): Incrementa contador de workers, registra en terminal
     - on_disconnected(): Registra desconexión en terminal
     - on_step(): Muestreo cada 50 steps, cálculo de throughput, chequeo de max_steps
     - on_report(): Resporte visual cada --steps-per-report steps
@@ -85,7 +91,6 @@ def main() -> None:
     )
     parser.add_argument("--host", type=str, default="0.0.0.0")
     parser.add_argument("--port", type=int, default=9999)
-    parser.add_argument("--wait-workers", type=int, default=1)
     parser.add_argument("--lr", type=float, default=0.001)
     parser.add_argument("--staleness-lambda", type=float, default=0.1)
     parser.add_argument("--hidden1", type=int, default=1024)
@@ -114,7 +119,6 @@ def main() -> None:
     print("PARAMETER SERVER ASÍNCRONO — ImageNet-1k")
     print("=" * 68)
     print(f"  Host              : {args.host}:{args.port}")
-    print(f"  Esperando Workers : {args.wait_workers}")
     print(f"  CNN               : {args.cnn_arch}")
     print(f"  MLP               : feature_dim → {args.hidden1} → {args.hidden2} → 1000")
     print(f"  Batch size        : {args.batch_size}  (enviado a Workers)")
@@ -130,9 +134,9 @@ def main() -> None:
         f"  HF Token          : {'✓ configurado' if hf_token else '✗ no configurado'}"
     )
     print("=" * 68)
+    print("  ℹ Esperando workers dinámicamente (sin límite)...\n")
 
-    # ── Evento de conexión ──
-    ready = threading.Event()
+    # ── Evento de conexión (dinámico) ──
     connected = [0]
     stop = threading.Event()
 
@@ -143,12 +147,11 @@ def main() -> None:
         Acciones:
         1. Incrementa contador de workers conectados
         2. Imprime mensaje visual con ID del worker y dirección de red
-        3. Si se alcanzó el número esperado de workers (--wait-workers):
-           Establece evento ready para desbloquear espera en main()
+        3. No tiene "barrera" de espera — el entrenamiento continúa dinámicamente
 
         Este callback se registra en ParameterServer.on_worker_connected.
 
-        :param wid: ID único del Worker asignado por el PS.
+        :param wid: ID único del Worker asignado por el PS (= rank para sharding).
         :type wid: int
 
         :param addr: Dirección de red del Worker (formato "IP:puerto").
@@ -158,9 +161,7 @@ def main() -> None:
         :rtype: None
         """
         connected[0] += 1
-        print(f"  [+] Worker {wid} desde {addr} ({connected[0]}/{args.wait_workers})")
-        if connected[0] >= args.wait_workers:
-            ready.set()
+        print(f"  [+] Worker {wid} conectado desde {addr} (total: {connected[0]})")
 
     def on_disconnected(wid: int) -> None:
         """
@@ -292,15 +293,16 @@ def main() -> None:
 
     # ── Abrir servidor ──
     ps.listen()
-    print(f"Esperando {args.wait_workers} Worker(s)...\n")
+    print(f"Servidor escuchando. Esperando workers...\n")
 
     try:
-        ready.wait()
+        # Esperar un poco para que se conecte al menos 1 worker, pero no es bloqueante
+        time.sleep(2)  # Dar tiempo para que workers se conecten
     except KeyboardInterrupt:
         ps.stop()
         return
 
-    print(f"\n✓ {connected[0]} Worker(s) conectados. Entrenamiento asíncrono activo.")
+    print(f"✓ Entrenamiento asíncrono activo.")
     print("  (Ctrl+C para detener)\n")
 
     try:

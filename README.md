@@ -173,33 +173,38 @@ El repositorio incluye documentación exhaustiva en el subdirectorio `./Docs/`:
 
 ```
 PASO 1: Iniciar Parameter Server
-  ps_imagenet.py --wait-workers 2 --lr 0.001 --staleness-lambda 0.1
+  ps_imagenet.py --lr 0.001 --staleness-lambda 0.1
   ↓
   · Carga CNN (ResNet-18)
   · Inicializa MLP (feature_dim → hidden1 → hidden2 → 1000)
   · Abre socket TCP en 0.0.0.0:9999
-  · Espera a 2 Workers antes de empezar
+  · Espera dinámicamente workers (sin --wait-workers)
+  · Inicia entrenamiento inmediatamente
 
-PASO 2: Conectar Worker 0
-  worker_imagenet.py --rank 0 --num-workers 2 --device cuda:0
+PASO 1b: Conectar Worker 0
+  worker_imagenet.py --device cuda:0
   ↓
   · Conecta al PS
   · Recibe WORKER_ID
+  · PS asigna rank=0, num_workers=1 en CONFIG
   · Recibe CNN_WEIGHTS (ResNet-18 completo)
-  · Carga stream de datos (sharded para rank=0: posiciones 0, 2, 4, ...)
+  · Carga stream de datos (sharded para rank=0)
 
-PASO 3: Conectar Worker 1
-  worker_imagenet.py --rank 1 --num-workers 2 --device cuda:1
+PASO 1c: Conectar Worker 1
+  worker_imagenet.py --device cuda:1
   ↓
   · Conecta al PS
   · Recibe WORKER_ID
+  · PS asigna rank=1, num_workers=2 en CONFIG (se actualiza dinámicamente)
   · Recibe CNN_WEIGHTS
-  · Carga stream de datos (sharded para rank=1: posiciones 1, 3, 5, ...)
+  · Carga stream de datos (sharded para rank=1)
+  · Worker 0 recibe actualización de num_workers también (ahora es 2)
 
-PASO 4: PS detecta ready (2 Workers)
+PASO 2: PS está listo
   ↓
-  · Envía START a ambos Workers
-  · Imprime "✓ 2 Worker(s) conectados. Entrenamiento asíncrono activo."
+  · Ambos Workers comienzan REQUEST_PARAMS → train → UPDATES
+  · Imprime "✓ Entrenamiento asíncrono activo."
+  · Acepta más Workers o desconexiones dinámicamente
 ```
 
 ### Loop de Entrenamiento Asíncrono
@@ -387,7 +392,6 @@ export HF_TOKEN="hf_xxxxxxxxxxxxxxxxxxxxx"
 python ps_imagenet.py \
   --host 127.0.0.1 \
   --port 9999 \
-  --wait-workers 1 \
   --lr 0.001 \
   --staleness-lambda 0.1 \
   --cnn-arch resnet18 \
@@ -435,8 +439,6 @@ Esperando 1 Worker(s)...
 python worker_imagenet.py \
   --server-host 127.0.0.1 \
   --server-port 9999 \
-  --rank 0 \
-  --num-workers 1 \
   --batch-size 64 \
   --device cuda \
   --hf-token "hf_xxxxx"
@@ -448,7 +450,7 @@ python worker_imagenet.py \
 WORKER ASÍNCRONO — ImageNet-1k Distribuido
 ════════════════════════════════════════════════════════════════════
   PS             : 127.0.0.1:9999
-  Rank           : 0/1
+  Rank           : 0 (asignado por PS)
   Dataset        : ILSVRC/imagenet-1k
   Batch size     : 64
   MLP hidden     : 1024 → 512 → 1000
@@ -470,14 +472,14 @@ Conectado | rank=0/1 | device=cuda | batch=64 | accum=1
 **Máquina local con 2 GPUs**:
 
 ```bash
-# Terminal 1: PS
-python ps_imagenet.py --wait-workers 2
+# Terminal 1: PS (dinámico, sin --wait-workers)
+python ps_imagenet.py
 
-# Terminal 2: Worker 0 (GPU 0)
-python worker_imagenet.py --rank 0 --num-workers 2 --device cuda:0
+# Terminal 2: Worker 0 (GPU 0, sin --rank/--num-workers)
+python worker_imagenet.py --device cuda:0
 
-# Terminal 3: Worker 1 (GPU 1)
-python worker_imagenet.py --rank 1 --num-workers 2 --device cuda:1
+# Terminal 3: Worker 1 (GPU 1, recibe rank=1, num_workers=2 del PS)
+python worker_imagenet.py --device cuda:1
 ```
 
 ---
@@ -486,17 +488,17 @@ python worker_imagenet.py --rank 1 --num-workers 2 --device cuda:1
 
 **Máquina 1 (192.168.1.10) — Parameter Server**:
 ```bash
-python ps_imagenet.py --host 0.0.0.0 --port 9999 --wait-workers 2
+python ps_imagenet.py --host 0.0.0.0 --port 9999
 ```
 
-**Máquina 2 — Worker 0**:
+**Máquina 2 — Worker 0** (rank y num_workers asignados por PS):
 ```bash
-python worker_imagenet.py --server-host 192.168.1.10 --rank 0 --num-workers 2
+python worker_imagenet.py --server-host 192.168.1.10
 ```
 
-**Máquina 3 — Worker 1**:
+**Máquina 3 — Worker 1** (rank y num_workers asignados por PS):
 ```bash
-python worker_imagenet.py --server-host 192.168.1.10 --rank 1 --num-workers 2
+python worker_imagenet.py --server-host 192.168.1.10
 ```
 
 ---
@@ -620,13 +622,9 @@ python ps_gui_imagenet.py
 python ps_imagenet.py \
   --host 0.0.0.0 \
   --port 9999 \
-  --wait-workers 4 \
   --lr 0.005 \
   --staleness-lambda 0.1 \
   --cnn-arch resnet18 \
-  --hidden1 1024 \
-  --hidden2 512 \
-  --batch-size 64 \  # nota: batch_size en Worker, no en PS
   --steps-per-report 500 \
   --max-steps 100000 \
   --dataset ILSVRC/imagenet-1k \
@@ -639,11 +637,7 @@ python ps_imagenet.py \
 python worker_imagenet.py \
   --server-host 192.168.1.10 \
   --server-port 9999 \
-  --rank 0 \
-  --num-workers 4 \
   --batch-size 128 \
-  --hidden1 1024 \
-  --hidden2 512 \
   --device cuda:0 \
   --dataset ILSVRC/imagenet-1k \
   --shuffle-buffer 1000 \
@@ -660,7 +654,7 @@ python worker_imagenet.py \
 export HF_TOKEN="hf_xxxxxxxxxxxxxxxxxxxxx"
 
 # Ahora ps_imagenet.py y worker_imagenet.py usan HF_TOKEN automáticamente
-python ps_imagenet.py --wait-workers 2
+python ps_imagenet.py
 ```
 
 ---

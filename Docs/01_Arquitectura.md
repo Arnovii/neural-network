@@ -220,18 +220,23 @@ mlp.load_state_dict_numpy(state_dict)
 | `PrefetchBuffer` | Buffer asincrónico con hilo de prefetch |
 | `ValidationStream` | Recorre split de validación una sola vez |
 
-**Método de Sharding**:
+**Método de Sharding (Dinámico)**:
+
+El PS asigna automáticamente ranks y num_workers a cada Worker:
 ```
-num_workers=3, worker_rank=0
-→ Worker 0 obtiene: muestras 0, 3, 6, 9, ... (1/3 del dataset)
+Worker 0 conecta → PS asigna rank=0, num_workers=1, envía en CONFIG
+Worker 1 conecta → PS asigna rank=1, num_workers=2, envía en CONFIG  (num_workers se actualiza)
+Worker 2 conecta → PS asigna rank=2, num_workers=3, envía en CONFIG  (num_workers se actualiza)
+```
 
-num_workers=3, worker_rank=1
-→ Worker 1 obtiene: muestras 1, 4, 7, 10, ... (1/3 del dataset)
-
-num_workers=3, worker_rank=2
-→ Worker 2 obtiene: muestras 2, 5, 8, 11, ... (1/3 del dataset)
+Cada Worker recibe su shard dinámicamente en el CONFIG:
+```
+rank=0, num_workers=3 → muestras 0, 3, 6, 9, ... (1/3 del dataset)
+rank=1, num_workers=3 → muestras 1, 4, 7, 10, ... (1/3 del dataset)
+rank=2, num_workers=3 → muestras 2, 5, 8, 11, ... (1/3 del dataset)
 
 → SIN SOLAPAMIENTO, cada imagen se procesa por exactamente 1 Worker
+→ SIN NECESIDAD DE COORDINACIÓN MANUAL
 ```
 
 ### 6. Comunicación (Protocolo)

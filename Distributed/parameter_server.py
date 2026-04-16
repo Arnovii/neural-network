@@ -267,7 +267,11 @@ class ParameterServer:
         self._sockets: Dict[int, socket.socket] = {}
         self._addrs: Dict[int, str] = {}
         self._worker_freeze: Dict[int, bool] = {}  # wid -> freeze_cnn
+        self._worker_rank: Dict[
+            int, int
+        ] = {}  # wid -> rank (0-based, asignado dinámicamente)
         self._next_id: int = 0
+        self._next_rank: int = 0  # Contador para asignar ranks secuenciales
         self._workers_lock = threading.Lock()
 
         # Métricas e historial
@@ -481,9 +485,12 @@ class ParameterServer:
             # Guardamos socket y dirección
             wid = self._next_id
             self._next_id += 1
+            rank = self._next_rank
+            self._next_rank += 1
             self._sockets[wid] = conn
             self._addrs[wid] = f"{addr[0]}:{addr[1]}"
             self._worker_freeze[wid] = False
+            self._worker_rank[wid] = rank
 
         try:
             send_message(conn, MsgType.WORKER_ID, {"worker_id": wid})
@@ -501,6 +508,8 @@ class ParameterServer:
                 "batch_size": self.batch_size,
                 "image_size": self.image_size,
                 "seed": self.seed,
+                "rank": rank,
+                "num_workers": self._next_rank,  # Total de workers conectados (incluyendo el actual)
             }
             send_message(conn, MsgType.CONFIG, config)
         except Exception:
@@ -907,7 +916,7 @@ class ParameterServer:
         """
         Desconecta un Worker enviándole mensaje STOP y cerrando el socket.
 
-        Remueve el Worker de las estructuras internas (_sockets, _addrs, _worker_freeze)
+        Remueve el Worker de las estructuras internas (_sockets, _addrs, _worker_freeze, _worker_rank)
         de forma thread-safe. Intenta enviar STOP antes de cerrar; ignora errores
         de red (Worker puede haber desconectado ya).
 
@@ -921,6 +930,7 @@ class ParameterServer:
             sock = self._sockets.pop(wid, None)
             self._addrs.pop(wid, None)
             self._worker_freeze.pop(wid, None)
+            self._worker_rank.pop(wid, None)
         if sock:
             try:
                 send_message(sock, MsgType.STOP, None)

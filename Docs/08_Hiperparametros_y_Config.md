@@ -262,7 +262,6 @@ ventana=200, steps_per_report=500:
 python ps_imagenet.py \
   --host 0.0.0.0 \
   --port 9999 \
-  --wait-workers 2 \
   --lr 0.001 \
   --staleness-lambda 0.1 \
   --hidden1 1024 \
@@ -288,16 +287,11 @@ Luego usar la interfaz gráfica para configurar
 python worker_imagenet.py \
   --server-host 127.0.0.1 \
   --server-port 9999 \
-  --rank 0 \
-  --num-workers 2 \
-  --batch-size 64 \
-  --hidden1 1024 \
-  --hidden2 512 \
   --device cuda \
   --dataset ILSVRC/imagenet-1k \
   --shuffle-buffer 1000 \
   --prefetch 4 \
-  --image-size 224 \
+  --seed 42 \
   --hf-token "hf_..." \
   --accum-steps 1
 ```

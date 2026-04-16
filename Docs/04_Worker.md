@@ -37,16 +37,26 @@ def _connect(self) -> None:
         raise ConnectionError(f"Esperaba WORKER_ID, recibí {msg['type']}")
     self._worker_id = msg["payload"]["worker_id"]
     
-    # 3. Recibir CONFIG (batch_size, image_size)
+    # 3. Recibir CONFIG (batch_size, image_size, rank, num_workers, seed)
     msg = receive_message(self._sock)
     if msg["type"] != MsgType.CONFIG:
         raise ConnectionError(f"Esperaba CONFIG, recibí {msg['type']}")
     config = msg["payload"]
     self.batch_size = config["batch_size"]
     self.image_size = config["image_size"]
+    self.worker_rank = config.get("rank", 0)  # ← Asignado dinámicamente por PS
+    self.num_workers = config.get("num_workers", 1)  # ← Asignado dinámicamente por PS
+    self.seed = config.get("seed")  # ← Seed global desde PS
     
-    self._log(f"Conectado con ID={self._worker_id}, batch_size={self.batch_size}, image_size={self.image_size}")
+    self._log(f"Conectado: ID={self._worker_id}, rank={self.worker_rank}/{self.num_workers}, "
+              f"batch_size={self.batch_size}, image_size={self.image_size}")
 ```
+
+**Notas importantes**:
+- El Worker **no especifica** su rank ni num_workers por CLI (fueron removidos de los argumentos)
+- El PS **asigna dinámicamente** el rank basado en el orden de conexión (0, 1, 2, ...)
+- El `num_workers` refleja el **total de workers conectados** (se actualiza si nuevos workers se conectan)
+- Ambos valores son **esenciales para el sharding sin solapamientos** del dataset
 
 **Tiempo**: ~100-500 ms (depende de latencia red)
 

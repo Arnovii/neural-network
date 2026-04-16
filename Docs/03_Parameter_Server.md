@@ -5,11 +5,18 @@
 El Parameter Server (PS) es el **corazón centralizador** del sistema distribuido. Su responsabilidad es:
 
 1. **Mantener sincronizados** los parámetros globales del modelo (CNN + MLP)
-2. **Aceptar Workers** sin límite en tiempo de conexión
-3. **Servir parámetros** a demanda sin bloqueos
-4. **Aplicar gradientes** asincronicamente con corrección de staleness
-5. **Rastrear métricas** de entrenamiento en tiempo real
-6. **No participar** en el cálculo (solo almacenamiento + actualización)
+2. **Aceptar Workers dinámicamente** sin límite de conexión (sin --wait-workers)
+3. **Asignar ranks automáticamente** a cada Worker que se conecta (0, 1, 2, ...)
+4. **Servir parámetros** a demanda sin bloqueos
+5. **Aplicar gradientes** asincronicamente con corrección de staleness
+6. **Rastrear métricas** de entrenamiento en tiempo real
+7. **No participar** en el cálculo (solo almacenamiento + actualización)
+
+**Características dinámicas**:
+- No requiere especificar `--wait-workers` (fue removido)
+- Inicia entrenamiento inmediatamente al recibir la primera solicitud de un Worker
+- Nuevos Workers pueden conectarse/desconectarse en cualquier momento
+- Cada Worker recibe su `rank` y `num_workers` dinámicamente en CONFIG
 
 ---
 
