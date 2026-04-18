@@ -13,7 +13,7 @@ El entrenamiento E2E de CNN + MLP en datasets masivos como ImageNet-1k requiere:
 
 Este proyecto resuelve estos desafíos mediante:
 1. **Streaming asincrónico**: Datos descargados bajo demanda desde HuggingFace
-2. **E2E training (SimpleCNN) o MLP-only (ResNet-18)**: Entrenable conjuntamente o solo clasificador según arquitectura
+2. **E2E training (SIMPLE CNN) o MLP-only (ResNet-18)**: Entrenable conjuntamente o solo clasificador según arquitectura
 3. **Async-FedAvg**: Parámetros globales distribuidos asincronicamente sin barrera de sincronización global
 4. **Comunicación eficiente**: Parámetros (~50 MB/update) intercambiados vía TCP/IP
 
@@ -22,7 +22,7 @@ Este proyecto resuelve estos desafíos mediante:
 El sistema implementa **Federated Averaging asincrónico** con corrección de **staleness** (antigüedad de parámetros):
 
 ```
-Algoritmo Async-FedAvg (SimpleCNN: E2E, ResNet-18: MLP-only):
+Algoritmo Async-FedAvg (SIMPLE CNN: E2E, ResNet-18: MLP-only):
 En cada Worker, ciclo indefinido:
 1. REQUEST_PARAMS → recibe θ_global (CNN + MLP) del PS
 2. _sync_cnn() → carga CNN global (SOBRESCRIBE CNN local)
@@ -63,7 +63,7 @@ CRÍTICO:
 |---|---|---|
 | **Parameter Server (PS)** | Almacena y actualiza parámetros MLP globales | `Distributed/parameter_server.py` |
 | **Worker** | Entrena MLP localmente y envía parámetros actualizados | `Distributed/worker_node.py` |
-| **CNN Extractor** | ResNet-18 preentrenada (congelada) O SimpleCNN (entrenable E2E) | `Model/cnn_extractor.py` |
+| **CNN Extractor** | ResNet-18 preentrenada (congelada) O SIMPLE CNN (entrenable E2E) | `Model/cnn_extractor.py` |
 | **MLP Classifier** | Clasificador con 2-3 capas entrenables | `Model/mlp_pytorch.py` |
 | **Streaming Pipeline** | Descarga y prepara batches desde HuggingFace | `Utils/imagenet_streaming.py` |
 | **GUI** | Interfaz gráfica para control y monitoreo | `ps_gui_imagenet.py` |
@@ -104,11 +104,11 @@ CRÍTICO:
 
 ### Implementado
 - ✅ Transfer Learning con fine-tuning distribuido asincrónico (Async-FedAvg)
-- ✅ CNN parcialmente entrenable (SimpleCNN se actualiza localmente y globalmente via Async-FedAvg, ResNet-18 congelada)
+- ✅ CNN parcialmente entrenable (SIMPLE CNN se actualiza localmente y globalmente via Async-FedAvg, ResNet-18 congelada)
 - ✅ MLP entrenables (2-3 capas) - único componente con gradientes
 - ✅ Comunicación PS ↔ Workers vía TCP/IP
 - ✅ Streaming de datos desde HuggingFace (no descarga completa)
-- ✅ CNN extractor (ResNet-18 preentrenado + Simple CNN)
+- ✅ CNN extractor (ResNet-18 preentrenado + SIMPLE CNN)
 - ✅ MLP clasificador with Kaiming initialization
 - ✅ Corrección de staleness en PS
 - ✅ Interfaz gráfica con gráficas de entrenamiento
@@ -119,7 +119,7 @@ CRÍTICO:
 
 ### Por Diseño (No en Roadmap)
 - ℹ️ Sincronización global entre Workers (Sync-FedAvg) - arquitectura asincrónica por diseño
-- ℹ️ E2E training de CNN + MLP solo para SimpleCNN (ResNet-18 es MLP-only por diseño)
+- ℹ️ E2E training de CNN + MLP solo para SIMPLE CNN (ResNet-18 es MLP-only por diseño)
 
 ### No Implementado
 - ❌ Compresión de parámetros / Cuantización
@@ -180,7 +180,7 @@ neural-network/
 │   └── protocol.py             # Protocolo TCP
 ├── Model/
 │   ├── __init__.py
-│   ├── cnn_extractor.py        # ResNet-18 / Simple CNN
+│   ├── cnn_extractor.py        # ResNet-18 / SIMPLE CNN
 │   └── mlp_pytorch.py          # Clasificador MLP
 ├── Utils/
 │   ├── __init__.py

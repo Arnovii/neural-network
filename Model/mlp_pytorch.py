@@ -75,30 +75,34 @@ class MLPPyTorch(nn.Module):
         self.fc1 = nn.Linear(
             feature_dim, hidden1
         )  # nn.Linear = Capa totalmente conectada
+        self.bn0 = nn.BatchNorm1d(hidden1)
         self.fc2 = nn.Linear(hidden1, hidden2)
+        self.bn1 = nn.BatchNorm1d(hidden2)
         self.fc3 = nn.Linear(hidden2, n_classes)
+        self.bn2 = nn.BatchNorm1d(n_classes)
         self.relu = nn.ReLU()
         self._init_weights()
 
     def _init_weights(self) -> None:
         """
-        Kaiming uniform (He) initialization para capas con ReLU.
+        Xavier uniform initialization para capas, compatible con BatchNorm1d.
 
-        Produce activaciones con varianza ~1 en cada capa, lo que
-        garantiza que los logits iniciales sean distintos de cero y el
-        loss sea ≈ log(n_classes) ≈ 6.9 desde el primer batch.
+        Xavier produce activaciones con varianza más predecible (~1) compatible
+        con BatchNorm. En contraste con Kaiming, evita normas grandes que producen
+        updates pequeños en Async-SGD distribuido.
         """
         # Itera sobre las 3 capas lineales del modelo
         for layer in (self.fc1, self.fc2, self.fc3):
-            # El modo fan_in hace que los pesos se escalen según cuántas entradas tiene la capa.
-            nn.init.kaiming_uniform_(layer.weight, mode="fan_in", nonlinearity="relu")
+            # Xavier uniform es más compatible con BatchNorm que Kaiming
+            nn.init.xavier_uniform_(layer.weight, gain=1.0)
             nn.init.zeros_(layer.bias)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
-        Ejecuta forward pass a través del MLP (3 capas totalmente conectadas).
+        Ejecuta forward pass a través del MLP con BatchNorm1d.
 
-        Aplica transformación lineal + ReLU en capas ocultas, sin activación en salida.
+        Arquitectura: fc1 → bn0 → relu → fc2 → bn1 → relu → fc3 (sin BN en salida).
+        BatchNorm estabiliza features para Async-SGD distribuido.
 
         :param x: Tensor de entrada con features CNN (batch_size, feature_dim)
         :type x: torch.Tensor
@@ -106,20 +110,23 @@ class MLPPyTorch(nn.Module):
         :returns: Logits sin softmax (batch_size, n_classes)
         :rtype: torch.Tensor
         """
-        return self.fc3(self.relu(self.fc2(self.relu(self.fc1(x)))))
+        x = self.relu(self.bn0(self.fc1(x)))
+        x = self.relu(self.bn1(self.fc2(x)))
+        x = self.fc3(x)
+        return x
 
     def state_dict_numpy(self) -> Dict[str, np.ndarray]:
         """
-        Exporta el state_dict de parámetros como Dict[str, np.ndarray].
+        Exporta el state_dict completo (parámetros + buffers BN) como Dict[str, np.ndarray].
 
-        Convierte todos los parámetros entrenables (pesos y sesgos) a numpy arrays
-        en CPU. Útil para serializar el modelo a través de TCP hacia el Parameter Server.
+        Convierte todos los parámetros entrenables Y buffers de BatchNorm (running_mean, running_var, num_batches_tracked)
+        a numpy arrays en CPU. Útil para serializar el modelo a través de TCP hacia el Parameter Server.
 
-        :returns: Diccionario con claves de parámetros y valores como numpy arrays.
-                  Ejemplo: {'fc1.weight': array(...), 'fc1.bias': array(...), ...}
+        :returns: Diccionario con claves de parámetros y buffers, valores como numpy arrays.
+                  Ejemplo: {'fc1.weight': array(...), 'fc1.bias': array(...), 'bn0.running_mean': array(...), ...}
         :rtype: Dict[str, np.ndarray]
         """
         return {
-            name: param.data.cpu().numpy().copy()
-            for name, param in self.named_parameters()
+            name: tensor.data.cpu().numpy().copy()
+            for name, tensor in self.state_dict().items()
         }

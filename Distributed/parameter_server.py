@@ -252,7 +252,8 @@ class ParameterServer:
         self._cnn_state: Dict[str, np.ndarray] = {}
 
         # Keys de BN que NO se promedian (contador interno, no parámetro)
-        self._no_avg_keys: set = set()
+        self._no_avg_keys: set = set()       # BN buffers de CNN (no promediar)
+        self._no_avg_mlp_keys: set = set()   # BN buffers de MLP (no promediar)
 
         # Evita corrupción cuando múltiples workers actualizan
         self._params_lock = threading.Lock()
@@ -345,17 +346,25 @@ class ParameterServer:
         """
         Registra el estado inicial del MLP en formato PyTorch state_dict.
 
-        Claves esperadas: fc1.weight, fc1.bias, fc2.weight, fc2.bias,
-        fc3.weight, fc3.bias.
+        Detecta keys de BatchNorm que NO deben promediarse (running_mean, running_var, num_batches_tracked).
+        Claves esperadas: fc*.weight, fc*.bias, bn*.weight, bn*.bias, bn*.running_mean, bn*.running_var, bn*.num_batches_tracked.
 
-        :param mlp_state: Estado del MLP (diccionario de pesos/sesgos en numpy).
+        :param mlp_state: Estado del MLP (diccionario de pesos/sesgos/buffers en numpy).
         :type mlp_state: Dict[str, np.ndarray]
         :returns: None
         :rtype: None
         """
+        # Detecta keys de BN que NO deben promediarse
+        no_avg: set = set()
+        for key, arr in mlp_state.items():
+            if "running_mean" in key or "running_var" in key or "num_batches_tracked" in key:
+                no_avg.add(key)
         with self._params_lock:
             self._mlp_state = {key: value.copy() for key, value in mlp_state.items()}
+            self._no_avg_mlp_keys = no_avg
         _log.ps(f"MLP listo: {list(mlp_state.keys())}")
+        if no_avg:
+            _log.ps(f"MLP no_avg_keys: {sorted(no_avg)}")
 
     # ================================================================
     # CICLO DE VIDA
@@ -735,6 +744,8 @@ class ParameterServer:
 
             if mlp_weights:
                 for key in self._mlp_state:
+                    if key in self._no_avg_mlp_keys:
+                        continue  # running_mean/var y num_batches_tracked: no promediar
                     if key in mlp_weights:
                         self._mlp_state[key] += alpha * (
                             mlp_weights[key] - self._mlp_state[key]

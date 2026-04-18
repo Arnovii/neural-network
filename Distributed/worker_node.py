@@ -82,7 +82,7 @@ from Utils.logging_util import get_logger
 _log = get_logger(use_colors=True)
 
 _IMAGENET_CLASSES = 1000
-_GRAD_CLIP_MAX_NORM = 1.0  # Umbral de gradient clipping (E2E)
+_GRAD_CLIP_MAX_NORM = 10.0  # Umbral de gradient clipping (E2E)
 _LABEL_SMOOTHING = 0.1  # Suavizado de etiquetas en CrossEntropyLoss
 _WEIGHT_DECAY = 1e-4  # L2 regularización en SGD (modo E2E)
 
@@ -473,7 +473,7 @@ class WorkerNode:
                 f"PS={cnn_key_count}, Worker={actual_keys}"
             )
 
-        # Verifica que las claves MLP son las esperadas
+        # Verifica que las claves MLP son las esperadas (incluyendo BN1d: pesos, bias, running stats)
         expected_mlp = {
             "fc1.weight",
             "fc1.bias",
@@ -481,6 +481,22 @@ class WorkerNode:
             "fc2.bias",
             "fc3.weight",
             "fc3.bias",
+            # BatchNorm1d layers
+            "bn0.weight",
+            "bn0.bias",
+            "bn0.running_mean",
+            "bn0.running_var",
+            "bn0.num_batches_tracked",
+            "bn1.weight",
+            "bn1.bias",
+            "bn1.running_mean",
+            "bn1.running_var",
+            "bn1.num_batches_tracked",
+            "bn2.weight",
+            "bn2.bias",
+            "bn2.running_mean",
+            "bn2.running_var",
+            "bn2.num_batches_tracked",
         }
         if mlp_keys and set(mlp_keys) != expected_mlp:
             raise RuntimeError(
@@ -915,6 +931,11 @@ class WorkerNode:
             for name, param in existing.named_parameters():
                 if name in mlp_state:
                     param.data.copy_(torch.from_numpy(mlp_state[name]).to(param.device))
+            # Sincronizar buffers de BN (running_mean, running_var, num_batches_tracked)
+            # que no aparecen en named_parameters() pero sí en state_dict()
+            for name, buf in existing.named_buffers():
+                if name in mlp_state:
+                    buf.copy_(torch.from_numpy(mlp_state[name]).to(buf.device))
         return existing
 
     # ================================================================
@@ -931,9 +952,9 @@ class WorkerNode:
         }
 
     def _serialize_mlp(self) -> Dict[str, np.ndarray]:
-        """State_dict del MLP."""
+        """State_dict completo del MLP incluyendo buffers de BN."""
         assert self._mlp is not None
         return {
-            name: param.detach().cpu().numpy().copy()
-            for name, param in self._mlp.named_parameters()
+            name: tensor.detach().cpu().numpy().copy()
+            for name, tensor in self._mlp.state_dict().items()
         }

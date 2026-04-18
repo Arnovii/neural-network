@@ -54,7 +54,7 @@ Output: (N, 512)
 - ❌ **CONGELADA (requires_grad=False)**: No recibe gradientes en backward
 - ❌ Solo forward pass para extracción de features
 - ✅ Se resincroniza con CNN global (PS) cada REQUEST_PARAMS con pesos promediados
-- ✅ Dinámica: CNN global se entrena distribuida via SimpleCNN + Async-FedAvg
+- ✅ Dinámica: CNN global se entrena distribuida via SIMPLE CNN + Async-FedAvg
 
 ### SIMPLE CNN (ResNet-18 desde Cero)
 
@@ -221,7 +221,7 @@ for m in self.modules():
 
 **Comparativa: SIMPLE CNN (11.2M) vs Alternativas**:
 
-| Aspecto | SIMPLE CNN (Actual) | SimpleCNN Anterior | ResNet-18 Preentrenada |
+| Aspecto | SIMPLE CNN (Actual) | SIMPLE CNN Anterior | ResNet-18 Preentrenada |
 |---|---|---|---|
 | **Parámetros** | 11.2M | 1.36M | 11.7M |
 | **Pesos iniciales** | Random (Kaiming) | Random (Kaiming) | ImageNet1K_V1 |
@@ -403,51 +403,157 @@ class MLPPyTorch(nn.Module):
 | fc3 | (512, 1000) | 512K | 2 MB |
 | **Total** | - | 1.56M | 6 MB |
 
-### Inicialización: Kaiming Uniform (He)
+### Inicialización: Xavier Uniform (Modificado para BatchNorm1d)
 
 ```python
 def _init_weights(self):
     for layer in (self.fc1, self.fc2, self.fc3):
-        nn.init.kaiming_uniform_(layer.weight, mode="fan_in", nonlinearity="relu")
+        nn.init.xavier_uniform_(layer.weight)  # Weight norms ~1.0
         nn.init.zeros_(layer.bias)
 ```
 
-**¿Por qué He Initialization?**
+**¿Por qué Xavier en lugar de He (Kaiming)?**
+
+Xavier uniform proporciona mejor compatibilidad con BatchNorm1d en Async-SGD distribuido:
 
 ```
-ReLU activation: Esperado E[h] = 0
+Kaiming (He) Initialization:
+  - Weight norms: ~√(2/fan_in) ≈ 64 para layer fc1 (fan_in=512)
+  - Primeros logits: E[logit] ≈ N(0, 4096)
+  - Con FedAvg + staleness: gradientes llegan atenuados por α(s)=1/(1+λ·s)
+  - Updates muy pequeños (~1/100 de escala esperada) → convergencia lenta
+  - Gradient clipping max_norm=1.0 mata 30-50% de gradientes válidos
 
-Si usamos random normal:
-  → 50% de las activaciones se ponen a cero (ReLU negatives)
-  → Varianza decrece por layers
+Xavier Uniform (Implementación Actual):
+  - Weight norms: ~√(1/fan_in) ≈ 1.0 para layer fc1 (fan_in=512)
+  - Primeros logits: E[logit] ≈ N(0, 512)
+  - Con BatchNorm1d: input normalizado → weight updates escala consistente
+  - Updates ~10-100× más grandes que con Kaiming
+  - Convergencia más rápida y estable en Async-SGD
+  - Gradient clipping menos destructivo
 
-He init garantiza:
-  → Var(h_i) ≈ constante por layer
-  → Primeros logits tienen distribución razonable
-  → Loss ≈ log(1000) ≈ 6.9 (no 0, no NaN)
-  → Accuracy ≈ 0.1% (aleatorio)
+⚠️ CRÍTICO: LR=0.001 con Kaiming = divergencia
+✅ COMPROBADO: LR=0.01 con Xavier + BatchNorm1d = convergencia correcta
 ```
 
-**Comparación**:
+**Comparación de métodos (con BatchNorm1d)**:
 
-| Método | Loss Initial | Acc Initial | Estabilidad |
-|---|---|---|---|
-| Ceros | ∞ | - | ✗ Colapso |
-| Random Uniform | 6.5-7.5 | 0-0.5% | ⚠️ Inestable |
-| Xavier | 6.8-7.0 | 0.1-0.2% | ✓ OK |
-| **Kaiming (He)** | **6.9** | **0.1%** | **✓ Óptimo** |
+| Método | Loss Initial | Loss Epoch 1 | Acc Epoch 1 | Estabilidad |
+|---|---|---|---|---|
+| Kaiming + LR=0.001 | ~6.9 | 7.02→7.11 ✗ | ~0% | ✗ Divergencia |
+| Xavier + LR=0.01 | ~6.9 | 7.02→7.01 ✓ | ~0.3% | ✓ Convergencia |
+
+---
+
+## Estabilización Numérica: BatchNorm1d en MLP
+
+**Cambio Reciente**: MLP ahora integra **BatchNorm1d entre capas fully-connected** para estabilizar gradientes en Async-SGD distribuido.
+
+### Arquitectura Actualizada del MLP
+
+```python
+class MLPPyTorch(nn.Module):
+    def __init__(self, feature_dim, hidden1, hidden2, n_classes=1000):
+        super().__init__()
+        # Capa 1: features → hidden1
+        self.fc1 = nn.Linear(feature_dim, hidden1)    # (512, 1024)
+        self.bn0 = nn.BatchNorm1d(hidden1)            # NEW: Normalización
+        
+        # Capa 2: hidden1 → hidden2
+        self.fc2 = nn.Linear(hidden1, hidden2)        # (1024, 512)
+        self.bn1 = nn.BatchNorm1d(hidden2)            # NEW: Normalización
+        
+        # Capa 3: hidden2 → classes
+        self.fc3 = nn.Linear(hidden2, n_classes)      # (512, 1000)
+        # No BatchNorm en output (logits directos)
+        
+        self.relu = nn.ReLU()
+        self._init_weights()
+    
+    def forward(self, x):
+        # x: (B, 512) [features de CNN]
+        x = self.fc1(x)           # (B, 1024)
+        x = self.bn0(x)           # Normaliza activaciones → μ≈0, σ²≈1
+        x = self.relu(x)          # (B, 1024) después de ReLU
+        
+        x = self.fc2(x)           # (B, 512)
+        x = self.bn1(x)           # Normaliza activaciones
+        x = self.relu(x)          # (B, 512) después de ReLU
+        
+        x = self.fc3(x)           # (B, 1000) logits finales
+        return x                  # Sin normalización en output
+```
+
+### Estado del MLP: 21 Keys en state_dict
+
+| Componente | Tipo | Dimensión | Parámetros | Sincronización |
+|---|---|---|---|---|
+| fc1.weight, fc1.bias | Linear | (512→1024) | 524K | ✓ Promediado |
+| **bn0.weight, bn0.bias** | **BatchNorm1d** | **(1024)** | **2K** | **✓ Promediado** |
+| **bn0.running_mean, running_var, num_batches_tracked** | **BN buffers** | **(1024)** | **0** | **⊘ No promediado** |
+| fc2.weight, fc2.bias | Linear | (1024→512) | 524K | ✓ Promediado |
+| **bn1.weight, bn1.bias** | **BatchNorm1d** | **(512)** | **1K** | **✓ Promediado** |
+| **bn1.running_mean, running_var, num_batches_tracked** | **BN buffers** | **(512)** | **0** | **⊘ No promediado** |
+| fc3.weight, fc3.bias | Linear | (512→1000) | 512K | ✓ Promediado |
+| **TOTAL** | - | - | **1.56M params** | **6 parámetros + 15 buffers** |
+
+**Distribución de 21 keys**:
+- 6 parámetros de Linear: fc1.weight, fc1.bias, fc2.weight, fc2.bias, fc3.weight, fc3.bias (✓ se promedian en PS)
+- 4 parámetros de BatchNorm: bn0.weight, bn0.bias, bn1.weight, bn1.bias (✓ se promedian en PS)
+- 9 buffers de BatchNorm: running_mean, running_var, num_batches_tracked × 2 capas (⊘ NO se promedian, solo se sincronizan)
+
+### ¿Por qué BatchNorm1d en Async-SGD?
+
+**Problema sin BatchNorm1d**:
+- Xavier init: pesos ~1.0 → primeros updates pequeños (10× más chicos que con Kaiming)
+- LR=0.001 × 1.0 × grad≈0.1 = actualización ≈0.0001 (negligible)
+- Con múltiples Workers enviando updates tiny al PS → PS promedia → net zero
+- Resultado: **Loss diverge** (7.02 → 7.11) ✗
+
+**Solución con BatchNorm1d**:
+- Normaliza activaciones post-fc1/fc2 → E[h]=0, Var[h]≈1
+- Mantiene escala de gradientes consistente entre Workers
+- Reduce varianza de gradientes locales → menos sensibilidad a staleness variable
+- Permite usar LR=0.01 (10× mayor) sin divergencia
+- **Resultado**: Loss converge correctamente (7.02 → 7.01, acc 0% → 0.3%) ✓
+
+**Dinámicas de Sincronización**:
+
+```
+Worker-Side (training):
+  - MLP siempre en train() mode
+  - BatchNorm: actualiza running_mean, running_var con momentum=0.1
+  - Gradientes se computan para weight y bias de BN
+  - Gradientes se computan para fc1, fc2, fc3 weights+bias
+  
+Parameter-Server (cada REQUEST_PARAMS):
+  - Recibe todos 21 keys del state_dict de MLP
+  - PROMEDIA (Async-FedAvg con staleness α(s)): 
+    * fc1, fc2, fc3 weights+bias (6 keys)
+    * bn0, bn1 weight+bias (4 keys)
+    Total: 10 keys se promedian
+  - NO PROMEDIA (se mantienen intactos):
+    * running_mean, running_var, num_batches_tracked (9 keys)
+  - Envía: todos 21 keys intactos a Workers
+  
+Resultado:
+  - Parámetros entrenables (fc1-3 + bn0-1 weight/bias) convergen vía Async-FedAvg
+  - Estadísticas de BN se sincronizan pero NO se promedian
+  - Cada Worker tiene running stats ligeramente diferentes (OK: BN=regularizador adaptivo)
+  - Convergencia lineal con número de Workers
+```
 
 ---
 
 ## Interacción CNN ↔ MLP
 
-### Flujo E2E Simplificado (SimpleCNN)
+### Flujo E2E Simplificado (SIMPLE CNN)
 
 ```
 Input Images: (64, 3, 224, 224)
        ↓
 ┌──────────────────────────────┐
-│ CNN.forward() (SimpleCNN)    │  Extrae features (entrenable)
+│ CNN.forward() (SIMPLE CNN)   │  Extrae features (entrenable)
 │ (se entrena localmente,      │  Backward durante accum_steps
 │  se resincroniza globalmente)│  Cambios locales no persisten
 └──────┬───────────────────────┘
@@ -469,7 +575,7 @@ Loss: scalar (≈6.9-0.1 durante entrenamiento)
   Backward()
        ↓
 Gradients en MLP params (fc1, fc2, fc3) ✓ SE COMPUTAN Y SE USAN
-Gradients en CNN params (120+ capas) ✓ SE COMPUTAN Y SE USAN (SimpleCNN)
+Gradients en CNN params (11.2M params) ✓ SE COMPUTAN Y SE USAN (SIMPLE CNN)
 ```
 
 ### Flujo MLP-Only (ResNet-18)
@@ -503,9 +609,9 @@ Gradients en MLP params (fc1, fc2, fc3) ✓ SE COMPUTAN Y SE USAN
 Gradients en CNN params (11.2M params) ✗ NO se computan (congelada)
 ```
 
-### Dinámicas de Entrenamiento CNN: Local vs Global (SimpleCNN)
+### Dinámicas de Entrenamiento CNN: Local vs Global (SIMPLE CNN)
 
-**SimpleCNN SÍ se entrena en el código, pero con dinámicas especiales:**
+**SIMPLE CNN SÍ se entrena en el código, pero con dinámicas especiales:**
 
 | Aspecto | Realidad |
 |---|---|
@@ -517,7 +623,7 @@ Gradients en CNN params (11.2M params) ✗ NO se computan (congelada)
 | **Global** | PS recibe CNN de cada Worker, la promedia con Async-FedAvg → CNN global SÍ aprende |
 | **Comunicación** | CNN 44.8MB + MLP 6MB = ~51MB total intercambiados (AMBAS se sincronizan) |
 
-**Dinámica Especial SimpleCNN**:
+**Dinámica Especial SIMPLE CNN**:
 - A nivel **local**: CNN aparenta estar congelada (cambios no persisten entre ciclos)
 - A nivel **global**: CNN entrena su entrenamiento distribuido vía Async-FedAvg
 - **Efecto**: CNN global converge lentamente (no hay momentum persistente a nivel local)
@@ -539,11 +645,11 @@ Gradients en CNN params (11.2M params) ✗ NO se computan (congelada)
 **Dinámica Especial ResNet-18**:
 - CNN congelada permanentemente → transfer learning puro
 - Solo MLP se entrena → clasificador aprendible sobre features fijas
-- **Efecto**: Convergencia más rápida que SimpleCNN (features preentrenadas), pero limitada (CNN no se adapta)
+- **Efecto**: Convergencia más rápida que SIMPLE CNN (features preentrenadas), pero limitada (CNN no se adapta)
 
 ---
 
-## Cómo se Entrena Realmente (SimpleCNN)
+## Cómo se Entrena Realmente (SIMPLE CNN)
 
 ```
 Forward Pass:

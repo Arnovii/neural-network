@@ -323,10 +323,10 @@ def _train_batch(self, X_np, Y_np, lr) -> Tuple[float, float, int]:
     # Preparar para gradientes
     self._cnn._model.train()
     for p in self._cnn._model.parameters():
-        p.requires_grad_(True)  # Solo para SimpleCNN, ResNet-18 permanece False
+        p.requires_grad_(True)  # Solo para SIMPLE CNN, ResNet-18 permanece False
     self._mlp.train()
 
-    # Forward: SimpleCNN entrenable, ResNet-18 congelada
+    # Forward: SIMPLE CNN entrenable, ResNet-18 congelada
     self._cnn._model.zero_grad()
     self._mlp.zero_grad()
     
@@ -339,7 +339,7 @@ def _train_batch(self, X_np, Y_np, lr) -> Tuple[float, float, int]:
     loss.backward()
 
     # SGD local (con weight_decay en E2E)
-    # SimpleCNN: CNN gradientes se propagan, se SGD
+    # SIMPLE CNN: CNN gradientes se propagan, se SGD
     # ResNet-18: CNN congelada, sin gradientes
     with torch.no_grad():
         for p in self._cnn._model.parameters():

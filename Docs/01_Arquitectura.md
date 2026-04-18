@@ -96,8 +96,8 @@
   - **REQUEST_PARAMS**: Pide parámetros globales (CNN + MLP)
   - **_sync_cnn()**: Carga CNN global desde PS (SOBRESCRIBE CNN local)
   - **FOR accum_steps**: Entrena localmente
-    - _train_batch(): CNN entrenable (SimpleCNN) o congelada (ResNet-18), MLP se entrena siempre
-  - **UPDATES**: Envía CNN (si SimpleCNN) + MLP entrenados al PS
+    - _train_batch(): CNN entrenable (SIMPLE CNN) o congelada (ResNet-18), MLP se entrena siempre
+  - **UPDATES**: Envía CNN (si SIMPLE CNN) + MLP entrenados al PS
 - Registrar métricas locales
 
 **Estado Interno**:

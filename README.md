@@ -6,7 +6,7 @@ Sistema de entrenamiento distribuido con arquitectura **Parameter Server** que i
 
 ### ¿Qué es este sistema?
 
-Este proyecto implementa un framework completo para **entrenamiento distribuido asincrónico de CNN + MLP** en ImageNet-1k. El sistema ofrece **entrenamiento E2E de SIMPLE CNN + MLP** o **entrenamiento MLP-only con ResNet-18 congelada**. En SIMPLE CNN: ambas redes se entrenan localmente en cada Worker. En ResNet-18: solo MLP se entrena (CNN congelada permanentemente). Ambas arquitecturas se sincronizan globalmente via Async-FedAvg.
+Este proyecto implementa un framework completo para **entrenamiento distribuido asincrónico de CNN + MLP** en ImageNet-1k. El sistema ofrece **entrenamiento E2E de CNN Simple + MLP** o **entrenamiento MLP-only con ResNet-18 congelada**. En CNN Simple: ambas redes se entrenan localmente en cada Worker. En ResNet-18: solo MLP se entrena (CNN congelada permanentemente). Ambas arquitecturas se sincronizan globalmente via Async-FedAvg.
 
 ### ¿Qué problema resuelve?
 
@@ -17,12 +17,12 @@ Este proyecto implementa un framework completo para **entrenamiento distribuido 
 
 ### Enfoque técnico
 
-- **Estrategia**: Entrenamiento distribuido asincrónico: SIMPLE CNN+MLP (E2E) O ResNet-18 MLP-only. Localmente por Worker, sincronizan globalmente por PS via Async-FedAvg
+- **Estrategia**: Entrenamiento distribuido asincrónico: CNN Simple+MLP (E2E) O ResNet-18 MLP-only. Localmente por Worker, sincronizan globalmente por PS via Async-FedAvg
 - **Arquitectura**: Parameter Server + N Workers independientes
 - **Comunicación**: TCP/IP con serialización Pickle, 10 tipos de mensaje
 - **Modelos**: 
-  - **CNN Extractor**: ResNet-18 preentrenado (CONGELADA) O SIMPLE CNN (ENTRENABLE E2E)
-  - **MLP Clasificador** (entrenado): 2-3 capas ocultas que también se resincronizanDesde PS
+  - **CNN Extractor**: ResNet-18 preentrenado (CONGELADA) O CNN Simple (ENTRENABLE E2E)
+  - **MLP Clasificador** (entrenado): 3 capas (512→1024→512→1000) con BatchNorm1d + Xavier init para estabilidad
 - **Datos**: Streaming desde ILSVRC/imagenet-1k o timm/imagenet-1k-wds
 - **Hardware**: Soporte automático para CUDA, MPS (Apple Metal), CPU
 
@@ -39,7 +39,7 @@ El repositorio incluye documentación exhaustiva en el subdirectorio `./Docs/`:
 | `02_Flujo_de_Entrenamiento.md` | Step-by-step del training loop, ciclo REQUEST_PARAMS→train→UPDATES |
 | `03_Parameter_Server.md` | Funcionamiento del PS, inicialización, async SGD, corrección de staleness |
 | `04_Worker.md` | Ciclo de vida del Worker, conexión, streaming, training loop |
-| `05_Modelos.md` | Arquitecturas CNN (ResNet-18 vs SIMPLE CNN), diseño de MLP |
+| `05_Modelos.md` | Arquitecturas CNN (ResNet-18 vs CNN Simple), diseño de MLP con BatchNorm1d |
 | `06_Comunicacion.md` | Protocolo TCP, 10 tipos de mensaje, serialización |
 | `07_GUI_y_Monitoreo.md` | GUI tkinter, configuración de parámetros, visualización de métricas |
 | `08_Hiperparametros_y_Config.md` | Learning rate, staleness λ, batch size, impacto en convergencia |
@@ -57,11 +57,15 @@ El repositorio incluye documentación exhaustiva en el subdirectorio `./Docs/`:
 
 ✅ **Arquitecturas CNN soportadas**:
   - ResNet-18 con pesos IMAGENET1K_V1 preentrenados (~11.7M parámetros, ~47 MB state_dict)
-  - SIMPLE CNN: ResNet-18 sin preentrenamiento (~11.2M parámetros, ~45 MB state_dict, sin Dropout)
+  - CNN Simple: ResNet-18 sin preentrenamiento (~11.2M parámetros, ~45 MB state_dict, sin Dropout ni proyección extra)
 
 ✅ **Augmentación de datos avanzada**: ColorJitter (brightness, contrast, saturation, hue) + RandomErasing post-normalización
 
-✅ **Clasificador MLP configurable** (feature_dim → hidden1 → hidden2 → 1000 clases)
+✅ **Clasificador MLP optimizado** (512 → 1024 → 512 → 1000) con:
+  - BatchNorm1d entre capas para estabilidad en Async-SGD
+  - Xavier uniform initialization (weight norms ~1.0)
+  - Gradient clipping + label smoothing
+  - 21 keys sincronizados (6 parámetros entrenables + 15 buffers de BN)
 
 ✅ **Auto-detección de dispositivo** (CUDA > MPS > CPU)
 
@@ -146,10 +150,11 @@ El repositorio incluye documentación exhaustiva en el subdirectorio `./Docs/`:
 #### **Modelos**
 - **CNN Extractor**: Transforma imágenes (3, 224, 224) → (512) features
   - ResNet-18: 11.7M params, preentrenado con IMAGENET1K_V1 (~47 MB state_dict)
-  - SIMPLE CNN: 11.2M params, sin preentrenamiento (~45 MB state_dict, arquitectura ResNet-18 canónica sin Dropout ni proyección)
-- **MLP Classifier**: Clasifica 1000 clases sobre features CNN
-
-#### **Comunicación**
+    - CNN Simple: 11.2M params, sin preentrenamiento (~45 MB state_dict, arquitectura ResNet-18 canónica sin Dropout ni proyección)
+  - **MLP Classifier**: 512 → 1024 → 512 → 1000 clases con BatchNorm1d
+    - Xavier uniform initialization: weight norms ~1.0 (compatible con FedAvg + staleness)
+    - 2 capas de BatchNorm1d para normalizar activaciones en distributed async SGD
+    - No promedian buffers de BN (running_mean/var), solo parámetros entrenables
 - Protocolo TCP con serialización Pickle
 - 10 tipos de mensaje (READY, WORKER_ID, CONFIG, CNN_WEIGHTS, START, etc.)
 - Handshake seguro: Workers bloqueados hasta que PS esté listo
