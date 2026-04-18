@@ -153,7 +153,7 @@
 | Arquitectura | feature_dim | Parámetros | Pesos | requires_grad | Caso de Uso |
 |---|---|---|---|---|---|
 | `resnet18` | 512 | ~11.7M | ImageNet1K_V1 | False (congelada) | Producción (convergencia rápida, MLP-only) |
-| `simple` | 512 | ~11.7M | Random init | True (entrenable) | Experimentación / Testing (E2E training) |
+| `simple` | 512 | ~11.2M | Random init | True (entrenable) | Experimentación / Testing (E2E training) |
 
 **Interfaz Pública**:
 ```python

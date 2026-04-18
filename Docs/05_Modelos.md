@@ -60,42 +60,104 @@ Output: (N, 512)
 
 **Archivo**: `Model/cnn_extractor.py` → `_ResNet18FromScratch` + `_BasicBlock`
 
-La SIMPLE CNN es una arquitectura **ResNet-18 estándar construida desde cero** (sin pesos preentrenados). Utiliza bloques residuales básicos (_BasicBlock) organizados en 4 capas progresivas con skip connections fuertes, optimizada para entrenamiento E2E en Async-SGD distribuido con staleness.
+La SIMPLE CNN es una arquitectura **ResNet-18 estándar construida desde cero** (sin pesos preentrenados). Utiliza bloques residuales básicos (_BasicBlock) organizados en 4 capas progresivas con skip connections fuertes, optimizada para entrenamiento E2E en Async-SGD distribuido con staleness variable.
+
+**Estructura de _BasicBlock (Bloque Residual Estándar)**:
 
 ```python
 class _BasicBlock(nn.Module):
-    """Bloque residual estándar de ResNet: Conv→BN→ReLU→Conv→BN + shortcut."""
+    """
+    Bloque residual básico estándar de ResNet-18:
+    Conv(3×3,stride)→BN→ReLU→Conv(3×3)→BN + shortcut→ReLU
+    """
     expansion = 1
+    
     def __init__(self, in_ch: int, out_ch: int, stride: int = 1):
-        # Conv(3×3, stride) + BN + ReLU
-        # Conv(3×3) + BN (sin ReLU, se aplica após shortcut)
-        # Shortcut: identidad o Conv(1×1) si stride > 1 o cambio de canales
-        # Zero-init en BN final → bloque inicia como identidad
+        # Rama residual:
+        self.conv1 = Conv2d(in_ch, out_ch, 3, stride=stride, padding=1)
+        self.bn1 = BatchNorm2d(out_ch)
+        self.conv2 = Conv2d(out_ch, out_ch, 3, padding=1)
+        self.bn2 = BatchNorm2d(out_ch)
+        
+        # Shortcut: identidad o Conv(1×1) si stride > 1 o in_ch != out_ch
+        self.shortcut = (
+            Sequential(
+                Conv2d(in_ch, out_ch, 1, stride=stride),
+                BatchNorm2d(out_ch)
+            ) if stride != 1 or in_ch != out_ch else Identity()
+        )
+        
+        # CLAVE: Zero-init en BN final
+        # → El bloque inicia como identidad (residual ≈ 0)
+        # → Estabiliza gradientes en las primeras iteraciones
+        nn.init.zeros_(self.bn2.weight)
+    
+    def forward(self, x):
+        # Forward residual: Conv→BN→ReLU→Conv→BN
+        out = F.relu(self.bn1(self.conv1(x)), inplace=True)
+        out = self.bn2(self.conv2(out))
+        # Add shortcut + ReLU final
+        return F.relu(out + self.shortcut(x), inplace=True)
+```
 
+**Arquitectura completa de _ResNet18FromScratch**:
+
+```python
 class _ResNet18FromScratch(nn.Module):
     def __init__(self):
-        # Stem: Conv(3→64, 7×7, stride=2) + BN + ReLU + MaxPool(stride=2) → stride 4×
-        self.conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3)
-        self.bn1 = nn.BatchNorm2d(64)
-        self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
+        super().__init__()
         
-        # 4 layers con 2 BasicBlocks cada uno en progresión: 64→128→256→512
-        self.layer1 = self._make_layer(_BasicBlock, 64, 64, 2, stride=1)    # 56×56
-        self.layer2 = self._make_layer(_BasicBlock, 64, 128, 2, stride=2)   # 28×28
-        self.layer3 = self._make_layer(_BasicBlock, 128, 256, 2, stride=2)  # 14×14
-        self.layer4 = self._make_layer(_BasicBlock, 256, 512, 2, stride=2)  # 7×7 [stride = 32×]
+        # STEM: reducción inicial 224→56 (stride 4×)
+        self.stem = Sequential(
+            Conv2d(3, 64, 7, stride=2, padding=3, bias=False),
+            BatchNorm2d(64),
+            ReLU(inplace=True),
+            MaxPool2d(3, stride=2, padding=1)
+        )
         
-        # GAP + Dropout + Proyección lineal
+        # 4 LAYERS: cada una con 2 BasicBlocks
+        # Progresión de canales: 64 → 128 → 256 → 512
+        self.layer1 = self._make_layer(64, 64, 2, stride=1)    # 56×56, identidad
+        self.layer2 = self._make_layer(64, 128, 2, stride=2)   # 28×28, stride 2
+        self.layer3 = self._make_layer(128, 256, 2, stride=2)  # 14×14, stride 2
+        self.layer4 = self._make_layer(256, 512, 2, stride=2)  # 7×7, stride 2 → total 32×
+        
+        # GLOBAL AVERAGE POOLING: 7×7 → 1×1 → (B, 512)
         self.gap = AdaptiveAvgPool2d(1)
-        self.dropout = nn.Dropout(p=0.5)
-        self.proj = nn.Linear(512, 512)  # → feature_dim = 512
+        
+        # INICIALIZACIÓN: Kaiming Normal para todos los Conv/BN
+        self._init_weights()
     
-    def _make_layer(self, block, in_ch, out_ch, blocks, stride):
-        """Construir capa con N bloques residuales."""
-        layers = [block(in_ch, out_ch, stride)]
-        for _ in range(1, blocks):
-            layers.append(block(out_ch, out_ch, stride=1))
-        return nn.Sequential(*layers)
+    def _make_layer(self, in_ch, out_ch, num_blocks, stride):
+        """
+        Construir layer con num_blocks BasicBlocks.
+        Primer bloque usa stride especificado (para submuestreo).
+        Bloques restantes usan stride=1.
+        """
+        layers = [_BasicBlock(in_ch, out_ch, stride)]
+        for _ in range(1, num_blocks):
+            layers.append(_BasicBlock(out_ch, out_ch, stride=1))
+        return Sequential(*layers)
+    
+    def _init_weights(self):
+        """Inicializa pesos con Kaiming Normal (He initialization)."""
+        for m in self.modules():
+            if isinstance(m, Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+            elif isinstance(m, BatchNorm2d):
+                nn.init.ones_(m.weight)
+                nn.init.zeros_(m.bias)
+    
+    def forward(self, x):
+        """224×224 RGB → 512-dimensional feature vector"""
+        x = self.stem(x)       # (B,3,224,224) → (B,64,56,56)
+        x = self.layer1(x)     # (B,64,56,56) → (B,64,56,56)
+        x = self.layer2(x)     # (B,64,56,56) → (B,128,28,28)
+        x = self.layer3(x)     # (B,128,28,28) → (B,256,14,14)
+        x = self.layer4(x)     # (B,256,14,14) → (B,512,7,7)
+        x = self.gap(x)        # (B,512,7,7) → (B,512,1,1)
+        x = x.flatten(1)       # (B,512,1,1) → (B,512)  [DIRECTO, sin Dropout ni Projection]
+        return x
 ```
 
 **Especificaciones**:
@@ -103,38 +165,71 @@ class _ResNet18FromScratch(nn.Module):
 | Atributo | Valor |
 |---|---|
 | Feature dimension | 512 |
-| Parámetros totales | **11.7M** |
-| Tamaño state_dict | **~45.8 MB** en float32 |
+| Parámetros totales | **11.2M** |
+| Tamaño state_dict | **~44.8 MB** en float32 |
 | Pesos | Random (Kaiming Normal init) |
 | Velocidad (CPU) | ~100-120ms per batch (64 imágenes) |
 | Velocidad (GPU) | ~15-20ms per batch |
 
-**Arquitectura de Bloques Residuales**:
+**Diseño sin Dropout post-GAP y sin Proyección Linear extra**:
 
-Cada `_BasicBlock(in_ch, out_ch, stride)` tiene (estructura estándar ResNet-18):
+El código actual de SIMPLE CNN **NO incluye**:
+1. ❌ `nn.Dropout(0.5)` post-GAP
+2. ❌ `nn.Linear(512, 512)` para proyección
+
+**Razones técnicas** (de `cnn_extractor.py` docstring):
+
 ```
-input
-  ├─ Conv(3×3, stride) → BN → ReLU → Conv(3×3) → BN ─┐
-  │                                                  (suma)
-  └─ Shortcut (identidad o Conv 1×1) ────────────────┤
-                                                     ↓
-                                                    ReLU
-                                                     ↓
-                                                   output
+POR QUÉ SIN DROPOUT POST-GAP:
+  Dropout(0.5) post-GAP interfiere con BatchNorm en Async-SGD:
+    - BN asume distribución estable de activaciones
+    - Dropout la altera estocásticamente → inestabilidad con staleness
+    - Con resincronización variable, gradientes ya atenuados por α(s)=1/(1+λ·s)
+    - Añadir ruido de Dropout encima introduce inestabilidad numérica innecesaria
+  
+  Regularización efectiva viene de:
+    - weight_decay=1e-4 en SGD (WorkerNode)
+    - label_smoothing=0.1 en CrossEntropyLoss
+    - Ambos más estables que Dropout en régimen distribuido
+
+POR QUÉ SIN PROYECCIÓN 512→512:
+  La proyección Linear(512→512) es semánticamente una identidad aprendida
+    - Gap ya produce EXACTAMENTE FEATURE_DIM=512 tras Layer4
+    - Proyección agrega ~262K parámetros innecesarios
+    - Equipara a ResNet-18 canónico de torchvision (sin fc)
+    - Reduce riesgo de colapso de representaciones en primeras épocas E2E
 ```
 
-**Zero-init BN final**: En cada bloque, el último BN inicia con scale=0 → el bloque es aproximadamente identidad al inicio → estabilidad de gradientes en primeros pasos.
+**Inicialización: Kaiming Normal (He Initialization)**
 
-**Comparativa: SIMPLE CNN (11.7M) vs Alternativas**:
+Todos los Conv2d y BatchNorm2d se inicializan con Kaiming Normal:
+
+```python
+for m in self.modules():
+    if isinstance(m, Conv2d):
+        nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+    elif isinstance(m, BatchNorm2d):
+        nn.init.ones_(m.weight)       # scale = 1
+        nn.init.zeros_(m.bias)        # shift = 0
+```
+
+**Ventaja de Kaiming Normal**:
+- Mantiene varianza de activaciones ~constante entre layers
+- Con ReLU: Espected E[h_i] = 0.5 × Var(h_0) para cada layer
+- Asegura que logits iniciales ≈ N(0, 1000) → loss ≈ log(1000) ≈ 6.9
+- Evita vanishing/exploding gradients en primeras épocas
+
+**Comparativa: SIMPLE CNN (11.2M) vs Alternativas**:
 
 | Aspecto | SIMPLE CNN (Actual) | SimpleCNN Anterior | ResNet-18 Preentrenada |
 |---|---|---|---|
-| **Parámetros** | 11.7M | 1.36M | 11.7M |
+| **Parámetros** | 11.2M | 1.36M | 11.7M |
 | **Pesos iniciales** | Random (Kaiming) | Random (Kaiming) | ImageNet1K_V1 |
 | **requires_grad** | True (entrenable) | True (entrenable) | False (congelada) |
 | **Stride efectivo** | 32× | 32× | 32× |
 | **Skip connections** | Sí (_BasicBlock) | Sí (_ResBlockLite) | Sí (standard) |
-| **Dropout** | 0.5 | 0.2 | Ninguno |
+| **Dropout post-GAP** | NO (eliminado) | 0.2 | Ninguno |
+| **Proyección Linear** | NO (eliminado) | Sí, 512→512 | NO |
 | **Bloque residual** | Estándar ResNet | Custom ligero | Estándar ResNet |
 | **Velocidad CPU** | ~100ms/batch | ~12ms/batch | ~100ms/batch |
 | **Capacidad** | Suficiente para ImageNet-1k | Insuficiente (~1.4K params/clase) | Suficiente (~11.7K params/clase) |
@@ -178,52 +273,52 @@ input
 
 ```python
 def forward(self, x: torch.Tensor) -> torch.Tensor:
-    """SIMPLE CNN (ResNet-18 desde cero): 224×224 RGB → 512-dimensional feature vector."""
-    # Stem: Conv(7×7, stride=2) + BN + ReLU + MaxPool(stride=2) → stride efectivo 4×
-    x = self.conv1(x)       # (B,3,224,224) → (B,64,112,112)
-    x = self.bn1(x)
-    x = F.relu(x)
-    x = self.maxpool(x)     # (B,64,112,112) → (B,64,56,56)   [stride 4×]
+    """SIMPLE CNN (ResNet-18 desde cero): 224×224 RGB → 512-dimensional feature vector"""
     
-    # Layer1: 2 BasicBlocks(64→64), stride=1 → sin submuestreo espacial
-    x = self.layer1(x)      # (B,64,56,56)   → (B,64,56,56)   [identity blocks]
+    # STEM: Conv(7×7, stride=2) + BN + ReLU + MaxPool(stride=2) → stride efectivo 4×
+    x = self.stem(x)       # (B,3,224,224) → (B,64,56,56)   [stride 4×]
     
-    # Layer2: 2 BasicBlocks(64→128), stride=2 en primer bloque
-    x = self.layer2(x)      # (B,64,56,56)   → (B,128,28,28)  [stride 2×]
+    # LAYER1: 2 BasicBlocks(64→64), stride=1 → sin submuestreo espacial
+    x = self.layer1(x)     # (B,64,56,56)  → (B,64,56,56)   [identity blocks]
     
-    # Layer3: 2 BasicBlocks(128→256), stride=2 en primer bloque
-    x = self.layer3(x)      # (B,128,28,28)  → (B,256,14,14)  [stride 2×]
+    # LAYER2: 2 BasicBlocks(64→128), stride=2 en primer bloque
+    x = self.layer2(x)     # (B,64,56,56)  → (B,128,28,28)  [stride 2×]
     
-    # Layer4: 2 BasicBlocks(256→512), stride=2 en primer bloque
-    x = self.layer4(x)      # (B,256,14,14)  → (B,512,7,7)    [stride 2×]
+    # LAYER3: 2 BasicBlocks(128→256), stride=2 en primer bloque
+    x = self.layer3(x)     # (B,128,28,28) → (B,256,14,14)  [stride 2×]
     
-    # Global Average Pooling: 7×7 → 1×1
-    x = self.gap(x)         # (B,512,7,7)    → (B,512,1,1)    [compute mean]
-    x = x.flatten(1)        # (B,512,1,1)    → (B,512)        [reshape]
+    # LAYER4: 2 BasicBlocks(256→512), stride=2 en primer bloque
+    x = self.layer4(x)     # (B,256,14,14) → (B,512,7,7)    [stride 2×] → total 32×
     
-    # Dropout + Proyección lineal
-    x = self.dropout(x)     # (B,512)        → (B,512)        [regularización p=0.5]
-    return self.proj(x)     # (B,512)        → (B,512)        [identity projection]
+    # GLOBAL AVERAGE POOLING: 7×7 → 1×1
+    x = self.gap(x)        # (B,512,7,7)   → (B,512,1,1)    [mean over spatial]
+    
+    # FLATTEN: solo reshaping, sin transformaciones no-lineales
+    x = x.flatten(1)       # (B,512,1,1)   → (B,512)
+    
+    # RETORNA FEATURES DIRECTAS (sin Dropout, sin Proyección Linear)
+    return x               # (B,512)  ← FEATURE_DIM final
 ```
 
 **Stride efectivo acumulado**:
-- Conv(7×7, stride=2): 2×
-- MaxPool(stride=2): 2×
+- Stem Conv(7×7, stride=2): 2×
+- Stem MaxPool(stride=2): 2×
   - **Subtotal Stem**: 2 × 2 = 4×
 - Layer2 (stride=2): 2×
 - Layer3 (stride=2): 2×
 - Layer4 (stride=2): 2×
-- **Total**: 4 × 2 × 2 × 2 = **32×** (igual que ResNet-18)
+- **Total**: 4 × 2 × 2 × 2 = **32×** (igual que ResNet-18 preentrenada)
 
 **Verificación de spatial reduction**:
 - Input: 224×224
 - Output feature map: 224 / 32 = 7×7 ✓
+- GAP reduce a: 1×1 ✓
+- Output final: (B, 512) ✓
 
-**Por qué importa el stride 32×**:
-- **Receptive field grande**: Cada neurona en layer4 ve ≈ 1024×1024 píxeles de entrada (receptive field = stride × 3×3 kernel size ≈ 30-50)
-- **Verificación matemática**: Layer4 output 7×7 → 224 / 32 = 7 ✓
-- **Compresión espacial eficiente**: 224² = 50,176 píxeles → 7² = 49 activaciones = **1024x reduction**
-- **Estandarización**: Stride 32× es el estándar de ResNet-18 → compatible con muchas aplicaciones downstream
+**¿Por qué stride 32× importa?**:
+- **Receptive field grande**: Cada neurona en Layer4 ve receptive field global (casi toda la imagen)
+- **Compresión espacial eficiente**: 224² = 50,176 píxeles → 49 activaciones (7²) = **~1000x reduction**
+- **Estandarización**: Stride 32× es el estándar de ResNet-18 → reproducible y comparable
 
 ---
 
@@ -405,7 +500,7 @@ Loss: scalar (≈6.9-0.1 durante entrenamiento)
   Backward()
        ↓
 Gradients en MLP params (fc1, fc2, fc3) ✓ SE COMPUTAN Y SE USAN
-Gradients en CNN params (120+ capas) ✗ NO se computan (congelada)
+Gradients en CNN params (11.2M params) ✗ NO se computan (congelada)
 ```
 
 ### Dinámicas de Entrenamiento CNN: Local vs Global (SimpleCNN)
@@ -414,13 +509,13 @@ Gradients en CNN params (120+ capas) ✗ NO se computan (congelada)
 
 | Aspecto | Realidad |
 |---|---|
-| **Backward E2E** | Gradientes llegan a CNN (120+ capas de SimpleCNN) |
+| **Backward E2E** | Gradientes llegan a CNN (11.2M parámetros de SIMPLE CNN) |
 | **SGD local** | CNN se actualiza: `cnn_param.data -= lr * cnn_param.grad` |
 | **Duración** | Cambios CNN locales duran accum_steps batches (ej: 5 batches) |
 | **Resincronización** | Cada REQUEST_PARAMS, CNN local se SOBRESCRIBE con CNN global del PS |
 | **Persistencia** | CNN cambios locales se DESCARTAN cuando sincroniza (NO persisten) |
 | **Global** | PS recibe CNN de cada Worker, la promedia con Async-FedAvg → CNN global SÍ aprende |
-| **Comunicación** | CNN 6MB + MLP 4.5MB = ~11MB total intercambiados (AMBAS se sincronizan) |
+| **Comunicación** | CNN 44.8MB + MLP 6MB = ~51MB total intercambiados (AMBAS se sincronizan) |
 
 **Dinámica Especial SimpleCNN**:
 - A nivel **local**: CNN aparenta estar congelada (cambios no persisten entre ciclos)
@@ -439,7 +534,7 @@ Gradients en CNN params (120+ capas) ✗ NO se computan (congelada)
 | **Resincronización** | CNN se recibe del PS pero no cambia (porque nunca cambió localmente) |
 | **Persistencia** | No hay cambios locales que persistir |
 | **Global** | PS solo actualiza MLP, CNN permanece estática (no hay Async-FedAvg de CNN para ResNet-18) |
-| **Comunicación** | CNN 45MB + MLP 4.5MB = ~50MB total intercambiados (ambas se sincronizan por completitud) |
+| **Comunicación** | CNN 44.8MB + MLP 6MB = ~51MB total intercambiados (ambas se sincronizan por completitud) |
 
 **Dinámica Especial ResNet-18**:
 - CNN congelada permanentemente → transfer learning puro

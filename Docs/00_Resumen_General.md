@@ -7,7 +7,7 @@ Este proyecto implementa un **sistema de entrenamiento distribuido asincrónico 
 ### Problema Resuelto
 
 El entrenamiento E2E de CNN + MLP en datasets masivos como ImageNet-1k requiere:
-- Procesamiento de **1.2 millones de imagénes** con propagación de gradientes en 120+ capas CNN
+- Procesamiento de **1.2 millones de imagénes** con propagación de gradientes en **11.2M parámetros CNN** (SIMPLE CNN)
 - Distribución de carga computacional de ambas redes entre múltiples procesadores  
 - Sincronización eficiente de parámetros globales sin convergencia lenta
 
@@ -28,34 +28,34 @@ En cada Worker, ciclo indefinido:
 2. _sync_cnn() → carga CNN global (SOBRESCRIBE CNN local)
 3. FOR accum_steps batches:
    a. Forward: X → CNN (resnet18: congelada/requires_grad=False, simple: entrenable/requires_grad=True) → MLP
-   b. Backward: ∇L calculado para MLP (2-3 capas) + CNN gradientes si simple
-      (resnet18: sin backprop en CNN, simple: backprop completo en CNN con 8 bloques)
+   b. Backward: ∇L calculado para MLP (2-3 capas) + CNN gradientes si SIMPLE CNN
+      (ResNet-18: sin backprop en CNN, SIMPLE CNN: backprop completo en 11.2M params)
    c. SGD local: 
       θ_mlp_local -= lr · ∇L_mlp  (siempre)
-      θ_cnn_local -= lr · ∇L_cnn  (solo si simple, cambios ephemeral)
-4. UPDATES → envía (θ_cnn_local si simple, θ_mlp_local) al PS
+      θ_cnn_local -= lr · ∇L_cnn  (solo si SIMPLE CNN, cambios ephemeral, no persisten)
+4. UPDATES → envía (θ_cnn_local si SIMPLE CNN, θ_mlp_local) al PS
 5. PS PROMEDIA:
    Δθ = θ_local - θ_global
    θ_global_new = θ_global + α(s) · Δθ  donde α(s) = 1/(1+λ·s)
 
 CRÍTICO:
-- ResNet-18: CNN congelada, solo MLP se entrena localmente y se sincroniza
+- ResNet-18: CNN congelada (requires_grad=False), solo MLP se entrena localmente y se sincroniza
 - SIMPLE CNN: CNN + MLP cambios locales NO PERSISTEN (se pierden en siguiente REQUEST_PARAMS)
-  PERO CNN GLOBAL entrena via Async-FedAvg
+  PERO CNN GLOBAL entrena via Async-FedAvg (11.2M params promediados entre Workers)
 ```
 
 **Ventajas**:
-- ✅ SIMPLE CNN: Entrenamiento E2E completo (CNN + MLP actualizadas en cada Worker)
-- ✅ ResNet-18: Transfer learning eficiente (solo MLP se entrena, CNN fija)
+- ✅ SIMPLE CNN: Entrenamiento E2E completo (11.2M params CNN + MLP actualizadas en cada Worker)
+- ✅ ResNet-18: Transfer learning eficiente (solo MLP se entrena, CNN fija con pesos preentrenados)
 - ✅ No hay barrera de sincronización global
 - ✅ Tolerancia a heterogeneidad (Workers rápidos/lentos)
 - ✅ Escalabilidad lineal con número de Workers
 - ✅ Mejor utilización de red (parámetros enviados asincronamente sin bloqueo)
 
 **Desventajas**:
-- ⚠️ **Convergencia muy lenta para SIMPLE CNN E2E**: SGD puro (sin momentum) + resincronización de pesos en cada step + sin preentrenamiento
-- ⚠️ **SIMPLE CNN sin pretrain**: Features iniciales aleatorias → primero centenares de batches con ruido puro, convergencia extremadamente lenta
-- ⚠️ **ResNet-18 convergencia limitada**: CNN congelada restringe adaptación de features
+- ⚠️ **SIMPLE CNN convergencia muy lenta E2E**: SGD puro (sin momentum) + resincronización global en cada cycle + sin preentrenamiento (11.2M params random init)
+- ⚠️ **SIMPLE CNN features iniciales aleatorias**: Primeros centenares de batches con ruido puro → convergencia extremadamente lenta, no recomendada para producción
+- ⚠️ **ResNet-18 convergencia limitada**: CNN congelada restringe adaptación de features, pero convergencia más rápida que SIMPLE CNN (transfer learning)
 
 ## Componentes Principales
 

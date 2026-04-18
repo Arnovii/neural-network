@@ -273,7 +273,7 @@ Ecuación por step SGD:
 ```
 
 **Beneficio**:
-- Evita overfit en E2E training  desde cero (SimpleCNN tiene 1.36M parámetros)
+- Evita overfit en E2E training desde cero (SIMPLE CNN tiene 11.2M parámetros)
 - Especialmente importante sin preentrenamiento (weights aleatorios = más riesgo de overfit)
 
 **Compatibilidad con FedAvg**:

@@ -6,7 +6,7 @@ Sistema de entrenamiento distribuido con arquitectura **Parameter Server** que i
 
 ### ¿Qué es este sistema?
 
-Este proyecto implementa un framework completo para **entrenamiento distribuido asincrónico de CNN + MLP** en ImageNet-1k. El sistema ofrece **entrenamiento E2E de Simple CNN + MLP** o **entrenamiento MLP-only con ResNet-18 congelada**. En Simple CNN: ambas redes se entrenan localmente en cada Worker. En ResNet-18: solo MLP se entrena (CNN congelada permanentemente). Ambas arquitecturas se sincronizan globalmente via Async-FedAvg.
+Este proyecto implementa un framework completo para **entrenamiento distribuido asincrónico de CNN + MLP** en ImageNet-1k. El sistema ofrece **entrenamiento E2E de SIMPLE CNN + MLP** o **entrenamiento MLP-only con ResNet-18 congelada**. En SIMPLE CNN: ambas redes se entrenan localmente en cada Worker. En ResNet-18: solo MLP se entrena (CNN congelada permanentemente). Ambas arquitecturas se sincronizan globalmente via Async-FedAvg.
 
 ### ¿Qué problema resuelve?
 
@@ -17,11 +17,11 @@ Este proyecto implementa un framework completo para **entrenamiento distribuido 
 
 ### Enfoque técnico
 
-- **Estrategia**: Entrenamiento distribuido asincrónico: Simple CNN+MLP (E2E) O ResNet-18 MLP-only. Localmente por Worker, sincronizan globalmente por PS via Async-FedAvg
+- **Estrategia**: Entrenamiento distribuido asincrónico: SIMPLE CNN+MLP (E2E) O ResNet-18 MLP-only. Localmente por Worker, sincronizan globalmente por PS via Async-FedAvg
 - **Arquitectura**: Parameter Server + N Workers independientes
 - **Comunicación**: TCP/IP con serialización Pickle, 10 tipos de mensaje
 - **Modelos**: 
-  - **CNN Extractor**: ResNet-18 preentrenado (CONGELADA) O Simple CNN (ENTRENABLE E2E)
+  - **CNN Extractor**: ResNet-18 preentrenado (CONGELADA) O SIMPLE CNN (ENTRENABLE E2E)
   - **MLP Clasificador** (entrenado): 2-3 capas ocultas que también se resincronizanDesde PS
 - **Datos**: Streaming desde ILSVRC/imagenet-1k o timm/imagenet-1k-wds
 - **Hardware**: Soporte automático para CUDA, MPS (Apple Metal), CPU
@@ -39,7 +39,7 @@ El repositorio incluye documentación exhaustiva en el subdirectorio `./Docs/`:
 | `02_Flujo_de_Entrenamiento.md` | Step-by-step del training loop, ciclo REQUEST_PARAMS→train→UPDATES |
 | `03_Parameter_Server.md` | Funcionamiento del PS, inicialización, async SGD, corrección de staleness |
 | `04_Worker.md` | Ciclo de vida del Worker, conexión, streaming, training loop |
-| `05_Modelos.md` | Arquitecturas CNN (ResNet-18 vs Simple CNN), diseño de MLP |
+| `05_Modelos.md` | Arquitecturas CNN (ResNet-18 vs SIMPLE CNN), diseño de MLP |
 | `06_Comunicacion.md` | Protocolo TCP, 10 tipos de mensaje, serialización |
 | `07_GUI_y_Monitoreo.md` | GUI tkinter, configuración de parámetros, visualización de métricas |
 | `08_Hiperparametros_y_Config.md` | Learning rate, staleness λ, batch size, impacto en convergencia |
@@ -56,8 +56,8 @@ El repositorio incluye documentación exhaustiva en el subdirectorio `./Docs/`:
 ✅ **Streaming de ImageNet-1k** desde HuggingFace bajo demanda (nunca descarga completo)
 
 ✅ **Arquitecturas CNN soportadas**:
-  - ResNet-18 con pesos IMAGENET1K_V1 preentrenados (~11.7M parámetros, ~45 MB state_dict)
-  - Simple CNN: ResNet-18 sin preentrenamiento (~11.7M parámetros, ~45 MB state_dict, Dropout 0.5)
+  - ResNet-18 con pesos IMAGENET1K_V1 preentrenados (~11.7M parámetros, ~47 MB state_dict)
+  - SIMPLE CNN: ResNet-18 sin preentrenamiento (~11.2M parámetros, ~45 MB state_dict, sin Dropout)
 
 ✅ **Augmentación de datos avanzada**: ColorJitter (brightness, contrast, saturation, hue) + RandomErasing post-normalización
 
@@ -145,8 +145,8 @@ El repositorio incluye documentación exhaustiva en el subdirectorio `./Docs/`:
 
 #### **Modelos**
 - **CNN Extractor**: Transforma imágenes (3, 224, 224) → (512) features
-  - ResNet-18: 11.7M params, preentrenado con IMAGENET1K_V1 (~45 MB state_dict)
-  - Simple CNN: 11.7M params, sin preentrenamiento (~45 MB state_dict)
+  - ResNet-18: 11.7M params, preentrenado con IMAGENET1K_V1 (~47 MB state_dict)
+  - SIMPLE CNN: 11.2M params, sin preentrenamiento (~45 MB state_dict, arquitectura ResNet-18 canónica sin Dropout ni proyección)
 - **MLP Classifier**: Clasifica 1000 clases sobre features CNN
 
 #### **Comunicación**
@@ -586,11 +586,11 @@ python ps_gui_imagenet.py
 #### Architecture CNN
 - **Default**: `resnet18`
 - **Opciones**:
-  - `resnet18`: ResNet-18 con pesos IMAGENET1K_V1 (11.7M parámetros, ~45 MB state_dict)
-  - `simple`: Simple CNN (ResNet-18 desde cero, 11.7M parámetros, ~45 MB state_dict)
+  - `resnet18`: ResNet-18 con pesos IMAGENET1K_V1 (11.7M parámetros, ~47 MB state_dict)
+  - `simple`: SIMPLE CNN (ResNet-18 desde cero, 11.2M parámetros, ~45 MB state_dict, sin Dropout)
 - **Impacto**:
-  - ResNet-18: Mejor convergencia (pesos preentrenados), más lento que simple en compute puro pero convergencia rápida
-  - Simple CNN: Entrenable E2E, convergencia muy lenta sin preentrenamiento, NO recomendada para producción
+  - ResNet-18: Mejor convergencia (pesos preentrenados), más lento que SIMPLE CNN en compute puro pero convergencia rápida
+  - SIMPLE CNN: Entrenable E2E, convergencia muy lenta sin preentrenamiento, NO recomendada para producción
 
 #### MLP Architecture
 - **Parámetros**: `--hidden1` (default 1024), `--hidden2` (default 512)
@@ -680,7 +680,7 @@ neural-network/
 │
 ├── Model/                             ← Redes neuronales
 │   ├── __init__.py
-│   ├── cnn_extractor.py               ← CNNExtractor: ResNet-18 o Simple CNN
+│   ├── cnn_extractor.py               ← CNNExtractor: ResNet-18 o SIMPLE CNN
 │   └── mlp_pytorch.py                 ← MLPPyTorch: clasificador 2-capas ocultas
 │
 ├── Utils/                             ← Utilidades
@@ -709,7 +709,7 @@ neural-network/
 | `Distributed/parameter_server.py` | ~400 | ParameterServer: TCP server, FedAvg asíncrono, staleness correction, aggregation |
 | `Distributed/worker_node.py` | ~350 | WorkerNode: streaming + training loop, sincronización de modelo, SGD local |
 | `Distributed/protocol.py` | ~110 | Protocolo TCP: 10 tipos de mensaje, serialización Pickle |
-| `Model/cnn_extractor.py` | ~150 | CNNExtractor con ResNet-18 / Simple CNN, serialización para red |
+| `Model/cnn_extractor.py` | ~150 | CNNExtractor con ResNet-18 / SIMPLE CNN, serialización para red |
 | `Model/mlp_pytorch.py` | ~100 | MLPPyTorch clasificador, inicialización He, conversión numpy ↔ torch |
 | `Utils/imagenet_streaming.py` | ~400 | ImageNetStream (infinite), PrefetchBuffer (async), transforms, sharding |
 | `Utils/logging_util.py` | ~80 | FormattedLogger con timestamps, colores, tags |

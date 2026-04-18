@@ -10,26 +10,39 @@ ARQUITECTURAS:
                Se construye CONGELADA (requires_grad=False, eval).
                Semántica: extractor de características fijo.
 
-  "simple"   → ResNet-18 desde cero (sin pesos preentrenados).
-               Arquitectura estándar: Stem + 4 layers × 2 bloques + GAP + proj.
+  "simple"   → ResNet-18 canónico desde cero (sin pesos preentrenados).
+               Arquitectura estándar: Stem + 4 layers × 2 bloques + GAP.
                feature_dim = 512. Totalmente entrenable desde el inicio (requires_grad=True).
                Se construye ENTRENABLE (requires_grad=True, eval).
                Semántica: red entrenable end-to-end en modo E2E.
 
 ARQUITECTURA "simple" (SIMPLE CNN):
-  - 11.7M parámetros (vs 1.36M SimpleCNN anterior)
+  - 11.2M parámetros (vs 11.7M anterior con proj+Dropout redundantes)
   - Stride efectivo 32× (igual que resnet18 preentrenada)
   - Skip connections fuertes → gradientes fluyen correctamente en Async-SGD con staleness
   - BasicBlock(3x3) estándar: Conv→BN→ReLU→Conv→BN + shortcut
   - Inicialización Kaiming Normal para todos los Conv/Linear
-  - Dropout(0.5) antes de proyección final para regularización en 1000 clases
+  - GAP directo → 512-dim: sin Dropout ni proyección extra post-GAP
+
+POR QUÉ SIN DROPOUT POST-GAP:
+  El Dropout(0.5) post-GAP interferiere con BatchNorm en Async-SGD:
+    - BN asume distribución estable de activaciones: Dropout la altera estocásticamente
+    - Con staleness variable, los gradientes ya llegan atenuados por α(s)=1/(1+λ·s)
+    - Añadir ruido de Dropout encima introduce inestabilidad numérica innecesaria
+  La regularización en E2E viene del weight_decay=1e-4 en SGD (WorkerNode)
+  y del label_smoothing=0.1 en CrossEntropyLoss, ambos más estables que Dropout.
+
+POR QUÉ SIN PROYECCIÓN 512→512:
+  La proyección Linear(512→512) es semánticamente una identidad aprendida (~262K params).
+  El GAP ya produce exactamente FEATURE_DIM=512 tras Layer4.
+  Eliminarla equipara la arquitectura al ResNet-18 canónico de torchvision
+  y reduce el riesgo de colapso de representaciones en las primeras épocas E2E.
 
 MEJORAS PARA IMAGENET-1K DISTRIBUIDO:
-  - ResNet-18 es arquitectura validada, optimizada en PyTorch
-  - Suficiente capacidad para ImageNet (11.7K params/clase vs 1.4K anterior)
+  - ResNet-18 canónico es arquitectura validada, optimizada en PyTorch
+  - Suficiente capacidad para ImageNet (11.2M params)
   - Skip connections robustos para manejar staleness en Async-SGD
-  - Sin dependencia de pesos preentrenados → completamente "SIMPLE CNN"
-  - Fácil de debuggear y reproducir vs arquitecturas personalizadas
+  - Sin dependencia de pesos preentrenados → completamente "from scratch"
 
 CLAVE:
   El requires_grad se determina por arquitectura en __init__:
@@ -96,9 +109,6 @@ class _BasicBlock(nn.Module):
             Nada.
         :rtype:
             None
-
-        :raises:
-            No hay validación de rango en los parámetros.
 
         :examples:
             Crear un bloque basic que mantiene resolución (stride=1):
@@ -181,23 +191,24 @@ class _BasicBlock(nn.Module):
 
 
 # ================================================================
-# CNN SIMPLE MEJORADA
+# CNN SIMPLE: RESNET-18 CANÓNICO FROM SCRATCH
 # ================================================================
 
 
 class _ResNet18FromScratch(nn.Module):
     """
-    ResNet-18 estándar sin pesos preentrenados, entrenable desde el inicio.
+    ResNet-18 canónico sin pesos preentrenados, entrenable desde el inicio.
+
+    Arquitectura idéntica al ResNet-18 de torchvision, sin la capa fc final
+    (reemplazada por GAP directo → 512-dim). Sin Dropout ni proyección extra.
 
     Arquitectura:
-      Stem:   Conv(3→64, 7×7, stride=2) + MaxPool(3×3, stride=2) → stride 4×
+      Stem:   Conv(3→64, 7×7, stride=2) + BN + ReLU + MaxPool(3×3, stride=2) → stride 4×
       Layer1: BasicBlock(64→64,   stride=1) × 2  → 56×56
       Layer2: BasicBlock(64→128,  stride=2) × 2  → 28×28
       Layer3: BasicBlock(128→256, stride=2) × 2  → 14×14
       Layer4: BasicBlock(256→512, stride=2) × 2  → 7×7
-      GAP:    AdaptiveAvgPool2d(1×1)
-      Drop:   Dropout(p=0.5) para regularización fuerte
-      Proj:   Linear(512→512)
+      GAP:    AdaptiveAvgPool2d(1×1) → (B, 512)  [FEATURE_DIM, directo]
 
     Con imagen 224×224:
       Stem   →   56×56  (Conv 7×7 s=2 + MaxPool 3×3 s=2)
@@ -205,38 +216,45 @@ class _ResNet18FromScratch(nn.Module):
       Layer2 →   28×28  (stride=2)
       Layer3 →   14×14  (stride=2)
       Layer4 →    7×7   (stride=2)
-      GAP    →    1×1
-      Proj   →    512
+      GAP    →    1×1   → flatten → (B, 512)
 
     Stride efectivo total: 32× (igual que ResNet-18 preentrenada).
 
-    Parámetros: 11.7M (vs 1.36M SimpleCNN anterior)
-      - Layer1: 128K
-      - Layer2: 512K
-      - Layer3: 2.1M
-      - Layer4: 8.4M
-      Total (sin fc final): 11.2M
+    Parámetros: ~11.2M (vs 11.7M anterior; diferencia = proj 512→512 eliminada)
+      - Stem:   ~9.4K
+      - Layer1: ~148K
+      - Layer2: ~526K
+      - Layer3: ~2.1M
+      - Layer4: ~8.4M
+      Total: ~11.2M
 
-    Ventajas para Async-SGD distribuido:
-      - Suficiente capacidad para ImageNet-1K
-      - Skip connections fuertes → gradientes fluyen sin atenuación
-      - Arquitectura estándar → fácil validar y debuggear
-      - Zero-init BN final en cada bloque → estabiliza inicio E2E
+    Por qué sin Dropout post-GAP:
+      BatchNorm en cada bloque ya regulariza las activaciones intermedias.
+      En Async-SGD con staleness, los gradientes llegan atenuados por α(s).
+      Añadir Dropout post-GAP introduce ruido adicional que interfiere con BN
+      y desestabiliza el averaging del PS. La regularización viene de
+      weight_decay=1e-4 en SGD y label_smoothing=0.1 en CrossEntropyLoss.
+
+    Por qué sin proyección 512→512:
+      El GAP ya produce 512-dim (FEATURE_DIM). Una Linear(512→512) aprende
+      una transformación que tiende a la identidad, con ~262K parámetros extra
+      que ralentizan la convergencia en las primeras épocas sin beneficio claro.
+      El ResNet-18 canónico de torchvision (con fc eliminada) produce 512-dim
+      directamente desde GAP: ésta es la arquitectura de referencia.
     """
 
     def __init__(self) -> None:
         """
-        Construye ResNet-18 arquitectura estándar completamente inicializada desde cero.
+        Construye ResNet-18 canónico completamente inicializado desde cero.
 
         Sin parámetros: la arquitectura es fija y determinista.
 
         Inicialización:
             - Convolutions: Kaiming Normal con fan_out y nonlinearity='relu'
-            - BatchNorm: ones para weights, zeros para bias (excepto bloques que usan zero-init)
-            - Linear: Kaiming Normal con fan_out
+            - BatchNorm: ones para weights, zeros para bias (excepto bloques con zero-init)
             - Cada _BasicBlock: BN final con weight zero-init para estabilidad en E2E
 
-        Parámetros totales: ~11,439,168
+        Parámetros totales: ~11,176,512
 
         :returns:
             Nada. La red se inicializa en el constructor.
@@ -263,7 +281,7 @@ class _ResNet18FromScratch(nn.Module):
         """
         super().__init__()
 
-        # Stem: reducción inicial 224→56
+        # Stem: reducción inicial 224→56 (idéntico al ResNet-18 de torchvision)
         self.stem = nn.Sequential(
             nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3, bias=False),
             nn.BatchNorm2d(64),
@@ -271,16 +289,15 @@ class _ResNet18FromScratch(nn.Module):
             nn.MaxPool2d(kernel_size=3, stride=2, padding=1),
         )
 
-        # 4 layers, cada una con 2 bloques
+        # 4 layers, cada una con 2 bloques (arquitectura ResNet-18 canónica)
         self.layer1 = self._make_layer(64, 64, 2, stride=1)
         self.layer2 = self._make_layer(64, 128, 2, stride=2)
         self.layer3 = self._make_layer(128, 256, 2, stride=2)
         self.layer4 = self._make_layer(256, 512, 2, stride=2)
 
-        # Clasificador: GAP + Dropout + Proyección
+        # GAP directo → FEATURE_DIM=512 (sin Dropout ni proyección extra)
+        # Equivalente a torchvision.models.resnet18 con fc reemplazado por Identity()
         self.gap = nn.AdaptiveAvgPool2d(1)
-        self.dropout = nn.Dropout(p=0.5)
-        self.proj = nn.Linear(512, FEATURE_DIM)
 
         self._init_weights()
 
@@ -350,6 +367,7 @@ class _ResNet18FromScratch(nn.Module):
             - BatchNorm2d: weight=ones, bias=zeros
               (excepto bloques con zero-init en BN final)
             - Linear: Kaiming Normal, fan_out, nonlinearity='relu'
+              (no hay Linear en esta arquitectura; incluido por extensibilidad)
 
         Kaiming Normal es óptimo para redes profundas con ReLU.
         Mantiene varianza de activaciones constante a través de capas.
@@ -377,14 +395,12 @@ class _ResNet18FromScratch(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
-        Pase forward a través de ResNet-18 para extracción de características.
+        Pase forward a través de ResNet-18 canónico para extracción de características.
 
         Arquitectura del pipeline:
-            1. Stem: Conv(7×7, s=2) + MaxPool(3×3, s=2) → stride 4×
+            1. Stem: Conv(7×7, s=2) + BN + ReLU + MaxPool(3×3, s=2) → stride 4×
             2. Layer1-4: 8 bloques BasicBlock con stride submuestreo en layer2-4
-            3. GAP: AdaptiveAvgPool2d reduce spatial dims a 1×1
-            4. Dropout: Dropout(p=0.5) para regularización en entrenamiento
-            5. Proj: Linear(512→512) proyección final
+            3. GAP: AdaptiveAvgPool2d reduce spatial dims a 1×1 → flatten a (B, 512)
 
         Transformación espacial:
             - 224×224 → Stem → 56×56 (stride 4×)
@@ -392,10 +408,7 @@ class _ResNet18FromScratch(nn.Module):
             - 56×56 → Layer2 → 28×28 (stride 2)
             - 28×28 → Layer3 → 14×14 (stride 2)
             - 14×14 → Layer4 → 7×7 (stride 2)
-            - 7×7 → GAP → 1×1
-            - Vectorización → (B, 512)
-            - Dropout → (B, 512)
-            - Proj → (B, 512)
+            - 7×7 → GAP → 1×1 → flatten → (B, 512)
 
         Total stride: 32× (224→7 = 32×).
 
@@ -426,10 +439,9 @@ class _ResNet18FromScratch(nn.Module):
                 assert features.shape == (8, 512)
 
         :note:
-            - En entrenamiento: Dropout activo (estocástico)
-            - En evaluación: Dropout inactivo (determinista)
             - BatchNorm: usa running stats en eval(), actualiza en train()
             - Requiere model.train() o model.eval() antes de forward()
+            - Sin Dropout: determinista en eval() y train() (solo BN varía)
 
         :raises:
             RuntimeError si X tiene número de canales ≠ 3 o tipo incorrecto.
@@ -441,8 +453,7 @@ class _ResNet18FromScratch(nn.Module):
         x = self.layer4(x)  # (B,256,14,14) → (B,512,7,7)
         x = self.gap(x)  # (B,512,7,7)   → (B,512,1,1)
         x = x.flatten(1)  # (B,512,1,1)   → (B,512)
-        x = self.dropout(x)  # Dropout para regularización
-        return self.proj(x)  # (B,512) → (B,512)
+        return x  # FEATURE_DIM=512, directo sin proyección
 
 
 # ================================================================
@@ -466,6 +477,7 @@ class CNNExtractor:
         - Sin pesos preentrenados: inicialización desde cero
         - requires_grad=True: CNN ENTRENABLE, participa en backprop
         - Modo E2E: CNN + MLP se entrenan juntas
+        - Arquitectura canónica ResNet-18 (sin Dropout/proyección extra)
         - Ideal para: Async-SGD distribuido sin dependencia de pesos preentrenados
 
     **Comportamiento compartido**:
@@ -476,7 +488,7 @@ class CNNExtractor:
 
     :param arch:
         Arquitectura a seleccionar. Opciones: 'resnet18' (preentrenada),
-        'simple' (SIMPLE CNN). Default: 'resnet18'.
+        'simple' (SIMPLE CNN o ResNet-18 from scratch). Default: 'resnet18'.
     :type arch:
         str
 
@@ -559,7 +571,7 @@ class CNNExtractor:
 
         :param seed:
             Semilla RNG para reproducibilidad. Si None, no fija nada (aleatorio).
-            Solo afecta to arch='simple' (SIMPLE CNN).
+            Solo afecta a arch='simple' (SIMPLE CNN).
             No afecta a arch='resnet18' (pesos prefijos de ImageNet).
         :type seed:
             int | None
@@ -596,7 +608,7 @@ class CNNExtractor:
 
         :note:
             - requires_grad se establece UNA SOLA VEZ en __init__ y NO cambia
-            - model.train() / model.eval() controlaa BatchNorm pero NO afecta requires_grad
+            - model.train() / model.eval() controla BatchNorm pero NO afecta requires_grad
             - Para cambiar requires_grad después: usa p.requires_grad_(False) manualmente
             - Las correcciones distribuidas NO modifican requires_grad
         """
@@ -624,7 +636,7 @@ class CNNExtractor:
         Factory method que construye la arquitectura CNN especificada.
 
         Lógica:
-            - arch='simple': construye _ResNet18FromScratch() (sin pesos preentrenados)
+            - arch='simple': construye _ResNet18FromScratch() (ResNet-18 canónico sin pesos)
             - arch='resnet18': descarga ResNet-18 con pesos IMAGENET1K_V1 usando torchvision
 
         Esta es una función helper interna llamada solo desde __init__.
@@ -648,7 +660,7 @@ class CNNExtractor:
             nn.Module
 
         :raises ImportError:
-            Si arch='resnet18' y torchvision no está instaldo.
+            Si arch='resnet18' y torchvision no está instalado.
         :raises Exception:
             Si descarga de pesos ImageNet falla.
 
@@ -679,10 +691,10 @@ class CNNExtractor:
     @property
     def feature_dim(self) -> int:
         """
-        Propiedad read-only: dimensión de características extradas.
+        Propiedad read-only: dimensión de características extraídas.
 
         La CNN produce vectores de features de 512 dimensiones para ambas
-        arquitecturas (resnet18 preentrenada y sSIMPLE CNN).
+        arquitecturas (resnet18 preentrenada y SIMPLE CNN).
 
         El MLP clasificador usa este valor para dimensionar su capa de entrada:
         MLP(feature_dim, hidden1, hidden2, n_classes=1000).
@@ -704,7 +716,6 @@ class CNNExtractor:
 
         :note:
             Constante global FEATURE_DIM=512 (no configurable per-instancia).
-            Cambiar requeriría modificar el último Linear(512→1000) en CNNExtractor.
         """
         return FEATURE_DIM
 
@@ -720,7 +731,7 @@ class CNNExtractor:
             3. Retorna bytes completos (incluyendo metadata de PyTorch)
 
         Tamaño aproximado:
-            - ResNet-18 (11.7M params): ~46.8 MB
+            - ResNet-18 preentrenada (11.2M params): ~44.9 MB
             - Similar para ambas arquitecturas (mismo tamaño state_dict)
 
         Use case:
@@ -741,7 +752,7 @@ class CNNExtractor:
                 cnn = CNNExtractor(arch='simple', device='cpu')
                 weights_bytes = cnn._get_weights_bytes()
                 print(f"Serialized size: {len(weights_bytes) / (1024**2):.1f} MB")
-                # Output: Serialized size: 45.8 MB
+                # Output: Serialized size: ~44.9 MB
 
                 # Enviar por TCP...
                 # En Worker: cnn_worker.load_weights_from_bytes(weights_bytes)
@@ -749,7 +760,6 @@ class CNNExtractor:
         :note:
             - Usa torch.save() internamente (protocol=HIGHEST_PROTOCOL)
             - Contiene metadata de tipos, shapes, versiones PyTorch
-            - Overhead: ~2-5% arriba del tamaño bruto de parámetros
             - requires_grad NO se serializa (se preserva en deserialización)
         """
         buf = io.BytesIO()
