@@ -539,7 +539,20 @@ Si congeláramos CNN permanentemente, solo entrenarían los 3-4% de parámetros 
 
 **Loss: CrossEntropyLoss**
 
-Combina log_softmax + NllLoss. Matemáticamente: loss = -log(exp(logit[label]) / sum(exp(logits))).
+Combina log_softmax + NllLoss. Matemáticamente: 
+
+$$L = -\frac{1}{N} \sum_{i=1}^{N} \sum_{k=1}^{K} p_i^{(k)} \ln(q_i^{(k)})$$
+
+donde $p_i^{(k)}$ es la distribución de probabilidad suavizada (con label_smoothing=0.1) y $q_i^{(k)}$ es la predicción softmax del modelo.
+
+**Unidades del Loss: Nats (información natural)**
+
+PyTorch implementa CrossEntropyLoss usando logaritmo natural (ln, base e), no log₂:
+- **Peor caso**: ~7.0 Nats (predicción uniforme aleatoria sobre 1000 clases)
+- **Modelo en convergencia**: ~0.1-1.0 Nats
+- **Excelente modelo**: <0.1 Nats
+
+Para convertir a bits (log₂): Loss_bits = Loss_Nats ÷ ln(2) ≈ Loss_Nats ÷ 0.693
 
 **Optimizador: SGD puro (Stochastic Gradient Descent)**
 

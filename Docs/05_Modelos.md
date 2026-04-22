@@ -578,6 +578,13 @@ Gradients en MLP params (fc1, fc2, fc3) ✓ SE COMPUTAN Y SE USAN
 Gradients en CNN params (11.2M params) ✓ SE COMPUTAN Y SE USAN (SIMPLE CNN)
 ```
 
+**⚠️ Nota sobre unidades del Loss:**
+
+El loss reportado está en **Nats** (información natural, usando logaritmo natural). Esto es estándar en PyTorch:
+- **Valor típico inicio**: ~6.9-7.0 Nats (predicción uniforme aleatoria sobre 1000 clases)
+- **Valor esperado convergencia**: ~0.1-1.0 Nats  
+- Para convertir a bits (log₂): Loss_bits = Loss_Nats ÷ 0.693
+
 ### Flujo MLP-Only (ResNet-18)
 
 ```
