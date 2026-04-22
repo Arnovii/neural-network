@@ -817,15 +817,18 @@ class ParameterServer:
         if self.on_step:
             self.on_step(step, loss, acc, staleness)
 
-        # Registra métrica en exportador de resultados
+        n = self._metrics.total_batches
+        if n > 0:
+            avg_loss, avg_acc = self._metrics.snapshot()
+        else:
+            avg_loss, avg_acc = loss, acc
+
         if self._results_exporter is not None:
             with self._workers_lock:
                 n_workers = len(self._sockets)
-            self._results_exporter.record_metric(step, loss, acc, n_workers)
+            self._results_exporter.record_metric(step, avg_loss, avg_acc, n_workers)
 
-        n = self._metrics.total_batches
         if n > 0 and n % self.steps_per_report == 0:
-            avg_loss, avg_acc = self._metrics.snapshot()
             with self._workers_lock:
                 n_workers = len(self._sockets)
             self._record_history(step, avg_loss, avg_acc, n_workers)

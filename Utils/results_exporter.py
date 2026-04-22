@@ -25,11 +25,10 @@ ESTRUCTURA DE SALIDA:
     ├── config.json           # Configuración del experimento
     ├── metrics.csv           # Series de tiempo: step, loss, acc, workers
     ├── ps_logs.txt           # Todos los logs del PS
-    ├── plot_3panels.png      # 3 gráficas combinadas (loss/acc/workers)
-    ├── plot_loss.png         # Gráfica individual de Loss (idéntica al panel 1)
-    ├── plot_accuracy.png     # Gráfica individual de Accuracy (idéntica al panel 2)
-    ├── plot_workers.png      # Gráfica individual de Workers (idéntica al panel 3)
-    ├── plot_comparison.png   # Loss vs Accuracy con ejes Y duales
+    ├── plot_3panels.png      # 3 gráficas horizontales (loss/acc/workers)
+    ├── plot_loss.png         # Gráfica individual de Loss
+    ├── plot_accuracy.png     # Gráfica individual de Accuracy
+    ├── plot_workers.png      # Gráfica individual de Workers
     └── metadata.json         # Estadísticas finales (min/max loss, acc, etc.)
 
 CARACTERÍSTICAS DE ESCALAS:
@@ -224,17 +223,15 @@ class ResultsExporter:
         metrics_file = self.session_dir / "metrics.csv"
 
         with open(metrics_file, "w", encoding="utf-8") as f:
-            # Header
             f.write("step,loss,accuracy,num_workers\n")
 
-            # Data
             for step, loss, acc, workers in zip(
                 self._metrics_steps,
                 self._metrics_loss,
                 self._metrics_accuracy,
                 self._metrics_workers,
             ):
-                f.write(f"{step},{loss:.6f},{acc:.6f},{workers}\n")
+                f.write(f"{step},{loss:.4f},{acc:.2f}%,{workers}\n")
 
     def _write_logs(self) -> None:
         """Escribe todos los logs en un archivo de texto."""
@@ -258,42 +255,40 @@ class ResultsExporter:
     def _generate_plots(self) -> None:
         """Genera gráficas de resultados: combinada + individuales."""
         if len(self._metrics_steps) == 0:
-            # Sin datos, no generar gráficas
             return
 
-        # Convertir deques a numpy arrays
         steps = np.array(list(self._metrics_steps))
         losses = np.array(list(self._metrics_loss))
         accuracies = np.array(list(self._metrics_accuracy))
         workers_count = np.array(list(self._metrics_workers))
 
         try:
-            # Gráfica 1: 3 paneles con escalas independientes
             self._plot_3panels(steps, losses, accuracies, workers_count)
-        except Exception as e:
-            self.record_log(f"ERROR en _plot_3panels: {e}")
+        except Exception:
+            import traceback
+
+            traceback.print_exc()
 
         try:
-            # Gráficas individuales (iguales a los paneles del 3-panel)
             self._plot_individual_loss(steps, losses)
-        except Exception as e:
-            self.record_log(f"ERROR en _plot_individual_loss: {e}")
+        except Exception:
+            import traceback
+
+            traceback.print_exc()
 
         try:
             self._plot_individual_accuracy(steps, accuracies)
-        except Exception as e:
-            self.record_log(f"ERROR en _plot_individual_accuracy: {e}")
+        except Exception:
+            import traceback
+
+            traceback.print_exc()
 
         try:
             self._plot_individual_workers(steps, workers_count)
-        except Exception as e:
-            self.record_log(f"ERROR en _plot_individual_workers: {e}")
+        except Exception:
+            import traceback
 
-        try:
-            # Gráfica 2: Loss y Accuracy con ejes duales
-            self._plot_comparison(steps, losses, accuracies)
-        except Exception as e:
-            self.record_log(f"ERROR en _plot_comparison: {e}")
+            traceback.print_exc()
 
     def _plot_3panels(
         self,
@@ -302,242 +297,104 @@ class ResultsExporter:
         accuracies: np.ndarray,
         workers_count: np.ndarray,
     ) -> None:
-        """
-        Genera gráfica con 3 paneles: loss, accuracy, workers.
-        Cada uno con su propia escala dinámica basada en los datos.
-        """
-        fig = plt.figure(figsize=(14, 10))
-        gs = GridSpec(3, 1, figure=fig, hspace=0.35)
+        """Genera gráfica con 3 paneles horizontales: loss, accuracy, workers."""
+        fig = plt.figure(figsize=(13, 4), dpi=95)
+        gs = GridSpec(1, 3, figure=fig, wspace=0.35)
 
-        # Color scheme profesional
-        color_loss = "#E74C3C"
-        color_acc = "#27AE60"
-        color_workers = "#3498DB"
+        color_loss = "#F44336"
+        color_acc = "#2196F3"
+        color_workers = "#4CAF50"
 
-        # Panel 1: Loss (escala auto con margen superior)
         ax1 = fig.add_subplot(gs[0])
-        ax1.plot(steps, losses, color=color_loss, linewidth=2, marker="o", markersize=3)
-        ax1.set_xlabel("Training Step", fontsize=11, fontweight="bold")
-        ax1.set_ylabel("Loss", fontsize=11, fontweight="bold", color=color_loss)
-        ax1.tick_params(axis="y", labelcolor=color_loss)
-        ax1.grid(True, alpha=0.15, linestyle="--")  # Líneas menos opacas
-        ax1.set_title("Loss Evolution", fontsize=12, fontweight="bold")
-        
-        # Escala dinámica: 10% de margen superior
-        loss_max = np.max(losses)
-        loss_min = np.min(losses)
-        loss_range = loss_max - loss_min if loss_max > loss_min else 1
-        ax1.set_ylim(loss_min - 0.05 * loss_range, loss_max + 0.1 * loss_range)
+        ax1.plot(steps, losses, "-o", color=color_loss, lw=2, ms=3, label="Train")
+        ax1.scatter(steps, losses, color=color_loss, s=30, zorder=5, label="Val")
+        ax1.set_title("Pérdida (ventana deslizante)")
+        ax1.set_xlabel("Steps")
+        ax1.set_ylabel("Loss")
+        ax1.grid(True, alpha=0.3)
+        ax1.legend(fontsize=8)
 
-        # Panel 2: Accuracy (escala dinámica con margen superior)
         ax2 = fig.add_subplot(gs[1])
-        ax2.plot(
-            steps, accuracies, color=color_acc, linewidth=2, marker="s", markersize=3
-        )
-        ax2.set_xlabel("Training Step", fontsize=11, fontweight="bold")
-        ax2.set_ylabel("Accuracy", fontsize=11, fontweight="bold", color=color_acc)
-        ax2.tick_params(axis="y", labelcolor=color_acc)
-        ax2.grid(True, alpha=0.4, linestyle="--", linewidth=0.7)
-        
-        # Escala dinámica: calcular techo para que el máximo tenga espacio arriba
-        acc_max = np.max(accuracies)
-        acc_min = np.min(accuracies) if np.min(accuracies) > 0 else 0
-        # Margen superior: 20% del máximo o al menos 0.05
-        acc_top_margin = max(0.05, acc_max * 0.20)
-        ax2.set_ylim(0, acc_max + acc_top_margin)
-        
-        # Líneas de referencia horizontales
-        for y_val in np.linspace(0, acc_max + acc_top_margin, 5)[1:-1]:
-            ax2.axhline(y=y_val, color="gray", alpha=0.15, linestyle=":", linewidth=0.8)
-        
-        ax2.set_title("Accuracy Evolution", fontsize=12, fontweight="bold")
+        ax2.plot(steps, accuracies, "-o", color=color_acc, lw=2, ms=3, label="Train")
+        ax2.scatter(steps, accuracies, color=color_acc, s=30, zorder=5, label="Val")
+        ax2.set_title("Precisión (ventana deslizante)")
+        ax2.set_xlabel("Steps")
+        ax2.set_ylabel("Precisión (%)")
+        ax2.grid(True, alpha=0.3)
+        ax2.set_ylim(0, 100)
+        ax2.legend(fontsize=8)
 
-        # Panel 3: Workers (escala auto con margen superior)
         ax3 = fig.add_subplot(gs[2])
-        ax3.plot(
-            steps,
-            workers_count,
-            color=color_workers,
-            linewidth=2,
-            marker="^",
-            markersize=3,
-        )
-        ax3.set_xlabel("Training Step", fontsize=11, fontweight="bold")
-        ax3.set_ylabel(
-            "Connected Workers", fontsize=11, fontweight="bold", color=color_workers
-        )
-        ax3.tick_params(axis="y", labelcolor=color_workers)
-        ax3.grid(True, alpha=0.15, linestyle="--")  # Líneas menos opacas
-        ax3.set_title("Active Workers Over Time", fontsize=12, fontweight="bold")
-        
-        # Escala dinámica con margen superior
-        workers_max = np.max(workers_count)
-        workers_range = workers_max if workers_max > 0 else 1
-        ax3.set_ylim(0, workers_max + 0.15 * workers_range)
+        ax3.step(steps, workers_count, color=color_workers, lw=2)
+        ax3.set_title("Workers activos")
+        ax3.set_xlabel("Steps")
+        ax3.set_ylabel("N Workers")
+        ax3.grid(True, alpha=0.3)
+        ax3.set_ylim(0, max(workers_count) + 1)
 
-        # Título general
-        fig.suptitle(
-            "Distributed Async-SGD Training Metrics",
-            fontsize=14,
-            fontweight="bold",
-            y=0.98,
-        )
-
-        # Ajustes de espaciado
-        fig.subplots_adjust(top=0.93, bottom=0.08)
-
-        # Guardar
+        fig.subplots_adjust(left=0.05, right=0.98, top=0.92, bottom=0.15)
         output_path = self.session_dir / "plot_3panels.png"
-        plt.savefig(output_path, dpi=300, bbox_inches="tight", pad_inches=0.3)
+        plt.savefig(output_path, dpi=300)
         plt.close()
 
     def _plot_individual_loss(self, steps: np.ndarray, losses: np.ndarray) -> None:
-        """Genera gráfica individual de Loss (idéntica al panel 1 del 3-panel)."""
+        """Genera gráfica individual de Loss (estilo idéntico a la GUI)."""
         fig, ax = plt.subplots(figsize=(10, 6))
-        
-        color_loss = "#E74C3C"
-        ax.plot(steps, losses, color=color_loss, linewidth=2, marker="o", markersize=4)
-        ax.set_xlabel("Training Step", fontsize=11, fontweight="bold")
-        ax.set_ylabel("Loss", fontsize=11, fontweight="bold", color=color_loss)
-        ax.tick_params(axis="y", labelcolor=color_loss)
-        ax.grid(True, alpha=0.15, linestyle="--")
-        ax.set_title("Loss Evolution", fontsize=13, fontweight="bold")
-        
-        # Escala dinámica
-        loss_max = np.max(losses)
-        loss_min = np.min(losses)
-        loss_range = loss_max - loss_min if loss_max > loss_min else 1
-        ax.set_ylim(loss_min - 0.05 * loss_range, loss_max + 0.1 * loss_range)
-        
+
+        color_loss = "#F44336"
+
+        ax.plot(steps, losses, "-o", color=color_loss, lw=2, ms=3, label="Train")
+        ax.scatter(steps, losses, color=color_loss, s=30, zorder=5, label="Val")
+        ax.set_title("Pérdida (ventana deslizante)")
+        ax.set_xlabel("Steps")
+        ax.set_ylabel("Loss")
+        ax.grid(True, alpha=0.3)
+        ax.legend(fontsize=8)
+
         plt.tight_layout()
         output_path = self.session_dir / "plot_loss.png"
         plt.savefig(output_path, dpi=300, bbox_inches="tight")
         plt.close()
 
-    def _plot_individual_accuracy(self, steps: np.ndarray, accuracies: np.ndarray) -> None:
-        """Genera gráfica individual de Accuracy (idéntica al panel 2 del 3-panel)."""
+    def _plot_individual_accuracy(
+        self, steps: np.ndarray, accuracies: np.ndarray
+    ) -> None:
+        """Genera gráfica individual de Accuracy (estilo idéntico a la GUI)."""
         fig, ax = plt.subplots(figsize=(10, 6))
-        
-        color_acc = "#27AE60"
-        ax.plot(steps, accuracies, color=color_acc, linewidth=2, marker="s", markersize=4)
-        ax.set_xlabel("Training Step", fontsize=11, fontweight="bold")
-        ax.set_ylabel("Accuracy", fontsize=11, fontweight="bold", color=color_acc)
-        ax.tick_params(axis="y", labelcolor=color_acc)
-        ax.grid(True, alpha=0.4, linestyle="--", linewidth=0.7)
-        ax.set_title("Accuracy Evolution", fontsize=13, fontweight="bold")
-        
-        # Escala dinámica: margen superior para visualización clara
-        acc_max = np.max(accuracies)
-        acc_top_margin = max(0.05, acc_max * 0.20)
-        ax.set_ylim(0, acc_max + acc_top_margin)
-        
-        # Líneas de referencia
-        for y_val in np.linspace(0, acc_max + acc_top_margin, 5)[1:-1]:
-            ax.axhline(y=y_val, color="gray", alpha=0.15, linestyle=":", linewidth=0.8)
-        
+
+        color_acc = "#2196F3"
+
+        ax.plot(steps, accuracies, "-o", color=color_acc, lw=2, ms=3, label="Train")
+        ax.scatter(steps, accuracies, color=color_acc, s=30, zorder=5, label="Val")
+        ax.set_title("Precisión (ventana deslizante)")
+        ax.set_xlabel("Steps")
+        ax.set_ylabel("Precisión (%)")
+        ax.grid(True, alpha=0.3)
+        ax.set_ylim(0, 100)
+        ax.legend(fontsize=8)
+
         plt.tight_layout()
         output_path = self.session_dir / "plot_accuracy.png"
         plt.savefig(output_path, dpi=300, bbox_inches="tight")
         plt.close()
 
-    def _plot_individual_workers(self, steps: np.ndarray, workers_count: np.ndarray) -> None:
-        """Genera gráfica individual de Workers (idéntica al panel 3 del 3-panel)."""
+    def _plot_individual_workers(
+        self, steps: np.ndarray, workers_count: np.ndarray
+    ) -> None:
+        """Genera gráfica individual de Workers (estilo idéntico a la GUI)."""
         fig, ax = plt.subplots(figsize=(10, 6))
-        
-        color_workers = "#3498DB"
-        ax.plot(steps, workers_count, color=color_workers, linewidth=2, marker="^", markersize=4)
-        ax.set_xlabel("Training Step", fontsize=11, fontweight="bold")
-        ax.set_ylabel("Connected Workers", fontsize=11, fontweight="bold", color=color_workers)
-        ax.tick_params(axis="y", labelcolor=color_workers)
-        ax.grid(True, alpha=0.15, linestyle="--")
-        ax.set_title("Active Workers Over Time", fontsize=13, fontweight="bold")
-        
-        # Escala dinámica
-        workers_max = np.max(workers_count)
-        workers_range = workers_max if workers_max > 0 else 1
-        ax.set_ylim(0, workers_max + 0.15 * workers_range)
-        
+
+        color_workers = "#4CAF50"
+
+        ax.step(steps, workers_count, color=color_workers, lw=2)
+        ax.set_title("Workers activos")
+        ax.set_xlabel("Steps")
+        ax.set_ylabel("N Workers")
+        ax.grid(True, alpha=0.3)
+        ax.set_ylim(0, max(workers_count) + 1)
+
         plt.tight_layout()
         output_path = self.session_dir / "plot_workers.png"
-        plt.savefig(output_path, dpi=300, bbox_inches="tight")
-        plt.close()
-
-    def _plot_comparison(
-        self,
-        steps: np.ndarray,
-        losses: np.ndarray,
-        accuracies: np.ndarray,
-    ) -> None:
-        """
-        Genera gráfica con loss y accuracy usando dos ejes Y.
-        Cada métrica en su escala natural para claridad.
-        """
-        fig, ax1 = plt.subplots(figsize=(12, 6))
-
-        color_loss = "#E74C3C"
-        color_acc = "#27AE60"
-
-        # Eje izquierdo: Loss
-        ax1.set_xlabel("Training Step", fontsize=11, fontweight="bold")
-        ax1.set_ylabel("Loss", fontsize=11, fontweight="bold", color=color_loss)
-        line1 = ax1.plot(
-            steps,
-            losses,
-            color=color_loss,
-            linewidth=2.5,
-            marker="o",
-            markersize=5,
-            label="Loss",
-        )
-        ax1.tick_params(axis="y", labelcolor=color_loss)
-        ax1.grid(True, alpha=0.3, linestyle="--")
-        
-        # Escala dinámica para Loss
-        loss_max = np.max(losses)
-        loss_min = np.min(losses)
-        loss_range = loss_max - loss_min if loss_max > loss_min else 1
-        ax1.set_ylim(loss_min - 0.05 * loss_range, loss_max + 0.1 * loss_range)
-
-        # Eje derecho: Accuracy
-        ax2 = ax1.twinx()
-        ax2.set_ylabel("Accuracy", fontsize=11, fontweight="bold", color=color_acc)
-        line2 = ax2.plot(
-            steps,
-            accuracies,
-            color=color_acc,
-            linewidth=2.5,
-            marker="s",
-            markersize=5,
-            label="Accuracy",
-        )
-        ax2.tick_params(axis="y", labelcolor=color_acc)
-        
-        # Escala dinámica para Accuracy con margen superior
-        acc_max = np.max(accuracies)
-        acc_top_margin = max(0.05, acc_max * 0.20)
-        ax2.set_ylim(0, acc_max + acc_top_margin)
-        
-        # Líneas guías visibles en el eje derecho (Accuracy)
-        for y_val in np.linspace(0, acc_max + acc_top_margin, 5)[1:-1]:
-            ax2.axhline(y=y_val, color=color_acc, alpha=0.15, linestyle=":", linewidth=1)
-
-        # Leyenda combinada
-        lines = line1 + line2
-        labels = [str(l.get_label()) for l in lines]
-        ax1.legend(lines, labels, loc="upper left", fontsize=10)
-
-        # Título
-        fig.suptitle(
-            "Training Progress: Loss vs Accuracy",
-            fontsize=14,
-            fontweight="bold",
-            y=0.98,
-        )
-
-        plt.tight_layout()
-
-        # Guardar
-        output_path = self.session_dir / "plot_comparison.png"
         plt.savefig(output_path, dpi=300, bbox_inches="tight")
         plt.close()
 
