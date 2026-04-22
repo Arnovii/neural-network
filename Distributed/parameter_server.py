@@ -54,6 +54,7 @@ import torch
 from Distributed.protocol import MsgType, receive_message, send_message
 from Model.cnn_extractor import CNNExtractor
 from Utils.logging_util import get_logger
+from Utils.results_exporter import ResultsExporter
 
 _log = get_logger(use_colors=True)
 
@@ -169,6 +170,7 @@ class ParameterServer:
         batch_size: int = 64,
         image_size: int = 224,
         seed: int | None = None,
+        export_dir: str = "./Exports",
         on_step: Callable | None = None,
         on_report: Callable | None = None,
         on_worker_connected: Callable | None = None,
@@ -212,6 +214,9 @@ class ParameterServer:
         :param seed: Semilla RNG para reproducibilidad (None = aleatorio, enviado en CONFIG).
         :type seed: int | None
 
+        :param export_dir: Directorio base para exportar resultados (defecto: ./Exports)
+        :type export_dir: str
+
         :param on_step: Callback tras cada step de gradiente.
                        Firma: Callable[[int, float, float, float], None]
                        Args: (step, loss, acc, staleness_factor)
@@ -241,6 +246,7 @@ class ParameterServer:
         self.batch_size = batch_size
         self.image_size = image_size
         self.seed = seed
+        self.export_dir = export_dir
 
         self.on_step = on_step
         self.on_report = on_report
@@ -252,8 +258,8 @@ class ParameterServer:
         self._cnn_state: Dict[str, np.ndarray] = {}
 
         # Keys de BN que NO se promedian (contador interno, no parámetro)
-        self._no_avg_keys: set = set()       # BN buffers de CNN (no promediar)
-        self._no_avg_mlp_keys: set = set()   # BN buffers de MLP (no promediar)
+        self._no_avg_keys: set = set()  # BN buffers de CNN (no promediar)
+        self._no_avg_mlp_keys: set = set()  # BN buffers de MLP (no promediar)
 
         # Evita corrupción cuando múltiples workers actualizan
         self._params_lock = threading.Lock()
@@ -290,6 +296,9 @@ class ParameterServer:
         self._server_sock: socket.socket | None = None
         self._accept_thread: threading.Thread | None = None
         self._shutdown = threading.Event()
+
+        # Exportador de resultados (desacoplado, se inicializa posteriormente)
+        self._results_exporter: ResultsExporter | None = None
 
     # ================================================================
     # CONFIGURACIÓN
@@ -357,7 +366,11 @@ class ParameterServer:
         # Detecta keys de BN que NO deben promediarse
         no_avg: set = set()
         for key, arr in mlp_state.items():
-            if "running_mean" in key or "running_var" in key or "num_batches_tracked" in key:
+            if (
+                "running_mean" in key
+                or "running_var" in key
+                or "num_batches_tracked" in key
+            ):
                 no_avg.add(key)
         with self._params_lock:
             self._mlp_state = {key: value.copy() for key, value in mlp_state.items()}
@@ -375,6 +388,25 @@ class ParameterServer:
         if self._server_sock is not None:
             raise RuntimeError("El servidor ya está escuchando.")
         self._shutdown.clear()
+
+        # Inicializa exportador de resultados
+        config = {
+            "lr": self.learning_rate,
+            "lr_cnn": self.learning_rate_cnn,
+            "staleness_lambda": self.staleness_lambda,
+            "batch_size": self.batch_size,
+            "image_size": self.image_size,
+            "seed": self.seed,
+            "host": self.host,
+            "port": self.port,
+            "description": "Distributed Async-SGD on ImageNet-1k",
+        }
+        self._results_exporter = ResultsExporter(
+            config=config, export_dir=self.export_dir
+        )
+
+        # Registra handler de logs en el logger global
+        _log.add_log_handler(self._results_exporter.record_log)
 
         # AF_INET -> IPv4
         # SOCK_STREAM -> TCP
@@ -418,6 +450,15 @@ class ParameterServer:
             self._server_sock = None
         if self._accept_thread:
             self._accept_thread.join(timeout=3)
+
+        # Finaliza exportador de resultados
+        if self._results_exporter is not None:
+            # Desregistra handler de logs
+            _log.remove_log_handler(self._results_exporter.record_log)
+            # Finaliza y exporta
+            export_path = self._results_exporter.finalize()
+            _log.ps(f"Resultados exportados a: {export_path}")
+
         _log.ps("Servidor detenido.")
 
     @property
@@ -775,6 +816,12 @@ class ParameterServer:
         self._metrics.update(loss, acc)
         if self.on_step:
             self.on_step(step, loss, acc, staleness)
+
+        # Registra métrica en exportador de resultados
+        if self._results_exporter is not None:
+            with self._workers_lock:
+                n_workers = len(self._sockets)
+            self._results_exporter.record_metric(step, loss, acc, n_workers)
 
         n = self._metrics.total_batches
         if n > 0 and n % self.steps_per_report == 0:

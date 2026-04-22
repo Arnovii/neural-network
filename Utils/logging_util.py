@@ -1,5 +1,7 @@
 """Utils/logging_util.py — Logger unificado para el sistema distribuido."""
 
+from typing import Callable, List
+
 
 class FormattedLogger:
     PHASES = {
@@ -29,6 +31,24 @@ class FormattedLogger:
         :rtype: None
         """
         self.use_colors = use_colors
+        self._log_handlers: List[Callable[[str], None]] = []
+
+    def add_log_handler(self, handler: Callable[[str], None]) -> None:
+        """
+        Registra un handler para recibir copias de todos los logs.
+
+        El handler se llamará después de cada log() con el texto completo formateado.
+
+        :param handler: Función Callable[[str], None] que recibe el texto de log
+        :type handler: Callable[[str], None]
+        """
+        if handler not in self._log_handlers:
+            self._log_handlers.append(handler)
+
+    def remove_log_handler(self, handler: Callable[[str], None]) -> None:
+        """Elimina un handler de log registrado."""
+        if handler in self._log_handlers:
+            self._log_handlers.remove(handler)
 
     def _fmt(self, phase: str) -> str:
         """
@@ -82,7 +102,15 @@ class FormattedLogger:
             parts.append(f"({progress})")
         if metric:
             parts.append(f"| {metric}")
-        print(" ".join(parts), flush=True)
+        full_msg = " ".join(parts)
+        print(full_msg, flush=True)
+
+        # Notifica a handlers registrados
+        for handler in self._log_handlers:
+            try:
+                handler(full_msg)
+            except Exception:
+                pass  # Ignora errores en handlers para no romper el logging
 
     def ps(self, msg: str, progress=None, metric=None):
         """

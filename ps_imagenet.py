@@ -20,6 +20,7 @@ OPCIONES:
     --steps-per-report  Steps entre reportes de métricas       (default: 500)
     --max-steps         Detener tras N steps (0 = indefinido)  (default: 0)
     --metrics-window    Tamaño ventana deslizante de métricas  (default: 200)
+    --export-dir        Directorio para exportar resultados    (default: ./Exports)
     --hf-token          Token HuggingFace (o usar HF_TOKEN env)
 
 NOTA: El número de workers es dinámico. Los workers se conectan y desconectan
@@ -33,6 +34,9 @@ EJEMPLO — Entrenamiento con workers dinámicos:
 
 EJEMPLO — ResNet-18 + GPU Workers:
     python ps_imagenet.py --lr 0.001 --staleness-lambda 0.05 --max-steps 100000
+
+EJEMPLO — Exportar a directorio personalizado:
+    python ps_imagenet.py --export-dir ./results_exp1 --max-steps 10000
 """
 
 import argparse
@@ -110,6 +114,12 @@ def main() -> None:
         default=None,
         help="Token HuggingFace (alternativa: variable HF_TOKEN)",
     )
+    parser.add_argument(
+        "--export-dir",
+        type=str,
+        default="./Exports",
+        help="Directorio para exportar resultados",
+    )
     args = parser.parse_args()
 
     # HF token: argumento CLI tiene prioridad sobre variable de entorno
@@ -130,6 +140,7 @@ def main() -> None:
     print(f"  Staleness λ       : {args.staleness_lambda}")
     print(f"  Steps/reporte     : {args.steps_per_report}")
     print(f"  Max steps         : {args.max_steps or '∞'}")
+    print(f"  Export dir        : {args.export_dir}")
     print(
         f"  HF Token          : {'✓ configurado' if hf_token else '✗ no configurado'}"
     )
@@ -266,6 +277,7 @@ def main() -> None:
         batch_size=args.batch_size,
         image_size=args.image_size,
         seed=args.seed,
+        export_dir=args.export_dir,
         on_step=on_step,
         on_report=on_report,
         on_worker_connected=on_connected,
