@@ -124,6 +124,9 @@ class ResultsExporter:
         self._metrics_loss: deque = deque(maxlen=metrics_window)
         self._metrics_accuracy: deque = deque(maxlen=metrics_window)
         self._metrics_workers: deque = deque(maxlen=metrics_window)
+        self._metrics_elapsed: deque = deque(
+            maxlen=metrics_window
+        )  # Tiempo elapsed en segundos
         self._logs: List[str] = []
 
         # Estadísticas para reporte final
@@ -136,6 +139,7 @@ class ResultsExporter:
         loss: float,
         accuracy: float,
         num_workers: int,
+        elapsed: float = 0.0,
     ) -> None:
         """
         Registra un punto de métrica.
@@ -147,12 +151,14 @@ class ResultsExporter:
         :param loss: Valor de loss
         :param accuracy: Valor de accuracy (0-1)
         :param num_workers: Número de workers conectados
+        :param elapsed: Tiempo elapsed en segundos desde inicio del entrenamiento
         """
         with self._lock:
             self._metrics_steps.append(step)
             self._metrics_loss.append(loss)
             self._metrics_accuracy.append(accuracy)
             self._metrics_workers.append(num_workers)
+            self._metrics_elapsed.append(elapsed)
             self._total_metrics += 1
 
     def record_log(self, text: str) -> None:
@@ -223,15 +229,16 @@ class ResultsExporter:
         metrics_file = self.session_dir / "metrics.csv"
 
         with open(metrics_file, "w", encoding="utf-8") as f:
-            f.write("step,loss,accuracy,num_workers\n")
+            f.write("step,loss,accuracy,num_workers,elapsed_seconds\n")
 
-            for step, loss, acc, workers in zip(
+            for step, loss, acc, workers, elapsed in zip(
                 self._metrics_steps,
                 self._metrics_loss,
                 self._metrics_accuracy,
                 self._metrics_workers,
+                self._metrics_elapsed,
             ):
-                f.write(f"{step},{loss:.4f},{acc:.2f}%,{workers}\n")
+                f.write(f"{step},{loss:.4f},{acc:.2f}%,{workers},{elapsed:.1f}\n")
 
     def _write_logs(self) -> None:
         """Escribe todos los logs en un archivo de texto."""

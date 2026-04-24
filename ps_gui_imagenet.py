@@ -196,6 +196,8 @@ class PSApp:
         self._val_acc: list = []
         self._workers_hist: list = []
         self._t_start: float = 0.0
+        self._clock_start: float = 0.0  # Clock: tiempo de inicio
+        self._clock_running: bool = False  # Clock: corriendo flag
         self._status = tk.StringVar(value="Listo.")
 
         # Referencia al campo LR CNN para habilitarlo/deshabilitarlo según arch
@@ -524,7 +526,14 @@ class PSApp:
         self._m_loss = tk.StringVar(value="Loss: —")
         self._m_acc = tk.StringVar(value="Acc: —")
         self._m_stale = tk.StringVar(value="Staleness: —")
-        for v in (self._m_step, self._m_loss, self._m_acc, self._m_stale):
+        self._m_clock = tk.StringVar(value="Clock: —")
+        for v in (
+            self._m_step,
+            self._m_loss,
+            self._m_acc,
+            self._m_stale,
+            self._m_clock,
+        ):
             ttk.Label(m_row, textvariable=v, font=("Courier", 9)).pack(
                 side=tk.LEFT, padx=10
             )
@@ -853,11 +862,11 @@ class PSApp:
                     image_size=img_sz,
                     seed=seed,
                     hf_token=hf_token,
-                    on_step=lambda step, loss, acc, stale: q.put(
-                        ("step", (step, loss, acc, stale))
+                    on_step=lambda step, loss, acc, stale, elapsed: q.put(
+                        ("step", (step, loss, acc, stale, elapsed))
                     ),
-                    on_report=lambda step, loss, acc: q.put(
-                        ("report", (step, loss, acc))
+                    on_report=lambda step, loss, acc, elapsed: q.put(
+                        ("report", (step, loss, acc, elapsed))
                     ),
                     on_worker_connected=lambda wid, addr: q.put(
                         ("connected", (wid, addr))
@@ -932,6 +941,10 @@ class PSApp:
             self._tree.delete(row)
         self._refresh_buttons()
         self._set_config_enabled(True)
+        # Detener Clock
+        self._clock_running = False
+        self._clock_start = 0.0
+        self._m_clock.set("Clock: 00:00:00")
         self._log("[PS] Servidor detenido.")
         self._status.set("Servidor detenido.")
 
@@ -1013,6 +1026,8 @@ class PSApp:
                         data
                     )
                     self._ps = ps
+                    self._t_start = time.perf_counter()
+                    self._clock_start = time.perf_counter()  # Clock independiente
                     self._state = self._S_LISTENING
                     self._refresh_buttons()
                     mode = (
@@ -1120,7 +1135,9 @@ class PSApp:
         self._refresh_buttons()
         self._log(f"[W{wid}] Desconectado.")
 
-    def _on_step(self, step: int, loss: float, acc: float, stale: int) -> None:
+    def _on_step(
+        self, step: int, loss: float, acc: float, stale: int, elapsed: float
+    ) -> None:
         """
         Actualiza métricas instantáneas de entrenamiento.
 
@@ -1149,6 +1166,9 @@ class PSApp:
         :param stale: Máximo staleness observado (versión del modelo más antigua en uso).
         :type stale: int
 
+        :param elapsed: Tiempo elapsed en segundos desde inicio.
+        :type elapsed: float
+
         :returns: None
         :rtype: None
         """
@@ -1156,16 +1176,19 @@ class PSApp:
         if self._state == self._S_LISTENING:
             self._state = self._S_TRAINING
             self._t_start = time.perf_counter()
+            self._clock_start = time.perf_counter()  # Iniciar Clock
+            self._clock_running = True
             self._refresh_buttons()
             self._log("[PS] ✓ Primer step recibido — Entrenamiento asíncrono activo.")
             self._status.set("Entrenamiento asíncrono en progreso...")
+            self._update_clock()  # Iniciar Clock cada segundo
 
         self._m_step.set(f"Step: {step:,}")
         self._m_loss.set(f"Loss: {loss:.4f}")
         self._m_acc.set(f"Acc: {acc:.2f}%")
         self._m_stale.set(f"Staleness: {stale}")
 
-    def _on_report(self, step: int, loss: float, acc: float) -> None:
+    def _on_report(self, step: int, loss: float, acc: float, elapsed: float) -> None:
         """
         Agrega métricas a historial y actualiza gráficas (cada steps_per_report steps).
 
@@ -1176,9 +1199,8 @@ class PSApp:
         1. Agrega (step, loss, acc) a historial
         2. Registra número de workers activos en este reporte
         3. Redibuja gráficas (ejes loss, acc, workers)
-        4. Calcula tiempo transcurrido desde inicio
-        5. Actualiza status bar con resumen
-        6. Loguea el reporte
+        4. Actualiza status bar con resumen
+        5. Loguea el reporte
 
         :param step: Número de step global del reporte.
         :type step: int
@@ -1189,6 +1211,9 @@ class PSApp:
         :param acc: Precisión promedio en ventana de training (%).
         :type acc: float
 
+        :param elapsed: Tiempo elapsed en segundos desde inicio (del PS).
+        :type elapsed: float
+
         :returns: None
         :rtype: None
         """
@@ -1197,12 +1222,34 @@ class PSApp:
         self._acc_hist.append(acc)
         self._workers_hist.append(len(self._workers))
         self._update_plots()
-        elapsed = time.perf_counter() - self._t_start if self._t_start else 0.0
         self._status.set(
             f"Step {step:,} | loss={loss:.4f} | acc={acc:.2f}% | "
             f"workers={len(self._workers)} | t={elapsed:.0f}s"
         )
-        self._log(f"[Step {step:,}] loss={loss:.4f} | acc={acc:.2f}%")
+        self._log(
+            f"[Step {step:,}] loss={loss:.4f} | acc={acc:.2f}% | t={elapsed:.0f}s"
+        )
+
+    def _update_clock(self) -> None:
+        """
+        Actualiza el Clock cada segundo cuando está en TRAINING.
+
+        Muestra el tiempo transcurrido desde el primer step en formato HH:MM:SS.
+        Se ejecuta cada 1 segundo via root.after().
+        """
+        if not self._clock_running:
+            return
+
+        if self._state == self._S_TRAINING:
+            elapsed = time.perf_counter() - self._clock_start
+            hours = int(elapsed // 3600)
+            minutes = int((elapsed % 3600) // 60)
+            seconds = int(elapsed % 60)
+            self._m_clock.set(f"Clock: {hours:02d}:{minutes:02d}:{seconds:02d}")
+        else:
+            self._m_clock.set("Clock: 00:00:00")
+
+        self.root.after(1000, self._update_clock)
 
     def _on_val(self, step: int, loss: float, acc: float) -> None:
         """

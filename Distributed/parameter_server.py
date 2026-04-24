@@ -268,6 +268,7 @@ class ParameterServer:
 
         # Contador global de versión
         self._version: int = 0
+        self._t_start: float = 0.0  # Tiempo de inicio (para elapsed)
 
         # CNN (para distribución inicial y evaluación)
         self._cnn: CNNExtractor | None = None
@@ -290,6 +291,7 @@ class ParameterServer:
             "losses": [],
             "accuracies": [],
             "n_workers": [],
+            "elapsed": [],
             "timestamps": [],
         }
         self._history_lock = threading.Lock()
@@ -816,9 +818,15 @@ class ParameterServer:
             self._version += 1
             step = self._version
 
+        # Inicializar tiempo de inicio en el primer step
+        if self._t_start == 0.0:
+            self._t_start = time.perf_counter()
+
+        elapsed = time.perf_counter() - self._t_start
+
         self._metrics.update(loss, acc)
         if self.on_step:
-            self.on_step(step, loss, acc, staleness)
+            self.on_step(step, loss, acc, staleness, elapsed)
 
         n = self._metrics.total_batches
         if n > 0:
@@ -829,25 +837,28 @@ class ParameterServer:
         if self._results_exporter is not None:
             with self._workers_lock:
                 n_workers = len(self._sockets)
-            self._results_exporter.record_metric(step, avg_loss, avg_acc, n_workers)
+            self._results_exporter.record_metric(
+                step, avg_loss, avg_acc, n_workers, elapsed
+            )
 
         if n > 0 and n % self.steps_per_report == 0:
             with self._workers_lock:
                 n_workers = len(self._sockets)
-            self._record_history(step, avg_loss, avg_acc, n_workers)
+            self._record_history(step, avg_loss, avg_acc, n_workers, elapsed)
             if self.on_report:
-                self.on_report(step, avg_loss, avg_acc)
+                self.on_report(step, avg_loss, avg_acc, elapsed)
             _log.train(
                 f"Step {step:,}",
-                metric=f"loss={avg_loss:.4f} | acc={avg_acc:.2f}% | workers={n_workers}",
+                metric=f"loss={avg_loss:.4f} | acc={avg_acc:.2f}% | workers={n_workers} | {elapsed:.0f}s",
             )
 
-    def _record_history(self, step, loss, acc, n_workers) -> None:
+    def _record_history(self, step, loss, acc, n_workers, elapsed) -> None:
         with self._history_lock:
             self._history["steps"].append(step)
             self._history["losses"].append(loss)
             self._history["accuracies"].append(acc)
             self._history["n_workers"].append(n_workers)
+            self._history["elapsed"].append(elapsed)
             self._history["timestamps"].append(time.time())
 
     # ================================================================

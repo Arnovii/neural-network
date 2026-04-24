@@ -152,7 +152,6 @@ Este repo NO tiene configurado:
 ├── plot_loss.png
 ├── plot_accuracy.png
 ├── plot_workers.png
-├── plot_comparison.png
 └── metadata.json
 ```
 

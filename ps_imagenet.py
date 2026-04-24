@@ -194,18 +194,16 @@ def main() -> None:
 
     step_ts: list = []
 
-    def on_step(step: int, loss: float, acc: float, staleness: int) -> None:
+    def on_step(
+        step: int, loss: float, acc: float, staleness: int, elapsed: float
+    ) -> None:
         """
         Callback de PS: se ejecuta después de cada step de entrenamiento.
 
         Realiza muestreo frecuente de métricas:
-        1. Registra timestamp del step para cálculo posterior de throughput
-        2. Cada 50 steps:
-           - Calcula throughput en steps/segundo desde primero al último
-           - Imprime: step, loss, accuracy, staleness, throughput
-        3. Si max_steps > 0: chequea si se alcanzó límite y establece stop event
-
-        Throughput = (número de steps en buffer) / (tiempo transcurrido en buffer)
+        1. Cada 50 steps:
+           - Imprime: step, loss, accuracy, staleness, elapsed
+        2. Si max_steps > 0: chequea si se alcanzó límite y establece stop event
 
         Este callback se registra en ParameterServer.on_step.
 
@@ -221,22 +219,21 @@ def main() -> None:
         :param staleness: Máximo número de versiones de atrazo observadas.
         :type staleness: int
 
+        :param elapsed: Tiempo elapsed en segundos desde inicio.
+        :type elapsed: float
+
         :returns: None
         :rtype: None
         """
-        step_ts.append(time.perf_counter())
         if step % 50 == 0:
-            sps = (
-                len(step_ts) / (step_ts[-1] - step_ts[0]) if len(step_ts) >= 2 else 0.0
-            )
             print(
                 f"  step={step:6,d} | loss={loss:.4f} | acc={acc:.2f}% | "
-                f"staleness={staleness} | {sps:.1f} steps/s"
+                f"staleness={staleness} | {elapsed:.0f}s"
             )
         if args.max_steps > 0 and step >= args.max_steps:
             stop.set()
 
-    def on_report(step: int, loss: float, acc: float) -> None:
+    def on_report(step: int, loss: float, acc: float, elapsed: float) -> None:
         """
         Callback de PS: se ejecuta cada --steps-per-report steps.
 
@@ -245,7 +242,7 @@ def main() -> None:
 
         Formato:
         ────────────────────────────────────────────────────────
-          Reporte | step=XXXX | loss=X.XXXX | acc=XX.XX%
+          Reporte | step=XXXX | loss=X.XXXX | acc=XX.XX% | elapsed=XXXs
         ────────────────────────────────────────────────────────
 
         Este callback se registra en ParameterServer.on_report.
@@ -259,11 +256,16 @@ def main() -> None:
         :param acc: Precisión promedio en ventana de métricas (%).
         :type acc: float
 
+        :param elapsed: Tiempo elapsed en segundos desde inicio.
+        :type elapsed: float
+
         :returns: None
         :rtype: None
         """
         print(f"\n{'─' * 60}")
-        print(f"  Reporte | step={step:,} | loss={loss:.4f} | acc={acc:.2f}%")
+        print(
+            f"  Reporte | step={step:,} | loss={loss:.4f} | acc={acc:.2f}% | {elapsed:.0f}s"
+        )
         print(f"{'─' * 60}\n")
 
     # ── Crear PS ──
