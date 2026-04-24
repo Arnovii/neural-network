@@ -277,6 +277,7 @@ def main() -> None:
         batch_size=args.batch_size,
         image_size=args.image_size,
         seed=args.seed,
+        hf_token=hf_token,
         export_dir=args.export_dir,
         on_step=on_step,
         on_report=on_report,

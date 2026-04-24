@@ -37,7 +37,7 @@ def _connect(self) -> None:
         raise ConnectionError(f"Esperaba WORKER_ID, recibí {msg['type']}")
     self._worker_id = msg["payload"]["worker_id"]
     
-    # 3. Recibir CONFIG (batch_size, image_size, rank, num_workers, seed)
+    # 3. Recibir CONFIG (batch_size, image_size, rank, num_workers, seed, hf_token)
     msg = receive_message(self._sock)
     if msg["type"] != MsgType.CONFIG:
         raise ConnectionError(f"Esperaba CONFIG, recibí {msg['type']}")
@@ -47,16 +47,22 @@ def _connect(self) -> None:
     self.worker_rank = config.get("rank", 0)  # ← Asignado dinámicamente por PS
     self.num_workers = config.get("num_workers", 1)  # ← Asignado dinámicamente por PS
     self.seed = config.get("seed")  # ← Seed global desde PS
+    self.hf_token = config.get("hf_token")  # ← Token HuggingFace desde PS (para streaming)
     
     self._log(f"Conectado: ID={self._worker_id}, rank={self.worker_rank}/{self.num_workers}, "
               f"batch_size={self.batch_size}, image_size={self.image_size}")
 ```
 
 **Notas importantes**:
-- El Worker **no especifica** su rank ni num_workers por CLI (fueron removidos de los argumentos)
-- El PS **asigna dinámicamente** el rank basado en el orden de conexión (0, 1, 2, ...)
-- El `num_workers` refleja el **total de workers conectados** (se actualiza si nuevos workers se conectan)
-- Ambos valores son **esenciales para el sharding sin solapamientos** del dataset
+- El Worker **no especifica** por CLI: rank, num_workers, seed, ni hf_token
+  - Todos estos se reciben del PS en el mensaje CONFIG
+- El PS **asigna dinámicamente**:
+  - `rank`: basado en el orden de conexión (0, 1, 2, ...)
+  - `num_workers`: total de workers conectados (se actualiza si nuevos workers se conectan)
+  - `hf_token`: token HuggingFace para streaming de datos
+  - `seed`: semilla global para reproducibilidad
+- Los valores `rank` y `num_workers` son **esenciales para el sharding sin solapamientos** del dataset
+- El `hf_token` es enviado por el PS para que el Worker pueda acceder a HuggingFace de forma centralizada
 
 **Tiempo**: ~100-500 ms (depende de latencia red)
 

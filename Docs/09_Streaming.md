@@ -52,6 +52,42 @@ Generar un iterator infinito sobre ImageNet-1k que:
 - Aplique transformaciones (crop, flip, normalize)
 - Retorne batches (imágenes, labels)
 
+### Origen del HF Token
+
+El token HuggingFace que utiliza `ImageNetStream` viene **del Parameter Server**, no de argumentos CLI del Worker:
+
+```
+PS (recibe --hf-token CLI)
+    ↓
+PS almacena token internamente
+    ↓
+PS envía token en CONFIG a cada Worker
+    ↓
+Worker recibe token del CONFIG
+    ↓
+Worker pasa token a ImageNetStream
+    ↓
+ImageNetStream usa token para autenticarse con HuggingFace
+```
+
+**Ventajas de este diseño**:
+- ✅ Centralización: token gestionado solo en PS
+- ✅ Seguridad: workers no exponen token en CLI (visible en procesos)
+- ✅ Consistencia: todos los workers usan mismo token
+
+**En código**:
+```python
+# En Distributed/worker_node.py:
+config = receive_message(CONFIG)
+hf_token = config.get("hf_token")  # ← Del PS, no de argumentos
+
+# Luego:
+stream = build_worker_stream(
+    hf_token=hf_token,  # ← Pasa token a ImageNetStream
+    ...
+)
+```
+
 ### Implementación
 
 Ubicación: [Utils/imagenet_streaming.py](../Utils/imagenet_streaming.py#L20)

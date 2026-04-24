@@ -291,21 +291,30 @@ python worker_imagenet.py \
   --dataset ILSVRC/imagenet-1k \
   --shuffle-buffer 1000 \
   --prefetch 4 \
-  --seed 42 \
-  --hf-token "hf_..." \
   --accum-steps 1
 ```
+
+**Nota**: El Worker **no** recibe `--hf-token` por CLI. El token es gestionado completamente por el PS y se envía al Worker a través del mensaje CONFIG. Esto centraliza la gestión de credenciales.
 
 ---
 
 ## Variables de Entorno
 
 ```bash
-export HF_TOKEN="hf_..."  # Alternativa a --hf-token
+export HF_TOKEN="hf_..."  # Variable de entorno para HuggingFace token
 
-python ps_imagenet.py   # Automáticamente usa HF_TOKEN
-python worker_imagenet.py
+# Parameter Server: Lee token de variable de entorno (si no se usa --hf-token)
+python ps_imagenet.py   # Automáticamente usa HF_TOKEN del entorno
+
+# Worker: Lee parámetros (batch_size, seed, hf_token, etc.) del PS via CONFIG
+python worker_imagenet.py --server-host 127.0.0.1
 ```
+
+**Flujo de Token HuggingFace**:
+1. PS recibe token vía: `--hf-token CLI_arg` o variable `HF_TOKEN` del entorno
+2. PS almacena el token internamente
+3. PS envía el token a cada Worker en el mensaje CONFIG
+4. Worker utiliza el token del CONFIG para streaming de datos
 
 ---
 

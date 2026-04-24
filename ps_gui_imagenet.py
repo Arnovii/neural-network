@@ -803,7 +803,19 @@ class PSApp:
             messagebox.showerror("Parámetro inválido", str(e))
             return
 
-        hf_token = self._v_hf_token.get().strip() or None
+        hf_token = self._v_hf_token.get().strip()
+        if not hf_token:
+            messagebox.showerror("Token requerido", "Ingrese HF Token para streaming")
+            return
+        if not hf_token.startswith("hf_"):
+            messagebox.showerror("Token inválido", "Token debe empezar con 'hf_'")
+            return
+        if len(hf_token) < 20:
+            messagebox.showerror(
+                "Token inválido", "Token muy corto (mínimo 20 caracteres)"
+            )
+            return
+
         q = self._q
 
         self._state = self._S_LOADING
@@ -840,6 +852,7 @@ class PSApp:
                     batch_size=bs,
                     image_size=img_sz,
                     seed=seed,
+                    hf_token=hf_token,
                     on_step=lambda step, loss, acc, stale: q.put(
                         ("step", (step, loss, acc, stale))
                     ),

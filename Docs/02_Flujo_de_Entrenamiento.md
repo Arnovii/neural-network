@@ -16,11 +16,15 @@ t=1      Asigna wid=0
                                                       recv(WORKER_ID)
 
 t=2   Envía configuración
-         send(CONFIG={batch_size=64, image_size=224})
+         send(CONFIG={batch_size=64, image_size=224, rank=0, num_workers=1, seed=42, hf_token="hf_..."})
          ────► CONFIG
                                                       recv(CONFIG)
                                                       batch_size = 64
                                                       image_size = 224
+                                                      rank = 0
+                                                      num_workers = 1
+                                                      seed = 42
+                                                      hf_token = "hf_..."
 
 t=3      Distribuye CNN
          send(CNN_WEIGHTS)

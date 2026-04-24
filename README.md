@@ -44,6 +44,8 @@ El repositorio incluye documentación exhaustiva en el subdirectorio `./Docs/`:
 | `07_GUI_y_Monitoreo.md` | GUI tkinter, configuración de parámetros, visualización de métricas |
 | `08_Hiperparametros_y_Config.md` | Learning rate, staleness λ, batch size, impacto en convergencia |
 | `09_Streaming.md` | Pipeline HuggingFace, sharding per-Worker, PrefetchBuffer async, I/O optimization |
+| `10_Guion_Defensa_Academica_Completo.md` | Guión de presentación para defensa académica |
+| `11_Exportacion_Resultados.md` | Sistema de exportación: 9 archivos, gráficas, CSV, logs, análisis |
 
 ---
 
@@ -74,6 +76,12 @@ El repositorio incluye documentación exhaustiva en el subdirectorio `./Docs/`:
   - Tabla de Workers conectados
   - Gráficas live de loss, accuracy, workers activos
   - Logs estructurados
+
+✅ **Exportación automática de resultados**:
+  - 9 archivos por experimento: config, metrics.csv, logs, metadata, + 5 gráficas PNG
+  - Gráficas con escalas dinámicas y estilos profesionales
+  - Directorio personalizable vía `--export-dir`
+  - Timestamps únicos para cada experimento
 
 ✅ **Corrección de staleness integrada** (α(s) = 1/(1+λ·s)) para mitigar asiduidad de gradientes
 
@@ -444,10 +452,10 @@ Esperando 1 Worker(s)...
 python worker_imagenet.py \
   --server-host 127.0.0.1 \
   --server-port 9999 \
-  --batch-size 64 \
-  --device cuda \
-  --hf-token "hf_xxxxx"
+  --device cuda
 ```
+
+**Nota**: El Worker **no especifica** `batch_size` ni `hf_token` por CLI. Estos se reciben del PS en el mensaje CONFIG.
 
 **Salida esperada**:
 ```
@@ -642,25 +650,33 @@ python ps_imagenet.py \
 python worker_imagenet.py \
   --server-host 192.168.1.10 \
   --server-port 9999 \
-  --batch-size 128 \
   --device cuda:0 \
   --dataset ILSVRC/imagenet-1k \
   --shuffle-buffer 1000 \
   --prefetch 4 \
-  --image-size 224 \
-  --hf-token "hf_xxxxx" \
-  --accum-steps 4 \  # Acumular 4 batches antes de UPDATES
-  --quiet  # Suprimir logs de progreso
+  --accum-steps 4 \
+  --quiet
 ```
+
+**Nota**: `batch_size`, `image_size`, y `hf_token` se reciben automáticamente del PS en CONFIG.
 
 ### Variable de Entorno
 
 ```bash
 export HF_TOKEN="hf_xxxxxxxxxxxxxxxxxxxxx"
 
-# Ahora ps_imagenet.py y worker_imagenet.py usan HF_TOKEN automáticamente
+# PS Lee HF_TOKEN del entorno automáticamente (si no se usa --hf-token en CLI)
 python ps_imagenet.py
+
+# Worker Recibe HF_TOKEN del PS en el mensaje CONFIG
+python worker_imagenet.py --server-host 127.0.0.1
 ```
+
+**Flujo de gestión de token**:
+1. **PS**: Lee token de `--hf-token CLI_arg` o variable de entorno `HF_TOKEN`
+2. **PS**: Almacena token internamente
+3. **PS**: Envía token a cada Worker en el mensaje CONFIG
+4. **Worker**: Usa el token del CONFIG para autenticarse con HuggingFace
 
 ---
 
@@ -906,6 +922,95 @@ def _apply_update(self, worker_idx, update):
     # Similar para CNN (excluyendo int64 keys)
     self._version += 1
 ```
+
+---
+
+## Exportación de Resultados
+
+El sistema genera reportes automáticos al finalizar el entrenamiento (via `Ctrl+C` o al alcanzar `--max-steps`). Los resultados se exportan en `./Exports/[timestamp]/` con los siguientes archivos:
+
+### Estructura de Exportación
+
+```
+./Exports/20260421_193015_550/
+├── config.json              # Parámetros del experimento (JSON)
+├── metrics.csv              # Series de tiempo: step, loss, acc, num_workers
+├── ps_logs.txt              # Logs completos del Parameter Server
+├── metadata.json            # Estadísticas finales (min/max loss, accuracy, etc.)
+├── plot_3panels.png         # Combinación: Loss | Accuracy | Workers (283 KB)
+├── plot_loss.png            # Gráfica individual de Loss
+├── plot_accuracy.png        # Gráfica individual de Accuracy
+├── plot_workers.png         # Gráfica individual de Workers activos
+└── plot_comparison.png      # Comparación Loss vs Accuracy (ejes duales)
+```
+
+### Uso
+
+#### Exportar a directorio específico:
+```bash
+python ps_imagenet.py \
+  --export-dir ./mi_experimento_1 \
+  --max-steps 10000
+```
+
+Resultado: `./mi_experimento_1/[timestamp]/` contendrá los 9 archivos.
+
+#### Directorio por defecto:
+```bash
+python ps_imagenet.py --max-steps 10000
+```
+
+Resultado: `./Exports/[timestamp]/` contendrá los 9 archivos.
+
+### Contenido de Archivos
+
+**config.json**:
+```json
+{
+  "lr": 0.1,
+  "lr_cnn": 0.001,
+  "staleness_lambda": 0.1,
+  "batch_size": 64,
+  "image_size": 224,
+  "seed": 42,
+  "cnn_arch": "resnet18",
+  "description": "Distributed Async-SGD on ImageNet-1k"
+}
+```
+
+**metrics.csv**:
+```
+step,loss,accuracy,num_workers
+1,7.0706,0.00,1
+2,7.0633,0.00,1
+3,7.0375,0.0052,1
+...
+```
+
+**metadata.json**:
+```json
+{
+  "total_steps": 13,
+  "loss_min": 7.0082,
+  "loss_max": 7.0706,
+  "accuracy_min": 0.31,
+  "accuracy_max": 0.52,
+  "workers_max": 1,
+  "training_time_seconds": 72.5
+}
+```
+
+### Visualización de Gráficas
+
+Las 5 gráficas PNG se generan con:
+- **plot_3panels.png**: Vista consolidada para reportes académicos
+  - Panel 1: Loss con escala automática (±10% margen)
+  - Panel 2: Accuracy con escala dinámica (±20% margen, líneas de referencia)
+  - Panel 3: Workers activos con escala automática
+- **plot_*.png individuales**: Zoom en cada métrica para análisis detallado
+- **plot_comparison.png**: Ejes duales Y para comparación directa Loss vs Accuracy
+
+Todas con resolución 300 DPI, estilos profesionales y anotaciones claras.
 
 ---
 

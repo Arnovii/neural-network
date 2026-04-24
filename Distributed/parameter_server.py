@@ -170,6 +170,7 @@ class ParameterServer:
         batch_size: int = 64,
         image_size: int = 224,
         seed: int | None = None,
+        hf_token: str | None = None,
         export_dir: str = "./Exports",
         on_step: Callable | None = None,
         on_report: Callable | None = None,
@@ -246,6 +247,7 @@ class ParameterServer:
         self.batch_size = batch_size
         self.image_size = image_size
         self.seed = seed
+        self.hf_token = hf_token
         self.export_dir = export_dir
 
         self.on_step = on_step
@@ -560,6 +562,7 @@ class ParameterServer:
                 "seed": self.seed,
                 "rank": rank,
                 "num_workers": self._next_rank,  # Total de workers conectados (incluyendo el actual)
+                "hf_token": self.hf_token,  # Token HF para streaming
             }
             send_message(conn, MsgType.CONFIG, config)
         except Exception:

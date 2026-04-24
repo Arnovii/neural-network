@@ -25,14 +25,17 @@ Sistema de entrenamiento distribuido asíncrono con arquitectura Parameter Serve
 ## Usage
 
 ```bash
-# PS con GUI (recomendado)
+# PS con GUI (recomendado, no tiene export-dir integrado aún)
 python ps_gui_imagenet.py --hf-token "hf_..."
 
 # Worker (conecta al PS automáticamente)
-python worker_imagenet.py --server-host 127.0.0.1 --hf-token "hf_..."
+python worker_imagenet.py --server-host 127.0.0.1
 
-# PS terminal
-python ps_imagenet.py --lr 0.001 --staleness-lambda 0.1
+# PS terminal (CON exportación de resultados automática)
+python ps_imagenet.py --lr 0.001 --staleness-lambda 0.1 --hf-token "hf_..."
+
+# PS terminal con directorio personalizado para resultados
+python ps_imagenet.py --export-dir ./mi_experimento --max-steps 10000 --hf-token "hf_..."
 ```
 
 ## Architecture
@@ -93,11 +96,29 @@ READY → WORKER_ID → CONFIG → CNN_WEIGHTS → CNN_ACK → START
 | `ResultsExporter` | `Utils/results_exporter.py` | Exporta métricas/plots |
 | `FormattedLogger` | `Utils/logging_util.py` | Colored logging |
 
-## GUI Plot Style (export debe igualar esto)
-- Loss: `#F44336`, Accuracy: `#2196F3`, Workers: `#4CAF50`
-- Workers: usar `step()` (no `plot()`)
-- Accuracy axis: 0-100 escala
-- Grid alpha: 0.3
+## Plot Generation (ResultsExporter)
+Sistema completamente desacoplado de exportación de resultados que genera:
+
+### 9 Archivos por Experimento
+```
+./Exports/[timestamp]/
+├── config.json           # Configuración del experimento
+├── metrics.csv           # Series de tiempo (step, loss, acc, workers)
+├── ps_logs.txt           # Todos los logs del Parameter Server
+├── metadata.json         # Estadísticas finales
+├── plot_3panels.png      # 3 gráficas (Loss | Accuracy | Workers) - 283 KB
+├── plot_loss.png         # Gráfica individual de Loss
+├── plot_accuracy.png     # Gráfica individual de Accuracy  
+└── plot_workers.png      # Gráfica individual de Workers
+```
+
+### Estilos de Visualización
+- Loss: `#E74C3C` (rojo), markers "o"
+- Accuracy: `#27AE60` (verde), markers "s"
+- Workers: `#3498DB` (azul), markers "^"
+- Grid: alpha=0.15 (Loss/Workers), alpha=0.4 (Accuracy)
+- Escala: Loss/Workers (±10%), Accuracy (dinámico ±20%)
+- Resolución: 300 DPI, formato PNG, `bbox_inches="tight"`, `pad_inches=0.3`
 
 ## Dependencies (requirements.txt)
 - `torch==2.10.0`, `torchvision==0.25.0`
@@ -142,11 +163,20 @@ Este repo NO tiene configurado:
 3. **OOM**: Reducir batch_size o prefetch
 4. **No convergence**: Ajustar staleness_lambda (0.1 default)
 
-## File Key Lines
+## File Key Lines and Features
 | File | Lines | Content |
 |------|-------|---------|
 | `ps_gui_imagenet.py` | 1256-1326 | GUI plot rendering |
-| `Distributed/parameter_server.py` | 1-100 | Design notes |
-| `Distributed/worker_node.py` | 1-66 | Training modes |
-| `Model/cnn_extractor.py` | 1-51 | Architecture docs |
-| `Utils/results_exporter.py` | 258-296 | Plot generation |
+| `Distributed/parameter_server.py` | 1-100 | Design notes, async-SGD, staleness |
+| `Distributed/worker_node.py` | 1-66 | Training modes, E2E vs MLP-only |
+| `Model/cnn_extractor.py` | 1-51 | Architecture docs (ResNet-18 vs Simple) |
+| `Utils/results_exporter.py` | 1-100 | Export system design, 9-file output |
+| `Utils/results_exporter.py` | 279-370 | Plot generation (_generate_plots + 5 methods) |
+
+## ResultsExporter Class (Utils/results_exporter.py)
+- **Thread-safe**: record_metric() y record_log() con locks
+- **Async finalize()**: Escritura no-bloqueante al finalizar
+- **5 Plot methods**: _plot_3panels(), _plot_individual_loss/accuracy/workers(), _plot_comparison()
+- **Dynamic scaling**: Loss ±10%, Accuracy ±20%, Workers ±15%
+- **No dependencies**: Completamente desacoplado de ParameterServer
+- **Integration**: Registrado via logging_util.add_log_handler() en PS.listen()

@@ -125,13 +125,10 @@ class WorkerNode:
     :param seed: Semilla para RNG (None = determinismo deshabilitado, aleatorio).
     :type seed: int | None
 
-    :param hf_token: Token de autenticación de HuggingFace (requerido para ILSVRC/imagenet-1k).
-    :type hf_token: str | None
-
     :param accum_steps: Número de batches a acumular antes de enviar UPDATES al PS.
     :type accum_steps: int
 
-    :note: worker_rank, num_workers, batch_size, image_size y seed se reciben del PS mediante mensaje CONFIG durante conexión. lr y lr_cnn se reciben del PS mediante PARAMS en cada iteración.
+    :note: worker_rank, num_workers, batch_size, image_size, seed y hf_token se reciben del PS mediante mensaje CONFIG durante conexión. lr y lr_cnn se reciben del PS mediante PARAMS en cada iteración.
 
     :raises ConnectionError: Si falla la conexión inicial con el Parameter Server.
     :raises RuntimeError: Si hay mismatch de parámetros con la CNN recibida del PS.
@@ -146,7 +143,6 @@ class WorkerNode:
         shuffle_buffer: int = 1000,
         prefetch_batches: int = 4,
         seed: int | None = None,
-        hf_token: str | None = None,
         accum_steps: int = 1,
     ) -> None:
         # Configuración de red
@@ -155,7 +151,7 @@ class WorkerNode:
 
         # Dataset a utilizar
         self.dataset_name = dataset_name
-        self.hf_token = hf_token
+        self.hf_token: str | None = None  # Recibido via CONFIG del PS
 
         # Identificadores para paralelismo (recibidos desde PS en _connect)
         self.worker_rank: int = 0  # Sobrescrito en _connect() con valor del PS
@@ -274,7 +270,7 @@ class WorkerNode:
             raise ConnectionError(f"Esperaba WORKER_ID, recibí {msg['type']}")
         self._worker_id = msg["payload"]["worker_id"]
 
-        # Recibe CONFIG (batch_size, image_size, rank, num_workers, seed desde PS)
+        # Recibe CONFIG (batch_size, image_size, rank, num_workers, seed, hf_token desde PS)
         msg = receive_message(self._sock)
         if msg["type"] != MsgType.CONFIG:
             raise ConnectionError(f"Esperaba CONFIG, recibí {msg['type']}")
@@ -284,6 +280,7 @@ class WorkerNode:
         self.seed = config.get("seed")  # Sobrescribe seed del usuario con el del PS
         self.worker_rank = config.get("rank", 0)  # Rank asignado por PS
         self.num_workers = config.get("num_workers", 1)  # Total de workers
+        self.hf_token = config.get("hf_token")  # Token HF para streaming (del PS)
         _log.worker_msg(
             self._worker_id,
             f"CONFIG recibida: rank={self.worker_rank}, num_workers={self.num_workers}, "

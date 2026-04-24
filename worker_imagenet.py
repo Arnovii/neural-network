@@ -14,12 +14,11 @@ OPCIONES:
     --shuffle-buffer  Imágenes en buffer de shuffle      (default: 1000)
     --prefetch        Batches pre-cargados en background  (default: 4)
     --seed            Semilla RNG (None = aleatorio)     (default: None)
-    --hf-token        Token HuggingFace
     --accum-steps     Batches a acumular antes de enviar  (default: 1)
     --quiet           Suprimir mensajes de progreso
 
-NOTA: El rank y num_workers se asignan dinámicamente por el Parameter Server.
-      batch_size, image_size, seed se reciben del PS mediante CONFIG.
+NOTA: El rank, num_workers, batch_size, image_size, seed y hf_token
+      se reciben del PS mediante mensaje CONFIG.
 
 EJEMPLO — 2 Workers en la misma máquina con GPUs distintas:
     python worker_imagenet.py --device cuda:0 &
@@ -31,12 +30,6 @@ EJEMPLO — Workers en máquinas distintas:
     python worker_imagenet.py --server-host 192.168.1.10 &
     python worker_imagenet.py --server-host 192.168.1.10 &
     (cualquier número de workers se conectará y recibirá su rank del PS)
-
-TOKEN HF:
-    ImageNet-1k requiere aceptar la licencia en:
-    https://huggingface.co/datasets/ILSVRC/imagenet-1k
-    y usar un token de acceso (export HF_TOKEN=hf_... o --hf-token).
-    Alternativa pública: --dataset timm/imagenet-1k-wds
 """
 
 import argparse
@@ -91,12 +84,9 @@ def main() -> None:
     parser.add_argument(
         "--seed", type=int, default=None, help="Semilla RNG (None = aleatorio)"
     )
-    parser.add_argument("--hf-token", type=str, default=None)
     parser.add_argument("--accum-steps", type=int, default=1)
     parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args()
-
-    hf_token = args.hf_token or os.environ.get("HF_TOKEN")
 
     print("=" * 68)
     print("WORKER ASÍNCRONO — ImageNet-1k Distribuido")
@@ -113,15 +103,11 @@ def main() -> None:
     print(f"  Prefetch       : {args.prefetch} batches")
     print(f"  Seed           : {args.seed or 'aleatorio'}")
     print(f"  Accum steps    : {args.accum_steps}")
-    print(f"  HF Token       : {'✓ configurado' if hf_token else '✗ no configurado'}")
+    print(f"  HF Token       : recibido vía CONFIG del PS")
     print("=" * 68)
     print(
-        "\n  ℹ rank, num_workers, batch_size, image_size se reciben del PS via CONFIG\n"
+        "\n  ℹ rank, num_workers, batch_size, image_size, hf_token se reciben del PS via CONFIG\n"
     )
-
-    if not hf_token:
-        print("\n⚠  Sin token HF — ILSVRC/imagenet-1k requiere autenticación.")
-        print("   Alternativa pública: --dataset timm/imagenet-1k-wds\n")
 
     WorkerNode(
         server_host=args.server_host,
@@ -131,7 +117,6 @@ def main() -> None:
         shuffle_buffer=args.shuffle_buffer,
         prefetch_batches=args.prefetch,
         seed=args.seed,
-        hf_token=hf_token,
         accum_steps=args.accum_steps,
     ).run()
 
