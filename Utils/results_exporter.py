@@ -325,6 +325,9 @@ class ResultsExporter:
         ax1.set_ylabel("Loss")
         ax1.grid(True, alpha=0.3)
         ax1.legend(fontsize=8)
+        # Establecer límites de ejes para que coincidan con GUI
+        ax1.set_xlim(steps[0] - 1, steps[-1] + 1)
+        ax1.margins(y=0.05)  # 5% de margen en Y
 
         ax2 = fig.add_subplot(gs[1])
         ax2.plot(steps, accuracies, "-o", color=color_acc, lw=2, ms=3, label="Train")
@@ -335,6 +338,8 @@ class ResultsExporter:
         ax2.grid(True, alpha=0.3)
         ax2.set_ylim(0, 100)
         ax2.legend(fontsize=8)
+        # Establecer límites de ejes para que coincidan con GUI
+        ax2.set_xlim(steps[0] - 1, steps[-1] + 1)
 
         ax3 = fig.add_subplot(gs[2])
         ax3.step(steps, workers_count, color=color_workers, lw=2)
@@ -343,6 +348,8 @@ class ResultsExporter:
         ax3.set_ylabel("N Workers")
         ax3.grid(True, alpha=0.3)
         ax3.set_ylim(0, max(workers_count) + 1)
+        # Establecer límites de ejes para que coincidan con GUI
+        ax3.set_xlim(steps[0] - 1, steps[-1] + 1)
 
         # Nota sobre diferentes escalas Y
         fig.text(
@@ -374,6 +381,9 @@ class ResultsExporter:
         ax.set_ylabel("Loss")
         ax.grid(True, alpha=0.3)
         ax.legend(fontsize=8)
+        # Establecer límites de ejes para que coincidan con GUI
+        ax.set_xlim(steps[0] - 1, steps[-1] + 1)
+        ax.margins(y=0.05)  # 5% de margen en Y
 
         plt.tight_layout()
         output_path = self.session_dir / "plot_loss.png"
@@ -396,6 +406,8 @@ class ResultsExporter:
         ax.grid(True, alpha=0.3)
         ax.set_ylim(0, 100)
         ax.legend(fontsize=8)
+        # Establecer límites de ejes para que coincidan con GUI
+        ax.set_xlim(steps[0] - 1, steps[-1] + 1)
 
         plt.tight_layout()
         output_path = self.session_dir / "plot_accuracy.png"
@@ -416,6 +428,8 @@ class ResultsExporter:
         ax.set_ylabel("N Workers")
         ax.grid(True, alpha=0.3)
         ax.set_ylim(0, max(workers_count) + 1)
+        # Establecer límites de ejes para que coincidan con GUI
+        ax.set_xlim(steps[0] - 1, steps[-1] + 1)
 
         plt.tight_layout()
         output_path = self.session_dir / "plot_workers.png"
