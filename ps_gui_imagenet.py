@@ -224,6 +224,7 @@ class PSApp:
         self._t_start: float = 0.0
         self._clock_start: float = 0.0  # Clock: tiempo de inicio
         self._clock_running: bool = False  # Clock: corriendo flag
+        self._max_steps: int = 0  # Límite de steps (0 = sin límite)
         self._status = tk.StringVar(value="Listo.")
 
         # Referencia al campo LR CNN para habilitarlo/deshabilitarlo según arch
@@ -440,9 +441,13 @@ class PSApp:
         self._v_lambda = tk.StringVar(value="0.1")
         self._v_report = tk.IntVar(value=10)
         self._v_window = tk.IntVar(value=50)
+        self._v_max_steps = tk.StringVar(value="")  # Vacío = sin límite
         ent_lambda = self._entry(frm, "Staleness λ (0–1):", self._v_lambda, width=12)
         ent_report = self._entry(frm, "Steps por reporte:", self._v_report, width=12)
         ent_window = self._entry(frm, "Ventana métricas:", self._v_window, width=12)
+        ent_max_steps = self._entry(
+            frm, "Límite steps (vacío=∞):", self._v_max_steps, width=12
+        )
         ToolTip(
             ent_lambda,
             "Factor corrección staleness α(s)=1/(1+λ·s). λ=0: sin corrección, λ=1: fuerte.",
@@ -457,6 +462,12 @@ class PSApp:
             ent_window,
             "Tamaño de la ventana deslizante de métricas.\n"
             "Ventana=50: refleja los últimos 50 batches.",
+        )
+        ToolTip(
+            ent_max_steps,
+            "Límite máximo de steps.\n"
+            "Vacío o 0: sin límite.\n"
+            "Al alcanzar el límite se detiene automáticamente.",
         )
         ttk.Label(
             frm,
@@ -851,6 +862,27 @@ class PSApp:
             )
             return
 
+        # Max steps: vacío → 0 (sin límite), o entero > 0
+        max_steps_str = self._v_max_steps.get().strip()
+        max_steps: int
+        if not max_steps_str:
+            max_steps = 0
+        else:
+            try:
+                max_steps = int(max_steps_str)
+                if max_steps <= 0:
+                    messagebox.showerror(
+                        "Valor inválido",
+                        "El límite de steps debe ser un entero mayor que cero.",
+                    )
+                    return
+            except ValueError:
+                messagebox.showerror(
+                    "Valor inválido",
+                    "El límite de steps debe ser un entero positivo.",
+                )
+                return
+
         q = self._q
 
         self._state = self._S_LOADING
@@ -921,6 +953,7 @@ class PSApp:
                             bs,
                             img_sz,
                             seed,
+                            max_steps,
                         ),
                     )
                 )
@@ -971,12 +1004,59 @@ class PSApp:
         self._clock_running = False
         self._clock_start = 0.0
         self._m_clock.set("Clock: 00:00:00")
+        self._max_steps = 0  # Reset límite de steps
         self._m_step.set("Step: —")
         self._m_loss.set("Loss: —")
         self._m_acc.set("Acc: —")
         self._m_stale.set("Staleness: —")
         self._log("[PS] Servidor detenido.")
         self._status.set("Servidor detenido.")
+
+    def _auto_stop(self) -> None:
+        """
+        Detiene automáticamente el entrenamiento al alcanzar límite de steps.
+
+        Se llama desde _on_step() cuando step >= _max_steps. Detiene el PS,
+        limpia el estado y muestra messagebox.showinfo con la razón de parada.
+        No pregunta confirmación (a diferencia de _cmd_shutdown).
+
+        :returns: None
+        :rtype: None
+        """
+        if not self._ps:
+            return
+
+        final_step = self._m_step.get()  # Capturar antes de limpiar
+
+        # Detener PS
+        threading.Thread(target=self._ps.stop, daemon=True).start()
+
+        # Limpiar estado
+        self._state = self._S_OFFLINE
+        self._ps = None
+        self._workers.clear()
+        for row in self._tree.get_children():
+            self._tree.delete(row)
+        self._refresh_buttons()
+        self._set_config_enabled(True)
+
+        # Reset Clock y métricas
+        self._clock_running = False
+        self._clock_start = 0.0
+        self._m_clock.set("Clock: 00:00:00")
+        self._max_steps = 0
+        self._m_step.set("Step: —")
+        self._m_loss.set("Loss: —")
+        self._m_acc.set("Acc: —")
+        self._m_stale.set("Staleness: —")
+
+        self._log("[AutoStop] Entrenamiento detenido por límite de steps.")
+        self._status.set("Entrenamiento detenido por límite de steps.")
+
+        messagebox.showinfo(
+            "Entrenamiento detenido",
+            f"Se alcanzó el límite de steps configurado.\n\nÚltimo step: {final_step.split(':')[1].strip()}",
+        )
 
     def _cmd_evaluate(self) -> None:
         """
@@ -1052,10 +1132,23 @@ class PSApp:
                 kind, data = self._q.get_nowait()
 
                 if kind == "ps_ready":
-                    ps, host, port, arch, fdim, h1, h2, lr, lr_cnn, bs, img_sz, seed = (
-                        data
-                    )
+                    (
+                        ps,
+                        host,
+                        port,
+                        arch,
+                        fdim,
+                        h1,
+                        h2,
+                        lr,
+                        lr_cnn,
+                        bs,
+                        img_sz,
+                        seed,
+                        max_steps,
+                    ) = data
                     self._ps = ps
+                    self._max_steps = max_steps  # Guardar límite de steps
                     self._t_start = time.perf_counter()
                     self._clock_start = time.perf_counter()  # Clock independiente
                     self._state = self._S_LISTENING
@@ -1217,6 +1310,11 @@ class PSApp:
         self._m_loss.set(f"Loss: {loss:.4f}")
         self._m_acc.set(f"Acc: {acc:.2f}%")
         self._m_stale.set(f"Staleness: {stale}")
+
+        # Detener si se alcanzó el límite de steps
+        if self._max_steps > 0 and step >= self._max_steps:
+            self._log(f"[AutoStop] Límite de steps alcanzado: {step:,}")
+            self.root.after(0, self._auto_stop)
 
     def _on_report(self, step: int, loss: float, acc: float, elapsed: float) -> None:
         """
