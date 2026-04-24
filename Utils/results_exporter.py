@@ -310,7 +310,7 @@ class ResultsExporter:
         workers_count: np.ndarray,
     ) -> None:
         """Genera gráfica con 3 paneles horizontales: loss, accuracy, workers."""
-        fig = plt.figure(figsize=(13, 4), dpi=95)
+        fig = plt.figure(figsize=(20, 5.5), dpi=95)
         gs = GridSpec(1, 3, figure=fig, wspace=0.35)
 
         color_loss = "#F44336"
@@ -350,20 +350,20 @@ class ResultsExporter:
             0.98,
             "Nota: Cada gráfica tiene su propia escala Y",
             ha="center",
-            fontsize=9,
+            fontsize=12,
             color="gray",
             style="italic",
             transform=fig.transFigure,
         )
 
-        fig.subplots_adjust(left=0.05, right=0.98, top=0.92, bottom=0.15)
+        fig.subplots_adjust(left=0.05, right=0.98, top=0.88, bottom=0.12)
         output_path = self.session_dir / "plot_3panels.png"
-        plt.savefig(output_path, dpi=300)
+        plt.savefig(output_path, dpi=300, pad_inches=0.4)
         plt.close()
 
     def _plot_individual_loss(self, steps: np.ndarray, losses: np.ndarray) -> None:
         """Genera gráfica individual de Loss (estilo idéntico a la GUI)."""
-        fig, ax = plt.subplots(figsize=(10, 6))
+        fig, ax = plt.subplots(figsize=(10, 6.5))
 
         color_loss = "#F44336"
 
@@ -377,14 +377,14 @@ class ResultsExporter:
 
         plt.tight_layout()
         output_path = self.session_dir / "plot_loss.png"
-        plt.savefig(output_path, dpi=300, bbox_inches="tight")
+        plt.savefig(output_path, dpi=300, pad_inches=0.4)
         plt.close()
 
     def _plot_individual_accuracy(
         self, steps: np.ndarray, accuracies: np.ndarray
     ) -> None:
         """Genera gráfica individual de Accuracy (estilo idéntico a la GUI)."""
-        fig, ax = plt.subplots(figsize=(10, 6))
+        fig, ax = plt.subplots(figsize=(10, 6.5))
 
         color_acc = "#2196F3"
 
@@ -399,14 +399,14 @@ class ResultsExporter:
 
         plt.tight_layout()
         output_path = self.session_dir / "plot_accuracy.png"
-        plt.savefig(output_path, dpi=300, bbox_inches="tight")
+        plt.savefig(output_path, dpi=300, pad_inches=0.4)
         plt.close()
 
     def _plot_individual_workers(
         self, steps: np.ndarray, workers_count: np.ndarray
     ) -> None:
         """Genera gráfica individual de Workers (estilo idéntico a la GUI)."""
-        fig, ax = plt.subplots(figsize=(10, 6))
+        fig, ax = plt.subplots(figsize=(10, 6.5))
 
         color_workers = "#4CAF50"
 
@@ -419,7 +419,7 @@ class ResultsExporter:
 
         plt.tight_layout()
         output_path = self.session_dir / "plot_workers.png"
-        plt.savefig(output_path, dpi=300, bbox_inches="tight")
+        plt.savefig(output_path, dpi=300, pad_inches=0.4)
         plt.close()
 
     def _write_metadata(self) -> None:
