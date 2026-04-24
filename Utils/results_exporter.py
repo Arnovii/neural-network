@@ -131,7 +131,8 @@ class ResultsExporter:
 
         # Estadísticas para reporte final
         self._total_metrics = 0
-        self._start_time = time.time()
+        self._start_time = time.time()  # Cuando se creó el exporter
+        self._training_start_time: float | None = None  # Cuando llegó el primer step
 
     def record_metric(
         self,
@@ -154,6 +155,10 @@ class ResultsExporter:
         :param elapsed: Tiempo elapsed en segundos desde inicio del entrenamiento
         """
         with self._lock:
+            # Inicializar tiempo de entrenamiento cuando llega el primer step
+            if self._training_start_time is None:
+                self._training_start_time = time.time()
+
             self._metrics_steps.append(step)
             self._metrics_loss.append(loss)
             self._metrics_accuracy.append(accuracy)
@@ -339,6 +344,18 @@ class ResultsExporter:
         ax3.grid(True, alpha=0.3)
         ax3.set_ylim(0, max(workers_count) + 1)
 
+        # Nota sobre diferentes escalas Y
+        fig.text(
+            0.5,
+            0.98,
+            "Nota: Cada gráfica tiene su propia escala Y",
+            ha="center",
+            fontsize=9,
+            color="gray",
+            style="italic",
+            transform=fig.transFigure,
+        )
+
         fig.subplots_adjust(left=0.05, right=0.98, top=0.92, bottom=0.15)
         output_path = self.session_dir / "plot_3panels.png"
         plt.savefig(output_path, dpi=300)
@@ -410,12 +427,17 @@ class ResultsExporter:
         if len(self._metrics_loss) == 0:
             metadata = {"status": "no_metrics_recorded"}
         else:
+            # Calcular duration desde primer step (no desde creación del exporter)
+            duration = 0.0
+            if self._training_start_time is not None:
+                duration = time.time() - self._training_start_time
+
             metadata = {
                 "status": "completed",
                 "session_timestamp": self.timestamp,
                 "total_steps": int(self._metrics_steps[-1]),
                 "total_metrics_points": self._total_metrics,
-                "duration_seconds": time.time() - self._start_time,
+                "duration_seconds": duration,
                 "loss": {
                     "initial": float(self._metrics_loss[0]),
                     "final": float(self._metrics_loss[-1]),

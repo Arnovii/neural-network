@@ -941,10 +941,14 @@ class PSApp:
             self._tree.delete(row)
         self._refresh_buttons()
         self._set_config_enabled(True)
-        # Detener Clock
+        # Resetear Clock y métricas
         self._clock_running = False
         self._clock_start = 0.0
         self._m_clock.set("Clock: 00:00:00")
+        self._m_step.set("Step: —")
+        self._m_loss.set("Loss: —")
+        self._m_acc.set("Acc: —")
+        self._m_stale.set("Staleness: —")
         self._log("[PS] Servidor detenido.")
         self._status.set("Servidor detenido.")
 
