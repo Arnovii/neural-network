@@ -44,6 +44,17 @@ from typing import Any, Dict
 
 
 class MsgType(str, Enum):
+    """
+    Tipos de mensajes del protocolo de comunicación TCP.
+
+    Enum que define los 10 tipos de mensaje usados en el entrenamiento
+    distribuido asíncrono entre Workers y Parameter Server.
+
+    Flujo:
+        Worker → PS:  READY, CNN_ACK, REQUEST_PARAMS, UPDATES
+        PS → Worker: WORKER_ID, CONFIG, CNN_WEIGHTS, START, PARAMS, STOP
+    """
+
     READY = "READY"
     WORKER_ID = "WORKER_ID"
     CONFIG = "CONFIG"

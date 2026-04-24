@@ -146,6 +146,32 @@ class ToolTip:
 
 
 class PSApp:
+    """
+    Aplicación GUI del Parameter Server para entrenamiento distribuido en ImageNet.
+
+    Proporciona interfaz gráfica para:
+    - Configurar y controlar el Parameter Server (inicio/parada)
+    - Monitorear Workers conectados en tiempo real
+    - Visualizar métricas de entrenamiento (loss, accuracy, workers)
+    - Evaluar el modelo en dataset de validación
+    - Gestionar lifecycle del servidor (START, STOP, EVALUATE)
+
+    Estados:
+        - OFFLINE: Servidor no iniciado, configuración habilitada
+        - LOADING: Cargando CNN+MLP en hilo background
+        - LISTENING: Servidor activo, esperando Workers
+        - TRAINING: Entrenamiento en progreso
+
+    Atributos:
+        WORKER_COLORS: Colores para identificar Workers en la tabla.
+        _S_OFFLINE/_S_LOADING/_S_LISTENING/_S_TRAINING: Estados del servidor.
+
+    Ejemplo:
+        root = tk.Tk()
+        app = PSApp(root)
+        root.mainloop()
+    """
+
     WORKER_COLORS = [
         "#2196F3",
         "#4CAF50",

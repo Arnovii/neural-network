@@ -104,14 +104,21 @@ result_dir = exporter.finalize()
 
 **Formato**:
 ```
-step,loss,accuracy,num_workers
-1,7.0706,0.0000,1
-2,7.0633,0.0000,1
-3,7.0375,0.0052,1
-4,7.0262,0.0039,1
-5,7.0419,0.0031,1
+step,loss,accuracy,num_workers,elapsed_seconds
+1,7.0706,0.0000,1,0.0
+2,7.0633,0.0000,1,2.5
+3,7.0375,0.0052,1,5.1
+4,7.0262,0.0039,1,7.8
+5,7.0419,0.0031,1,10.2
 ...
 ```
+
+**Campos**:
+- `step`: Número de step global
+- `loss`: Pérdida en ventana deslizante
+- `accuracy`: Precisión en porcentaje (0-100)
+- `num_workers`: Workers conectados
+- `elapsed_seconds`: Tiempo desde primer step (segundos)
 
 **Uso típico**:
 ```python
@@ -121,11 +128,12 @@ df = pd.read_csv("metrics.csv")
 print(f"Loss final: {df['loss'].iloc[-1]:.4f}")
 print(f"Accuracy máxima: {df['accuracy'].max():.2%}")
 print(f"Workers promedio: {df['num_workers'].mean():.1f}")
+print(f"Tiempo total: {df['elapsed_seconds'].iloc[-1]:.1f}s")
 
 # Gráficas personalizadas
 import matplotlib.pyplot as plt
-plt.plot(df['step'], df['loss'])
-plt.xlabel('Step')
+plt.plot(df['elapsed_seconds'], df['loss'])
+plt.xlabel('Tiempo (s)')
 plt.ylabel('Loss')
 plt.title('Training Loss')
 plt.savefig('custom_loss.png', dpi=150)
@@ -148,8 +156,8 @@ Start time: 2026-04-21 19:30:15.550245
 [2026-04-21 19:30:25.563] [PARAM SRV] Worker 0 conectado desde 127.0.0.1:50603
 [2026-04-21 19:30:25.781] [PARAM SRV] Worker 0: CNN enviada — arch=resnet18 | cnn_params=120
 [2026-04-21 19:30:26.535] [PARAM SRV] Worker 0: CNN cargada ✓ arch=resnet18 mode=freeze
-[2026-04-21 19:30:41.435] [TRAIN MLP] Step 1 | loss=7.0706 | acc=0.00% | workers=1
-[2026-04-21 19:30:45.490] [TRAIN MLP] Step 2 | loss=7.0633 | acc=0.00% | workers=1
+[2026-04-21 19:30:41.435] [TRAIN MLP] Step 1 | loss=7.0706 | acc=0.00% | workers=1 | 0s
+[2026-04-21 19:30:45.490] [TRAIN MLP] Step 2 | loss=7.0633 | acc=0.00% | workers=1 | 4s
 ...
 ================================================================================
 END OF LOGS
@@ -162,20 +170,33 @@ END OF LOGS
 
 ```json
 {
+  "status": "completed",
+  "session_timestamp": "20260421_193015_550",
   "total_steps": 13,
-  "loss_min": 7.0082,
-  "loss_max": 7.0706,
-  "loss_mean": 7.0351,
-  "accuracy_min": 0.0031,
-  "accuracy_max": 0.0052,
-  "accuracy_mean": 0.0041,
-  "workers_min": 1,
-  "workers_max": 1,
-  "workers_mean": 1.0,
-  "training_time_seconds": 72.5,
-  "timestamp": "20260421_193015_550"
+  "total_metrics_points": 13,
+  "duration_seconds": 72.5,
+  "loss": {
+    "initial": 7.0706,
+    "final": 7.0082,
+    "min": 7.0082,
+    "max": 7.0706,
+    "mean": 7.0351
+  },
+  "accuracy": {
+    "initial": 0.0000,
+    "final": 0.0052,
+    "min": 0.0031,
+    "max": 0.0052,
+    "mean": 0.0041
+  },
+  "workers": {
+    "max_connected": 1
+  },
+  "total_log_lines": 156
 }
 ```
+
+**Nota**: `duration_seconds` mide el tiempo desde que se recibió el primer step hasta que se detuvo el entrenamiento.
 
 ### 5-9. plot_*.png
 
@@ -187,30 +208,32 @@ Combinación de 3 gráficas en un solo archivo:
 
 ```
 ┌─────────────────────────────────────────────────┐
+│ Nota: Cada gráfica tiene su propia escala Y     │ ← Advertencia
+├─────────────────────────────────────────────────┤
 │ Loss Evolution                                  │
 │ ┌───────────────────────────────────────────┐   │
 │ │  7.08 ●                                   │   │
 │ │       ●●●●●●●●●●●●                        │   │
-│ │  7.02 ●    (con margen 10% superior)      │   │
+│ │  7.02 ●                                   │   │
 │ └───────────────────────────────────────────┘   │
 ├─────────────────────────────────────────────────┤
 │ Accuracy Evolution                              │
 │ ┌───────────────────────────────────────────┐   │
 │ │  0.006■                                   │   │
 │ │        ■ ■  ■                             │   │
-│ │  0.002 ■■■■■■■■■■■ (margen dinámico)      │   │
+│ │  0.002 ■■■■■■■■■■■                        │   │
 │ └───────────────────────────────────────────┘   │
 ├─────────────────────────────────────────────────┤
 │ Active Workers Over Time                        │
 │ ┌───────────────────────────────────────────┐   │
 │ │  2 ▲                                      │   │
 │ │    ▲▲▲▲▲▲▲▲▲▲▲▲▲                          │   │
-│ │  1 ▲      (con margen 15% superior)       │   │
+│ │  1 ▲                                      │   │
 │ └───────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────┘
 ```
 
-**Escalas dinámicas**:
+**Nota importante**: Cada panel tiene su **propia escala Y**, independiente de los otros. Esto se indica con la advertencia en la parte superior de la imagen para evitar confusiones.
 - Loss: `[loss_min - 5%, loss_max + 10%]`
 - Accuracy: `[0, acc_max + max(0.05, 20%)]`
 - Workers: `[0, workers_max + 15%]`

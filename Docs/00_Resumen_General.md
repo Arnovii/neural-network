@@ -66,6 +66,7 @@ CRÍTICO:
 | **CNN Extractor** | ResNet-18 preentrenada (congelada) O SIMPLE CNN (entrenable E2E) | `Model/cnn_extractor.py` |
 | **MLP Classifier** | Clasificador con 2-3 capas entrenables | `Model/mlp_pytorch.py` |
 | **Streaming Pipeline** | Descarga y prepara batches desde HuggingFace | `Utils/imagenet_streaming.py` |
+| **Results Exporter** | Exporta métricas, logs y gráficas al finalizar | `Utils/results_exporter.py` |
 | **GUI** | Interfaz gráfica para control y monitoreo | `ps_gui_imagenet.py` |
 | **Terminal PS** | Point of entry para PS sin GUI | `ps_imagenet.py` |
 | **Terminal Worker** | Point of entry para Workers | `worker_imagenet.py` |

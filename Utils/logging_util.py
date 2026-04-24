@@ -4,6 +4,24 @@ from typing import Callable, List
 
 
 class FormattedLogger:
+    """
+    Logger con formateo colorido y soporte para handlers externos.
+
+    Proporciona logging estructurado con etiquetas de fase (PS, Worker, Train, etc.)
+    y códigos de color ANSI opcionales. Soporta registro de múltiples handlers
+    para capturar logs (ej: para exportar a archivo).
+
+    Atributos:
+        PHASES: Mapeo de identificadores de fase a etiquetas de texto.
+        COLORS: Mapeo de fases a códigos de color ANSI.
+        RESET: Código ANSI para resetear color.
+
+    Ejemplo:
+        logger = get_logger(use_colors=True)
+        logger.ps("Servidor iniciado", metric="port=9999")
+        logger.worker_msg(worker_id=0, msg="Worker conectado")
+    """
+
     PHASES = {
         "ps": "PARAM SRV",
         "worker": "WORKER",

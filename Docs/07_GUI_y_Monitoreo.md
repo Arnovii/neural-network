@@ -79,6 +79,7 @@ La interfaz gráfica es el **front-end de control y monitoreo** del sistema dist
    ↓
 ┌─────────────────────────────────────────┐
 │     LOADING State (background thread)   │
+│     • Validar HF Token                  │
 │     • Descargar pesos ResNet-18 (~50MB) │
 │     • Inicializar MLP (Kaiming init)    │
 │     • Llamar ps.set_cnn(), ps.set_mlp() │
@@ -89,13 +90,15 @@ La interfaz gráfica es el **front-end de control y monitoreo** del sistema dist
 ┌─────────────────────────────────────────┐
 │      LISTENING State                    │
 │ • TCP accept loop activo                │
+│ • Clock inicializado (00:00:00)         │
 │ • Esperando primer evento on_step()     │
 └──┬──────────────────────────────────────┘
    │ (llega primer step automáticamente)
    ↓
 ┌─────────────────────────────────────────┐
 │      TRAINING State (AUTO)              │
-│ • on_step() transiciona automáticamente │
+│ • Clock corre cada 1 segundo            │
+│ • on_step() actualiza métricas          │
 │ • workers entrenando                    │
 │ • gráficas actualizándose               │
 └──┬──────────────────────────────────────┘
@@ -104,6 +107,8 @@ La interfaz gráfica es el **front-end de control y monitoreo** del sistema dist
 ┌─────────────────────────────────────────┐
 │          OFFLINE                        │
 │ • Limpiar conexiones                    │
+│ • Reset Clock a 00:00:00                │
+│ • Reset métricas a "—"                  │
 │ • Rehabilitar configuración             │
 └─────────────────────────────────────────┘
 ```
@@ -111,11 +116,12 @@ La interfaz gráfica es el **front-end de control y monitoreo** del sistema dist
 ### Eventos y Callbacks
 
 ```python
-├─ on_step(step, loss, acc, staleness)
-│  └─ Actualizar métricas en tiempo real, update plot
+├─ on_step(step, loss, acc, staleness, elapsed)
+│  └─ Actualizar métricas, iniciar Clock en primer step
+│     elapsed: tiempo desde primer step (segundos)
 │
-├─ on_report(step, loss, acc)
-│  └─ Reporte cada steps_per_report steps
+├─ on_report(step, loss, acc, elapsed)
+│  └─ Reporte cada steps_per_report steps + status bar
 │
 ├─ on_worker_connected(wid, addr)
 │  └─ Agregar fila a tabla de workers
@@ -181,7 +187,20 @@ Step: 1,234              → ps.current_version
 Loss: 6.8743             → Last metric from on_step
 Accuracy: 2.34%          → Last metric
 Staleness: 2             → version - version_read del último UPDATES
+Clock: 00:15:32          → Reloj tiempo real (HH:MM:SS)
 ```
+
+**Nota sobre Tiempo**:
+
+La GUI muestra **dos** tipos de tiempo:
+
+| Métrica | Descripción | Formato | Inicio |
+|---------|-------------|---------|--------|
+| **Clock** | Reloj tiempo real | HH:MM:SS | Primer step recibido |
+| **elapsed** | Tiempo desde inicio | Segundos | Primer step recibido |
+
+- **Clock**: Actualiza cada 1 segundo, se reinicia a 00:00:00 al apagar
+- **elapsed**: Del PS, usado en status bar y exportado a CSV
 
 ### Entendiendo Accuracy: 3 Fuentes Distintas
 

@@ -130,13 +130,37 @@ class RunningMetrics:
         self._total: int = 0  # Cuenta total de batches procesados
 
     def update(self, loss: float, acc: float) -> None:
-        with self._lock:  # Sólo un hilo entra a la vez
+        """
+        Registra un batch de métricas en la ventana deslizante.
+
+        Añade loss y accuracy a sus deques correspondientes. Si la ventana
+        está llena, elimina automáticamente el valor más antiguo.
+
+        :param loss: Valor de pérdida del batch actual.
+        :type loss: float
+
+        :param acc: Precisión del batch actual (%).
+        :type acc: float
+
+        :returns: None
+        :rtype: None
+        """
+        with self._lock:  # Solo un hilo entra a la vez
             self._losses.append(loss)
             self._accs.append(acc)
             self._total += 1
 
     @property
     def total_batches(self) -> int:
+        """
+        Retorna el número total de batches procesados desde el inicio.
+
+        Contador acumulado que no se reinicia con la ventana deslizante.
+        Útil para calcular progreso global del entrenamiento.
+
+        :returns: Número total de batches procesados.
+        :rtype: int
+        """
         with self._lock:
             return self._total
 
@@ -467,16 +491,39 @@ class ParameterServer:
 
     @property
     def connected_workers(self) -> List[int]:
+        """
+        Retorna la lista ordenada de IDs de Workers conectados.
+
+        :returns: Lista de IDs de workers activos.
+        :rtype: List[int]
+        """
         with self._workers_lock:
             return sorted(self._sockets.keys())
 
     @property
     def current_version(self) -> int:
+        """
+        Retorna el número de versión actual del modelo global.
+
+        El versionado se incrementa con cada actualización aplicada.
+        Útil para monitorear el progreso de sincronización.
+
+        :returns: Número de versión actual.
+        :rtype: int
+        """
         with self._params_lock:
             return self._version
 
     @property
     def history(self) -> Dict[str, List]:
+        """
+        Retorna copia del historial de métricas del entrenamiento.
+
+        Incluye: steps, losses, accuracies, n_workers, elapsed, timestamps.
+
+        :returns: Diccionario con listas de histórico.
+        :rtype: Dict[str, List]
+        """
         with self._history_lock:
             return {k: list(v) for k, v in self._history.items()}
 
