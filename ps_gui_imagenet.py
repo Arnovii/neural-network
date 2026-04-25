@@ -221,8 +221,9 @@ class PSApp:
         self._val_loss: list = []
         self._val_acc: list = []
         self._workers_hist: list = []
+        self._elapsed_from_ps: float = 0.0  # Último elapsed recibido del PS
+        self._last_clock_update: float = 0.0  # Timestamp del último update del clock
         self._t_start: float = 0.0
-        self._clock_start: float = 0.0  # Clock: tiempo de inicio
         self._clock_running: bool = False  # Clock: corriendo flag
         self._max_steps: int = 0  # Límite de steps (0 = sin límite)
         self._status = tk.StringVar(value="Listo.")
@@ -930,6 +931,7 @@ class PSApp:
                         ("connected", (wid, addr))
                     ),
                     on_worker_disconnected=lambda wid: q.put(("disconnected", (wid,))),
+                    on_start_sent=lambda wid: q.put(("start_sent", (wid,))),
                 )
 
                 # set_cnn + set_mlp ANTES de listen → handshake siempre seguro
@@ -1002,7 +1004,8 @@ class PSApp:
         self._set_config_enabled(True)
         # Resetear Clock y métricas
         self._clock_running = False
-        self._clock_start = 0.0
+        self._elapsed_from_ps = 0.0
+        self._last_clock_update = 0.0
         self._m_clock.set("Clock: 00:00:00")
         self._max_steps = 0  # Reset límite de steps
         self._m_step.set("Step: —")
@@ -1042,7 +1045,8 @@ class PSApp:
 
         # Reset Clock y métricas
         self._clock_running = False
-        self._clock_start = 0.0
+        self._elapsed_from_ps = 0.0
+        self._last_clock_update = 0.0
         self._m_clock.set("Clock: 00:00:00")
         self._max_steps = 0
         self._m_step.set("Step: —")
@@ -1149,10 +1153,16 @@ class PSApp:
                     ) = data
                     self._ps = ps
                     self._max_steps = max_steps  # Guardar límite de steps
-                    self._t_start = time.perf_counter()
-                    self._clock_start = time.perf_counter()  # Clock independiente
+                    self._elapsed_from_ps = 0.0  # Inicializar tiempo del PS
+                    self._last_clock_update = (
+                        time.perf_counter()
+                    )  # Timestamp actual para calcular delta
+                    self._clock_running = (
+                        False  # Clock no inicia hasta primer worker conectado
+                    )
                     self._state = self._S_LISTENING
                     self._refresh_buttons()
+                    # NO programar update del reloj aún — esperamos primer on_step()
                     mode = (
                         "freeze (CNN congelada)"
                         if arch == "resnet18"
@@ -1177,6 +1187,8 @@ class PSApp:
                     self._on_connected(*data)
                 elif kind == "disconnected":
                     self._on_disconnected(*data)
+                elif kind == "start_sent":
+                    self._on_start_sent(*data)
                 elif kind == "step":
                     self._on_step(*data)
                 elif kind == "report":
@@ -1258,6 +1270,43 @@ class PSApp:
         self._refresh_buttons()
         self._log(f"[W{wid}] Desconectado.")
 
+    def _on_start_sent(self, wid: int) -> None:
+        """
+        Maneja evento cuando el PS envía START al primer worker.
+
+        Acciones:
+        1. Cambia estado a TRAINING (punto donde worker realmente comienza a entrenar)
+        2. Inicializa reloj:
+           - _clock_running = True
+           - _elapsed_from_ps = 0.0 (inicia con 0, se actualiza en on_step/on_report)
+           - _last_clock_update = perf_counter() (baseline para calcular delta)
+        3. Programa primer update del reloj (1000ms después)
+        4. Actualiza botones y estado visual de GUI
+        5. Loguea transición a TRAINING
+
+        El reloj ahora se actualiza continuamente incluso ANTES de que llegue
+        el primer step, porque el timer ya inició en START.
+
+        :param wid: ID del worker que recibió START.
+        :type wid: int
+
+        :returns: None
+        :rtype: None
+        """
+        if self._state != self._S_LISTENING:
+            return  # Solo transicionar si estamos en LISTENING (primer START)
+
+        self._state = self._S_TRAINING
+        self._clock_running = True
+        self._elapsed_from_ps = 0.0
+        self._last_clock_update = time.perf_counter()
+        self.root.after(1000, self._update_clock)
+        self._refresh_buttons()
+        self._log(
+            f"[PS] ✓ START enviado a Worker {wid} — Entrenamiento iniciado (Clock activado)."
+        )
+        self._status.set("Entrenamiento asíncrono en progreso...")
+
     def _on_step(
         self, step: int, loss: float, acc: float, stale: int, elapsed: float
     ) -> None:
@@ -1267,9 +1316,8 @@ class PSApp:
         Se llama después de cada step de entrenamiento en algún Worker.
         Actualiza los labels de status bar con valores actuales (sin agregar a historial).
 
-        En el primer step (cuando aún estamos en LISTENING), transiciona automáticamente
-        a TRAINING: esto indica que el entrenamiento asíncrono ha comenzado y los
-        Workers están enviando gradientes.
+        Nota: El estado ya cambió a TRAINING cuando se envió START, por lo que
+        aquí solo actualizamos el elapsed para sincronizar el reloj con el tiempo real del PS.
 
         Métricas mostradas:
         - Step: número de step actual (con separadores de miles)
@@ -1289,22 +1337,15 @@ class PSApp:
         :param stale: Máximo staleness observado (versión del modelo más antigua en uso).
         :type stale: int
 
-        :param elapsed: Tiempo elapsed en segundos desde inicio.
+        :param elapsed: Tiempo elapsed en segundos desde envío de START al primer worker (del PS).
         :type elapsed: float
 
         :returns: None
         :rtype: None
         """
-        # Auto-transición LISTENING → TRAINING en el primer step
-        if self._state == self._S_LISTENING:
-            self._state = self._S_TRAINING
-            self._t_start = time.perf_counter()
-            self._clock_start = time.perf_counter()  # Iniciar Clock
-            self._clock_running = True
-            self._refresh_buttons()
-            self._log("[PS] ✓ Primer step recibido — Entrenamiento asíncrono activo.")
-            self._status.set("Entrenamiento asíncrono en progreso...")
-            self._update_clock()  # Iniciar Clock cada segundo
+        # Actualiza tiempo del PS (para que el reloj use el valor correcto)
+        self._elapsed_from_ps = elapsed
+        self._last_clock_update = time.perf_counter()
 
         self._m_step.set(f"Step: {step:,}")
         self._m_loss.set(f"Loss: {loss:.4f}")
@@ -1339,12 +1380,16 @@ class PSApp:
         :param acc: Precisión promedio en ventana de training (%).
         :type acc: float
 
-        :param elapsed: Tiempo elapsed en segundos desde inicio (del PS).
+        :param elapsed: Tiempo elapsed en segundos desde envío de START al primer worker (del PS).
         :type elapsed: float
 
         :returns: None
         :rtype: None
         """
+        # Actualiza tiempo del PS (para que el reloj use el valor correcto)
+        self._elapsed_from_ps = elapsed
+        self._last_clock_update = time.perf_counter()
+
         self._steps_hist.append(step)
         self._loss_hist.append(loss)
         self._acc_hist.append(acc)
@@ -1360,24 +1405,31 @@ class PSApp:
 
     def _update_clock(self) -> None:
         """
-        Actualiza el Clock cada segundo cuando está en TRAINING.
+        Actualiza el Clock cada segundo continuamente desde que el PS está listo.
 
-        Muestra el tiempo transcurrido desde el primer step en formato HH:MM:SS.
-        Se ejecuta cada 1 segundo via root.after().
+        Muestra el tiempo transcurrido basado en el último elapsed recibido del PS,
+        más el delta de tiempo desde la última actualización del reloj.
+        Se ejecuta cada 1 segundo via root.after(), en LISTENING y TRAINING.
+
+        Formato: HH:MM:SS (horas:minutos:segundos)
         """
-        if not self._clock_running:
-            return
+        try:
+            if not self._clock_running:
+                return
 
-        if self._state == self._S_TRAINING:
-            elapsed = time.perf_counter() - self._clock_start
+            # Calcula el tiempo actual: elapsed del PS + delta desde última actualización del clock
+            now = time.perf_counter()
+            delta = now - self._last_clock_update
+            elapsed = self._elapsed_from_ps + delta
+
             hours = int(elapsed // 3600)
             minutes = int((elapsed % 3600) // 60)
             seconds = int(elapsed % 60)
             self._m_clock.set(f"Clock: {hours:02d}:{minutes:02d}:{seconds:02d}")
-        else:
-            self._m_clock.set("Clock: 00:00:00")
-
-        self.root.after(1000, self._update_clock)
+        finally:
+            # Siempre reprogramar el siguiente update (incluso si hay error)
+            if self._clock_running:
+                self.root.after(1000, self._update_clock)
 
     def _on_val(self, step: int, loss: float, acc: float) -> None:
         """

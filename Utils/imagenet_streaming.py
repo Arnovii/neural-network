@@ -283,7 +283,11 @@ class ImageNetStream:
         :raises ConnectionError: Si no es posible conectar con HuggingFace Hub
         """
         # Importa librería de HuggingFace para acceder a datasets remotos
+        import os
         from datasets import load_dataset
+
+        # Establece timeout para conexión a HuggingFace (evita bloqueos indefinidos)
+        os.environ["HF_DATASETS_TIMEOUT"] = "30"  # 30 segundos
 
         access_data = {"streaming": True, "split": "train"}
         if self.hf_token:
@@ -343,24 +347,42 @@ class ImageNetStream:
         cuando se agota. Actualiza estadísticas _batches y _samples.
         Omite muestras con errores de decodificación.
 
-        Loop del generador:
+        Loop del generador (con límite de reintentos = 5):
           1. Abre dataset (perezoso, reutiliza si ya está abierto)
           2. Itera muestras: extrae imagen/label, transforma, acumula
           3. Cuando buffer alcanza batch_size: yielda batch, actualiza counters
           4. Al agotarse dataset: limpia _dataset, reinicia (iteración infinita)
-          5. En excepción: espera 5s, limpia _dataset, reinten(resiliencia de red)
+          5. En excepción: espera 5s, reintentos limitados (máx 5 intentos)
 
         :returns: Generador con stream infinito de batches (imágenes, labels)
         :rtype: Generator[Tuple[np.ndarray, np.ndarray], None, None]
 
-        :raises RuntimeError: Nunca elevada por el generador mismo (excepciones capturadas y reconectadas)
-        :raises Exception: Propaga si _open_dataset() falla después de reconexiones
+        :raises RuntimeError: Si se alcanzan 5 fallos de conexión consecutivos
+        :raises Exception: Propaga si _open_dataset() falla después de reintentos
         """
         buf_X: list = []
         buf_Y: list = []
+        reconnect_count = 0
+        MAX_RECONNECT_ATTEMPTS = 5
+
         while True:
             if self._dataset is None:
-                self._dataset = self._open_dataset()
+                if reconnect_count >= MAX_RECONNECT_ATTEMPTS:
+                    raise RuntimeError(
+                        f"[Stream W{self.worker_rank}] Failed to connect after "
+                        f"{MAX_RECONNECT_ATTEMPTS} attempts. Aborting."
+                    )
+                try:
+                    self._dataset = self._open_dataset()
+                    reconnect_count = 0  # Reset contador al conectar exitosamente
+                except Exception as e:
+                    reconnect_count += 1
+                    print(
+                        f"[Stream W{self.worker_rank}] Connection error ({reconnect_count}/{MAX_RECONNECT_ATTEMPTS}): {e}. "
+                        f"Retrying in 5s..."
+                    )
+                    time.sleep(5)
+                    continue
             try:
                 for sample in self._dataset:
                     raw = sample.get("image") or sample.get("jpg") or sample.get("png")
@@ -398,8 +420,10 @@ class ImageNetStream:
                 # Stream agotado -> reiniciar
                 self._dataset = None
             except Exception as e:
+                reconnect_count += 1
                 print(
-                    f"[Stream W{self.worker_rank}] Error: {e}. Reconectando en 5 s..."
+                    f"[Stream W{self.worker_rank}] Stream error ({reconnect_count}/{MAX_RECONNECT_ATTEMPTS}): {e}. "
+                    f"Reconnecting in 5s..."
                 )
                 time.sleep(5)
                 self._dataset = None
@@ -548,6 +572,8 @@ class PrefetchBuffer:
                         self._q.put(batch, timeout=1.0)
                         break
                     except queue.Full:
+                        # Espera 100 milisegundos para evitar busy-wait cuando cola llena
+                        time.sleep(0.01)
                         continue
         except Exception as e:
             self._error = e
@@ -592,6 +618,8 @@ class PrefetchBuffer:
             except queue.Empty:
                 if self._stop.is_set():
                     raise StopIteration
+                # Espera 100 milisegundos para evitar busy-wait
+                time.sleep(0.1)
                 continue
             if item is None:
                 raise RuntimeError(

@@ -131,8 +131,6 @@ class ResultsExporter:
 
         # Estadísticas para reporte final
         self._total_metrics = 0
-        self._start_time = time.time()  # Cuando se creó el exporter
-        self._training_start_time: float | None = None  # Cuando llegó el primer step
 
     def record_metric(
         self,
@@ -155,10 +153,6 @@ class ResultsExporter:
         :param elapsed: Tiempo elapsed en segundos desde inicio del entrenamiento
         """
         with self._lock:
-            # Inicializar tiempo de entrenamiento cuando llega el primer step
-            if self._training_start_time is None:
-                self._training_start_time = time.time()
-
             self._metrics_steps.append(step)
             self._metrics_loss.append(loss)
             self._metrics_accuracy.append(accuracy)
@@ -254,7 +248,6 @@ class ResultsExporter:
             f.write("PARAMETER SERVER LOGS\n")
             f.write("=" * 80 + "\n")
             f.write(f"Session: {self.timestamp}\n")
-            f.write(f"Start time: {datetime.fromtimestamp(self._start_time)}\n")
             f.write("=" * 80 + "\n\n")
 
             for log_line in self._logs:
@@ -441,10 +434,9 @@ class ResultsExporter:
         if len(self._metrics_loss) == 0:
             metadata = {"status": "no_metrics_recorded"}
         else:
-            # Calcular duration desde primer step (no desde creación del exporter)
-            duration = 0.0
-            if self._training_start_time is not None:
-                duration = time.time() - self._training_start_time
+            # duration_seconds es el último elapsed recibido del ParameterServer
+            # Garantiza consistencia: mismo timer source (perf_counter) que PS y GUI
+            duration = self._metrics_elapsed[-1] if self._metrics_elapsed else 0.0
 
             metadata = {
                 "status": "completed",

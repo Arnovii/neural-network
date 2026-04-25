@@ -200,6 +200,7 @@ class ParameterServer:
         on_report: Callable | None = None,
         on_worker_connected: Callable | None = None,
         on_worker_disconnected: Callable | None = None,
+        on_start_sent: Callable | None = None,
     ) -> None:
         """
         Inicializa el Parameter Server para entrenamiento Async-SGD distribuido.
@@ -278,6 +279,7 @@ class ParameterServer:
         self.on_report = on_report
         self.on_worker_connected = on_worker_connected
         self.on_worker_disconnected = on_worker_disconnected
+        self.on_start_sent = on_start_sent
 
         # Estado del modelo
         self._mlp_state: Dict[str, np.ndarray] = {}
@@ -293,6 +295,9 @@ class ParameterServer:
         # Contador global de versión
         self._version: int = 0
         self._t_start: float = 0.0  # Tiempo de inicio (para elapsed)
+        self._t_start_initialized: bool = (
+            False  # Flag para inicializar solo una vez en START
+        )
 
         # CNN (para distribución inicial y evaluación)
         self._cnn: CNNExtractor | None = None
@@ -713,6 +718,16 @@ class ParameterServer:
         # ----------------- 4. START -----------------
         try:
             send_message(conn, MsgType.START, {})
+
+            # Inicia temporizador (punto de inicio real del entrenamiento del worker)
+            with self._params_lock:
+                if not self._t_start_initialized:
+                    self._t_start = time.perf_counter()
+                    self._t_start_initialized = True
+
+            # Notifica a la GUI que el primer worker ha recibido START
+            if self.on_start_sent:
+                self.on_start_sent(wid)
         except Exception as e:
             _log.error(f"Error enviando START a Worker {wid}: {e}")
             self._remove_worker(wid)
@@ -865,11 +880,8 @@ class ParameterServer:
             self._version += 1
             step = self._version
 
-        # Inicializar tiempo de inicio en el primer step
-        if self._t_start == 0.0:
-            self._t_start = time.perf_counter()
-
-        elapsed = time.perf_counter() - self._t_start
+        # Tiempo de entrenamiento desde que se envió START al primer worker
+        elapsed = time.perf_counter() - self._t_start if self._t_start != 0.0 else 0.0
 
         self._metrics.update(loss, acc)
         if self.on_step:

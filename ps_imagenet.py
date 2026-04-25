@@ -192,8 +192,6 @@ def main() -> None:
         """
         print(f"  [-] Worker {wid} desconectado.")
 
-    step_ts: list = []
-
     def on_step(
         step: int, loss: float, acc: float, staleness: int, elapsed: float
     ) -> None:
@@ -225,6 +223,10 @@ def main() -> None:
         :returns: None
         :rtype: None
         """
+        # Debug: mostrar el primer step
+        if step == 1:
+            print(f"\n✓ PRIMER STEP RECIBIDO (step={step})\n")
+
         if step % 50 == 0:
             print(
                 f"  step={step:6,d} | loss={loss:.4f} | acc={acc:.2f}% | "
@@ -241,9 +243,12 @@ def main() -> None:
         Proporciona feedback visual periódico del progreso del entrenamiento.
 
         Formato:
-        ────────────────────────────────────────────────────────
+        ──────────────────────────────────────────────────────────────────
           Reporte | step=XXXX | loss=X.XXXX | acc=XX.XX% | elapsed=XXXs
-        ────────────────────────────────────────────────────────
+        ──────────────────────────────────────────────────────────────────
+
+        Tiempo medido desde que se envió START al primer worker (punto de inicio real del entrenamiento).
+        Incluye latencia de red, pero excluye inicialización del servidor.
 
         Este callback se registra en ParameterServer.on_report.
 
@@ -256,7 +261,7 @@ def main() -> None:
         :param acc: Precisión promedio en ventana de métricas (%).
         :type acc: float
 
-        :param elapsed: Tiempo elapsed en segundos desde inicio.
+        :param elapsed: Tiempo elapsed en segundos desde envío de START al primer worker.
         :type elapsed: float
 
         :returns: None
