@@ -48,11 +48,20 @@ import torch
 import torchvision.transforms.v2 as T
 from PIL import Image
 
+from Utils.constants import (
+    DEFAULT_BATCH_SIZE,
+    HF_DATASET_DEFAULT,
+    IMAGE_SIZE,
+    PREFETCH_DEFAULT,
+    SHUFFLE_BUFFER_DEFAULT,
+    VALIDATION_BATCH_SIZE_DEFAULT,
+    VAL_BATCHES_DEFAULT,
+)
+
 
 # ── Estadísticas estándar de ImageNet ────────────────────────────
 MEAN = [0.485, 0.456, 0.406]
 STD = [0.229, 0.224, 0.225]
-NUM_CLASSES = 1000
 
 
 # ================================================================
@@ -60,7 +69,7 @@ NUM_CLASSES = 1000
 # ================================================================
 
 
-def get_train_transform(image_size: int = 224) -> T.Compose:
+def get_train_transform(image_size: int = IMAGE_SIZE) -> T.Compose:
     """
     Crea transformaciones de imagen para entrenamiento en ImageNet.
 
@@ -110,7 +119,7 @@ def get_train_transform(image_size: int = 224) -> T.Compose:
     )
 
 
-def get_val_transform(image_size: int = 224) -> T.Compose:
+def get_val_transform(image_size: int = IMAGE_SIZE) -> T.Compose:
     """
     Crea transformaciones de imagen para validación/inferencia en ImageNet.
 
@@ -206,12 +215,12 @@ class ImageNetStream:
 
     def __init__(
         self,
-        dataset_name: str = "ILSVRC/imagenet-1k",
+        dataset_name: str = HF_DATASET_DEFAULT,
         worker_rank: int = 0,
         num_workers: int = 1,
-        batch_size: int = 64,
-        image_size: int = 224,
-        shuffle_buffer: int = 1000,
+        batch_size: int = DEFAULT_BATCH_SIZE,
+        image_size: int = IMAGE_SIZE,
+        shuffle_buffer: int = SHUFFLE_BUFFER_DEFAULT,
         seed: int | None = None,
         hf_token: str | None = None,
     ) -> None:
@@ -658,10 +667,10 @@ class ValidationStream:
 
     def __init__(
         self,
-        dataset_name: str = "ILSVRC/imagenet-1k",
-        batch_size: int = 256,
-        image_size: int = 224,
-        max_batches: int | None = None,
+        dataset_name: str = HF_DATASET_DEFAULT,
+        batch_size: int = VALIDATION_BATCH_SIZE_DEFAULT,
+        image_size: int = IMAGE_SIZE,
+        max_batches: int | None = VAL_BATCHES_DEFAULT,
         hf_token: str | None = None,
     ) -> None:
         """
@@ -757,11 +766,11 @@ class ValidationStream:
 def build_worker_stream(
     worker_rank: int,
     num_workers: int,
-    batch_size: int = 64,
-    dataset_name: str = "ILSVRC/imagenet-1k",
-    image_size: int = 224,
-    shuffle_buffer: int = 1000,
-    prefetch_batches: int = 4,
+    batch_size: int = DEFAULT_BATCH_SIZE,
+    dataset_name: str = HF_DATASET_DEFAULT,
+    image_size: int = IMAGE_SIZE,
+    shuffle_buffer: int = SHUFFLE_BUFFER_DEFAULT,
+    prefetch_batches: int = PREFETCH_DEFAULT,
     seed: int | None = None,
     hf_token: str | None = None,
 ) -> PrefetchBuffer:

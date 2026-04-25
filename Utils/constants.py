@@ -16,36 +16,38 @@ USO:
 IMAGE_SIZE: int = 224
 DEFAULT_BATCH_SIZE: int = 64
 
-# MLP hidden layers
+# Capas ocultas de la MLP
 HIDDEN1_DEFAULT: int = 1024
 HIDDEN2_DEFAULT: int = 512
 
 # Learning rates
-DEFAULT_LR: float = 0.01
+DEFAULT_LR: float = 0.001
 DEFAULT_LR_CNN: float = 0.001
 DEFAULT_STALENESS_LAMBDA: float = 0.1
 
-# Report & window
+# Informe y ventana (CLI defaults para PS)
 STEPS_PER_REPORT: int = 500
 METRICS_WINDOW: int = 200
 VAL_BATCHES_DEFAULT: int = 50
 
+# Valores predeterminados runtime (para GUI display)
+PS_STEPS_PER_REPORT_DEFAULT: int = 500
+PS_METRICS_WINDOW_DEFAULT: int = 200
+WORKER_ACCUM_STEPS_DEFAULT: int = 1
+MAX_STEPS_UNLIMITED: int = 0
+
 # Clasificación
 NUM_CLASSES: int = 1000
 
-# Feature dimensions por arquitectura
-RESNET18_FEATURE_DIM: int = 512
-SIMPLECNN_FEATURE_DIM: int = 512
+# Feature dimensions
+FEATURE_DIM: int = 512
 
 # ============================================================
-# CONEXIÓN Y MÉTRICAS
+# CONEXIÓN Y RED
 # ============================================================
 
 DEFAULT_HOST: str = "0.0.0.0"
 DEFAULT_PORT: int = 9999
-
-STEPS_PER_REPORT: int = 10
-METRICS_WINDOW: int = 50
 
 # ============================================================
 # COLORES (GUI & Gráficas)
@@ -85,15 +87,34 @@ GUI_COLORS = {
 MAX_LOG_LINES: int = 300
 POLL_TIMEOUT_MS: int = 100
 CLOCK_UPDATE_MS: int = 1000
+GUI_INITIAL_XMAX: int = 4
 
 # Tooltip
 TOOLTIP_DELAY_MS: int = 500
+
+# Worker/UI palette
+WORKER_COLORS = [
+    "#2196F3",
+    "#4CAF50",
+    "#FF9800",
+    "#9C27B0",
+    "#F44336",
+    "#00BCD4",
+    "#795548",
+    "#E91E63",
+]
 
 # ============================================================
 # EXPORTACIÓN
 # ============================================================
 
 EXPORT_DIR_DEFAULT: str = "./Exports"
+
+# Validación
+VALIDATION_BATCH_SIZE_DEFAULT: int = 256
+
+# Predeterminado en la CLI del worker
+WORKER_SERVER_HOST_DEFAULT: str = "127.0.0.1"
 
 # ============================================================
 # STREAMING
@@ -104,3 +125,14 @@ SHUFFLE_BUFFER_DEFAULT: int = 1000
 
 # HuggingFace
 HF_DATASET_DEFAULT: str = "ILSVRC/imagenet-1k"
+
+# ============================================================
+# ENTRENAMIENTO
+# ============================================================
+
+GRAD_CLIP_MAX_NORM: float = 10.0  # Umbral de recorte del gradiente (modo E2E)
+LABEL_SMOOTHING: float = 0.1  # Suavizado de etiquetas en CrossEntropyLoss
+WEIGHT_DECAY: float = 1e-4  # L2 regularización en SGD (modo E2E)
+
+# Semilla por defecto (None = aleatorio)
+DEFAULT_SEED: int | None = None

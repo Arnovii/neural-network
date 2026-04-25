@@ -78,13 +78,21 @@ from Model.cnn_extractor import CNNExtractor
 from Model.mlp_pytorch import MLPPyTorch
 from Utils.imagenet_streaming import PrefetchBuffer, build_worker_stream
 from Utils.logging_util import get_logger
+from Utils.constants import (
+    DEFAULT_LR,
+    DEFAULT_LR_CNN,
+    DEFAULT_SEED,
+    GRAD_CLIP_MAX_NORM,
+    HF_DATASET_DEFAULT,
+    LABEL_SMOOTHING,
+    NUM_CLASSES,
+    WORKER_ACCUM_STEPS_DEFAULT,
+    PREFETCH_DEFAULT,
+    SHUFFLE_BUFFER_DEFAULT,
+    WEIGHT_DECAY,
+)
 
 _log = get_logger(use_colors=True)
-
-_IMAGENET_CLASSES = 1000
-_GRAD_CLIP_MAX_NORM = 10.0  # Umbral de gradient clipping (E2E)
-_LABEL_SMOOTHING = 0.1  # Suavizado de etiquetas en CrossEntropyLoss
-_WEIGHT_DECAY = 1e-4  # L2 regularización en SGD (modo E2E)
 
 
 class WorkerNode:
@@ -138,12 +146,12 @@ class WorkerNode:
         self,
         server_host: str,
         server_port: int,
-        dataset_name: str = "ILSVRC/imagenet-1k",
+        dataset_name: str = HF_DATASET_DEFAULT,
         device: str = "cpu",
-        shuffle_buffer: int = 1000,
-        prefetch_batches: int = 4,
-        seed: int | None = None,
-        accum_steps: int = 1,
+        shuffle_buffer: int = SHUFFLE_BUFFER_DEFAULT,
+        prefetch_batches: int = PREFETCH_DEFAULT,
+        seed: int | None = DEFAULT_SEED,
+        accum_steps: int = WORKER_ACCUM_STEPS_DEFAULT,
     ) -> None:
         # Configuración de red
         self.server_host = server_host
@@ -193,8 +201,8 @@ class WorkerNode:
         self._all_params: List[torch.nn.Parameter] = []
 
         # LRs actuales — guardados en _rebuild_optimizer para acceso en _train_batch
-        self._lr_mlp: float = 0.01
-        self._lr_cnn: float = 0.001
+        self._lr_mlp: float = DEFAULT_LR
+        self._lr_cnn: float = DEFAULT_LR_CNN
 
     # ================================================================
     # PUNTO DE ENTRADA
@@ -558,7 +566,7 @@ class WorkerNode:
                     {"params": list(self._mlp.parameters()), "lr": lr},
                 ],
                 lr=lr,  # default (sobreescrito por los grupos)
-                weight_decay=_WEIGHT_DECAY,  # L2 regularización: θ += -wd·θ por paso
+                weight_decay=WEIGHT_DECAY,  # L2 regularización: θ += -wd·θ por paso
             )
             # _all_params para clipping: lista completa CNN+MLP precalculada
             self._all_params = list(self._cnn._model.parameters()) + list(
@@ -787,7 +795,7 @@ class WorkerNode:
             self._mlp.zero_grad()
             logits = self._mlp(features)
             loss_t = nn.functional.cross_entropy(
-                logits, Y, label_smoothing=_LABEL_SMOOTHING
+                logits, Y, label_smoothing=LABEL_SMOOTHING
             )
             loss_t.backward()
 
@@ -810,12 +818,12 @@ class WorkerNode:
             features = self._cnn._model(X)
             logits = self._mlp(features)
             loss_t = nn.functional.cross_entropy(
-                logits, Y, label_smoothing=_LABEL_SMOOTHING
+                logits, Y, label_smoothing=LABEL_SMOOTHING
             )
             loss_t.backward()
 
             # Gradient clipping sobre lista precalculada (no se reconstruye aquí)
-            nn.utils.clip_grad_norm_(self._all_params, max_norm=_GRAD_CLIP_MAX_NORM)
+            nn.utils.clip_grad_norm_(self._all_params, max_norm=GRAD_CLIP_MAX_NORM)
 
             # SGD step en C++ (sin bucle Python por parámetro)
             self._sgd.step()
@@ -891,7 +899,7 @@ class WorkerNode:
         - feature_dim (capa entrada): shape[1] de fc1.weight
         - hidden1 (capa oculta 1): shape[0] de fc1.weight
         - hidden2 (capa oculta 2): shape[0] de fc2.weight
-        - n_classes: _IMAGENET_CLASSES (1000)
+        - n_classes: NUM_CLASSES (1000)
 
         Si ya existe, reutiliza la instancia para evitar reconstruir el módulo.
         Copia parámetros del estado recibido del PS en lugar de usar load_state_dict()
@@ -916,12 +924,12 @@ class WorkerNode:
             feature_dim = mlp_state["fc1.weight"].shape[1]
             hidden1 = mlp_state["fc1.weight"].shape[0]
             hidden2 = mlp_state["fc2.weight"].shape[0]
-            existing = MLPPyTorch(feature_dim, hidden1, hidden2, _IMAGENET_CLASSES).to(
+            existing = MLPPyTorch(feature_dim, hidden1, hidden2, NUM_CLASSES).to(
                 self.device
             )
             _log.worker_msg(
                 self._worker_id,
-                f"MLP creado desde PS: {feature_dim}→{hidden1}→{hidden2}→{_IMAGENET_CLASSES}",
+                f"MLP creado desde PS: {feature_dim}→{hidden1}→{hidden2}→{NUM_CLASSES}",
             )
 
         with torch.no_grad():

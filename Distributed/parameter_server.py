@@ -55,6 +55,19 @@ from Distributed.protocol import MsgType, receive_message, send_message
 from Model.cnn_extractor import CNNExtractor
 from Utils.logging_util import get_logger
 from Utils.results_exporter import ResultsExporter
+from Utils.constants import (
+    DEFAULT_BATCH_SIZE,
+    DEFAULT_LR,
+    DEFAULT_LR_CNN,
+    DEFAULT_SEED,
+    DEFAULT_STALENESS_LAMBDA,
+    EXPORT_DIR_DEFAULT,
+    HIDDEN1_DEFAULT,
+    HIDDEN2_DEFAULT,
+    IMAGE_SIZE,
+    PS_METRICS_WINDOW_DEFAULT,
+    PS_STEPS_PER_REPORT_DEFAULT,
+)
 
 _log = get_logger(use_colors=True)
 
@@ -186,16 +199,18 @@ class ParameterServer:
         self,
         host: str,
         port: int,
-        learning_rate: float = 0.01,
-        learning_rate_cnn: float = 0.001,
-        staleness_lambda: float = 0.1,
-        steps_per_report: int = 10,
-        metrics_window: int = 50,
-        batch_size: int = 64,
-        image_size: int = 224,
-        seed: int | None = None,
+        learning_rate: float = DEFAULT_LR,
+        learning_rate_cnn: float = DEFAULT_LR_CNN,
+        staleness_lambda: float = DEFAULT_STALENESS_LAMBDA,
+        steps_per_report: int = PS_STEPS_PER_REPORT_DEFAULT,
+        metrics_window: int = PS_METRICS_WINDOW_DEFAULT,
+        batch_size: int = DEFAULT_BATCH_SIZE,
+        image_size: int = IMAGE_SIZE,
+        seed: int | None = DEFAULT_SEED,
         hf_token: str | None = None,
-        export_dir: str = "./Exports",
+        export_dir: str = EXPORT_DIR_DEFAULT,
+        hidden1: int = HIDDEN1_DEFAULT,
+        hidden2: int = HIDDEN2_DEFAULT,
         on_step: Callable | None = None,
         on_report: Callable | None = None,
         on_worker_connected: Callable | None = None,
@@ -274,6 +289,8 @@ class ParameterServer:
         self.seed = seed
         self.hf_token = hf_token
         self.export_dir = export_dir
+        self.hidden1 = hidden1
+        self.hidden2 = hidden2
 
         self.on_step = on_step
         self.on_report = on_report
@@ -432,6 +449,12 @@ class ParameterServer:
             "seed": self.seed,
             "host": self.host,
             "port": self.port,
+            "cnn_arch": getattr(
+                self._cnn, "arch", "unknown"
+            ),  # Obtiene arquitectura CNN
+            "hidden1": self.hidden1,
+            "hidden2": self.hidden2,
+            "steps_per_report": self.steps_per_report,
             "description": "Distributed Async-SGD on ImageNet-1k",
         }
         self._results_exporter = ResultsExporter(

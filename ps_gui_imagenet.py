@@ -43,18 +43,27 @@ from Distributed.parameter_server import ParameterServer
 from Model.cnn_extractor import CNNExtractor
 from Model.mlp_pytorch import MLPPyTorch
 from Utils.constants import (
+    CLOCK_UPDATE_MS,
+    COLORS,
+    DEFAULT_HOST,
     DEFAULT_PORT,
     IMAGE_SIZE,
     DEFAULT_BATCH_SIZE,
+    GUI_COLORS,
+    GUI_INITIAL_XMAX,
     HIDDEN1_DEFAULT,
     HIDDEN2_DEFAULT,
     DEFAULT_LR,
     DEFAULT_LR_CNN,
     DEFAULT_STALENESS_LAMBDA,
+    MAX_LOG_LINES,
+    POLL_TIMEOUT_MS,
+    TOOLTIP_DELAY_MS,
     STEPS_PER_REPORT,
     METRICS_WINDOW,
     HF_DATASET_DEFAULT,
     VAL_BATCHES_DEFAULT,
+    WORKER_COLORS as WORKER_COLOR_PALETTE,
 )
 
 
@@ -107,7 +116,7 @@ class ToolTip:
         :returns: None
         :rtype: None
         """
-        self._id = self.widget.after(500, self._show)
+        self._id = self.widget.after(TOOLTIP_DELAY_MS, self._show)
 
     def _cancel(self) -> None:
         """
@@ -187,16 +196,7 @@ class PSApp:
         root.mainloop()
     """
 
-    WORKER_COLORS = [
-        "#2196F3",
-        "#4CAF50",
-        "#FF9800",
-        "#9C27B0",
-        "#F44336",
-        "#00BCD4",
-        "#795548",
-        "#E91E63",
-    ]
+    WORKER_COLORS = WORKER_COLOR_PALETTE
     _S_OFFLINE = "OFFLINE"
     _S_LOADING = "LOADING"  # cargando CNN+MLP (hilo background)
     _S_LISTENING = "LISTENING"
@@ -325,7 +325,7 @@ class PSApp:
 
         # ── Conexión ──
         self._section(frm, "Conexión TCP")
-        self._v_host = tk.StringVar(value="0.0.0.0")
+        self._v_host = tk.StringVar(value=DEFAULT_HOST)
         self._v_port = tk.IntVar(value=DEFAULT_PORT)
         ent_host = self._entry(frm, "Host:", self._v_host)
         ent_port = self._entry(frm, "Puerto:", self._v_port, width=10)
@@ -351,7 +351,7 @@ class PSApp:
             frm,
             text="ℹ ILSVRC/imagenet-1k requiere token con\n  licencia aceptada en HF.",
             font=("Helvetica", 8),
-            foreground="#1565C0",
+            foreground=COLORS["info"],
             justify=tk.LEFT,
         ).pack(anchor=tk.W, pady=(2, 4))
 
@@ -401,7 +401,7 @@ class PSApp:
             text="ℹ resnet18: CNN congelada, solo MLP aprende\n"
             "  simple: CNN + MLP aprenden conjuntamente (E2E)",
             font=("Helvetica", 8),
-            foreground="#6A1B9A",
+            foreground=GUI_COLORS["label"],
             justify=tk.LEFT,
         ).pack(anchor=tk.W, pady=(2, 4))
 
@@ -447,7 +447,7 @@ class PSApp:
             frm,
             text="ℹ LR CNN deshabilitado (resnet18 está congelada)",
             font=("Helvetica", 8),
-            foreground="#607D8B",
+            foreground=COLORS["muted"],
             justify=tk.LEFT,
         )
         self._lbl_lr_cnn_info.pack(anchor=tk.W, pady=(2, 4))
@@ -706,7 +706,7 @@ class PSApp:
             ax.set_ylabel(ylabel)
             ax.grid(True, alpha=0.3)
             ax.xaxis.set_major_locator(MaxNLocator(integer=True))
-            ax.set_xlim(0, 4)  # Rango inicial: 0 a 4 steps
+            ax.set_xlim(0, GUI_INITIAL_XMAX)
         self._ax_acc.set_ylim(0, 100)
         self._ax_wk.set_ylim(0, 2)
         self._ax_wk.yaxis.set_major_locator(MaxNLocator(integer=True))
@@ -940,6 +940,8 @@ class PSApp:
                     image_size=img_sz,
                     seed=seed,
                     hf_token=hf_token,
+                    hidden1=h1,
+                    hidden2=h2,
                     on_step=lambda step, loss, acc, stale, elapsed: q.put(
                         ("step", (step, loss, acc, stale, elapsed))
                     ),
@@ -983,7 +985,7 @@ class PSApp:
                 q.put(("init_error", e))
 
         threading.Thread(target=_init, daemon=True).start()
-        self.root.after(100, self._poll)
+        self.root.after(POLL_TIMEOUT_MS, self._poll)
 
     def _cmd_shutdown(self) -> None:
         """
@@ -1033,6 +1035,7 @@ class PSApp:
         self._m_stale.set("Staleness: —")
         self._log("[PS] Servidor detenido.")
         self._status.set("Servidor detenido.")
+        self._update_lr_cnn_state()  # Asegurar LR CNN deshabilitado si resnet18
 
     def _auto_stop(self) -> None:
         """
@@ -1080,6 +1083,7 @@ class PSApp:
             "Entrenamiento detenido",
             f"Se alcanzó el límite de steps configurado.\n\nÚltimo step: {final_step.split(':')[1].strip()}",
         )
+        self._update_lr_cnn_state()  # Asegurar LR CNN deshabilitado si resnet18
 
     def _cmd_evaluate(self) -> None:
         """
@@ -1225,7 +1229,7 @@ class PSApp:
             self._log(f"[ERROR] {e}")
 
         if self._state != self._S_OFFLINE:
-            self.root.after(100, self._poll)
+            self.root.after(POLL_TIMEOUT_MS, self._poll)
 
     # ================================================================
     # HANDLERS
@@ -1319,7 +1323,7 @@ class PSApp:
         self._clock_running = True
         self._elapsed_from_ps = 0.0
         self._last_clock_update = time.perf_counter()
-        self.root.after(1000, self._update_clock)
+        self.root.after(CLOCK_UPDATE_MS, self._update_clock)
         self._refresh_buttons()
         self._log(
             f"[PS] ✓ START enviado a Worker {wid} — Entrenamiento iniciado (Clock activado)."
@@ -1448,7 +1452,7 @@ class PSApp:
         finally:
             # Siempre reprogramar el siguiente update (incluso si hay error)
             if self._clock_running:
-                self.root.after(1000, self._update_clock)
+                self.root.after(CLOCK_UPDATE_MS, self._update_clock)
 
     def _on_val(self, step: int, loss: float, acc: float) -> None:
         """
@@ -1541,7 +1545,7 @@ class PSApp:
                 self._steps_hist,
                 self._loss_hist,
                 "-o",
-                color="#F44336",
+                color=COLORS["loss"],
                 lw=2,
                 ms=3,
                 label="Train",
@@ -1550,7 +1554,7 @@ class PSApp:
                 self._ax_loss.scatter(
                     self._val_steps,
                     self._val_loss,
-                    color="#FF9800",
+                    color=COLORS["validation"],
                     s=60,
                     zorder=5,
                     label="Val",
@@ -1561,7 +1565,7 @@ class PSApp:
                 self._steps_hist,
                 self._acc_hist,
                 "-o",
-                color="#2196F3",
+                color=COLORS["accuracy"],
                 lw=2,
                 ms=3,
                 label="Train",
@@ -1570,7 +1574,7 @@ class PSApp:
                 self._ax_acc.scatter(
                     self._val_steps,
                     self._val_acc,
-                    color="#FF9800",
+                    color=COLORS["validation"],
                     s=60,
                     zorder=5,
                     label="Val",
@@ -1578,7 +1582,7 @@ class PSApp:
             self._ax_acc.legend(fontsize=8)
 
             self._ax_wk.step(
-                self._steps_hist, self._workers_hist, color="#4CAF50", lw=2
+                self._steps_hist, self._workers_hist, color=COLORS["workers"], lw=2
             )
             self._ax_wk.set_ylim(0, max(self._workers_hist, default=1) + 1)
             self._ax_wk.yaxis.set_major_locator(MaxNLocator(integer=True))
@@ -1589,7 +1593,7 @@ class PSApp:
                 max_step = max(self._steps_hist)
                 # Mantiene rango mínimo de 4 (ancho inicial)
                 # Agrega margen de 1 para visualización
-                xlim_max = max(4, max_step + 1)
+                xlim_max = max(GUI_INITIAL_XMAX, max_step + 1)
                 for ax in (self._ax_loss, self._ax_acc, self._ax_wk):
                     ax.set_xlim(0, xlim_max)
 
@@ -1654,8 +1658,8 @@ class PSApp:
         self._log_txt.configure(state=tk.NORMAL)
         self._log_txt.insert(tk.END, msg + "\n")
         lines = int(self._log_txt.index(tk.END).split(".")[0])
-        if lines > 300:
-            self._log_txt.delete("1.0", f"{lines - 300}.0")
+        if lines > MAX_LOG_LINES:
+            self._log_txt.delete("1.0", f"{lines - MAX_LOG_LINES}.0")
         self._log_txt.see(tk.END)
         self._log_txt.configure(state=tk.DISABLED)
 

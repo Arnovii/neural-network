@@ -41,6 +41,14 @@ import torch
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from Distributed.worker_node import WorkerNode
+from Utils.constants import (
+    WORKER_ACCUM_STEPS_DEFAULT,
+    DEFAULT_PORT,
+    PREFETCH_DEFAULT,
+    SHUFFLE_BUFFER_DEFAULT,
+    HF_DATASET_DEFAULT,
+    WORKER_SERVER_HOST_DEFAULT,
+)
 
 
 def get_default_device() -> str:
@@ -75,16 +83,16 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Worker asíncrono — Entrenamiento distribuido ImageNet-1k"
     )
-    parser.add_argument("--server-host", type=str, default="127.0.0.1")
-    parser.add_argument("--server-port", type=int, default=9999)
+    parser.add_argument("--server-host", type=str, default=WORKER_SERVER_HOST_DEFAULT)
+    parser.add_argument("--server-port", type=int, default=DEFAULT_PORT)
     parser.add_argument("--device", type=str, default=get_default_device())
-    parser.add_argument("--dataset", type=str, default="ILSVRC/imagenet-1k")
-    parser.add_argument("--shuffle-buffer", type=int, default=1000)
-    parser.add_argument("--prefetch", type=int, default=4)
+    parser.add_argument("--dataset", type=str, default=HF_DATASET_DEFAULT)
+    parser.add_argument("--shuffle-buffer", type=int, default=SHUFFLE_BUFFER_DEFAULT)
+    parser.add_argument("--prefetch", type=int, default=PREFETCH_DEFAULT)
     parser.add_argument(
         "--seed", type=int, default=None, help="Semilla RNG (None = aleatorio)"
     )
-    parser.add_argument("--accum-steps", type=int, default=1)
+    parser.add_argument("--accum-steps", type=int, default=WORKER_ACCUM_STEPS_DEFAULT)
     parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args()
 

@@ -61,6 +61,10 @@ from Utils.constants import (
     IMAGE_SIZE,
     STEPS_PER_REPORT,
     METRICS_WINDOW,
+    DEFAULT_SEED,
+    EXPORT_DIR_DEFAULT,
+    MAX_STEPS_UNLIMITED,
+    NUM_CLASSES,
 )
 
 
@@ -118,9 +122,9 @@ def main() -> None:
     parser.add_argument(
         "--cnn-arch", type=str, default="resnet18", choices=["resnet18", "simple"]
     )
-    parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument("--seed", type=int, default=DEFAULT_SEED)
     parser.add_argument("--steps-per-report", type=int, default=STEPS_PER_REPORT)
-    parser.add_argument("--max-steps", type=int, default=0)
+    parser.add_argument("--max-steps", type=int, default=MAX_STEPS_UNLIMITED)
     parser.add_argument("--metrics-window", type=int, default=METRICS_WINDOW)
     parser.add_argument(
         "--hf-token",
@@ -131,7 +135,7 @@ def main() -> None:
     parser.add_argument(
         "--export-dir",
         type=str,
-        default="./Exports",
+        default=EXPORT_DIR_DEFAULT,
         help="Directorio para exportar resultados",
     )
     args = parser.parse_args()
@@ -144,7 +148,9 @@ def main() -> None:
     print("=" * 68)
     print(f"  Host              : {args.host}:{args.port}")
     print(f"  CNN               : {args.cnn_arch}")
-    print(f"  MLP               : feature_dim → {args.hidden1} → {args.hidden2} → 1000")
+    print(
+        f"  MLP               : feature_dim → {args.hidden1} → {args.hidden2} → {NUM_CLASSES}"
+    )
     print(f"  Batch size        : {args.batch_size}  (enviado a Workers)")
     print(f"  Image size        : {args.image_size}  (enviado a Workers)")
     print(
@@ -300,6 +306,8 @@ def main() -> None:
         seed=args.seed,
         hf_token=hf_token,
         export_dir=args.export_dir,
+        hidden1=args.hidden1,
+        hidden2=args.hidden2,
         on_step=on_step,
         on_report=on_report,
         on_worker_connected=on_connected,
@@ -320,7 +328,7 @@ def main() -> None:
         feature_dim=cnn.feature_dim,
         hidden1=args.hidden1,
         hidden2=args.hidden2,
-        n_classes=1000,
+        n_classes=NUM_CLASSES,
     )
     ps.set_mlp(mlp.state_dict_numpy())
     print(f"Modelo listo: CNN={args.cnn_arch} | feature_dim={cnn.feature_dim}\n")

@@ -34,7 +34,7 @@ POR QUÉ SIN DROPOUT POST-GAP:
 
 POR QUÉ SIN PROYECCIÓN 512→512:
   La proyección Linear(512→512) es semánticamente una identidad aprendida (~262K params).
-  El GAP ya produce exactamente FEATURE_DIM=512 tras Layer4.
+  El GAP ya produce exactamente FEATURE_DIM tras Layer4.
   Eliminarla equipara la arquitectura al ResNet-18 canónico de torchvision
   y reduce el riesgo de colapso de representaciones en las primeras épocas E2E.
 
@@ -57,7 +57,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-FEATURE_DIM = 512
+from Utils.constants import FEATURE_DIM
 
 
 # ================================================================
@@ -295,7 +295,7 @@ class _ResNet18FromScratch(nn.Module):
         self.layer3 = self._make_layer(128, 256, 2, stride=2)
         self.layer4 = self._make_layer(256, 512, 2, stride=2)
 
-        # GAP directo → FEATURE_DIM=512 (sin Dropout ni proyección extra)
+        # GAP directo → FEATURE_DIM (sin Dropout ni proyección extra)
         # Equivalente a torchvision.models.resnet18 con fc reemplazado por Identity()
         self.gap = nn.AdaptiveAvgPool2d(1)
 
@@ -453,7 +453,7 @@ class _ResNet18FromScratch(nn.Module):
         x = self.layer4(x)  # (B,256,14,14) → (B,512,7,7)
         x = self.gap(x)  # (B,512,7,7)   → (B,512,1,1)
         x = x.flatten(1)  # (B,512,1,1)   → (B,512)
-        return x  # FEATURE_DIM=512, directo sin proyección
+        return x  # FEATURE_DIM, directo sin proyección
 
 
 # ================================================================
@@ -481,7 +481,7 @@ class CNNExtractor:
         - Ideal para: Async-SGD distribuido sin dependencia de pesos preentrenados
 
     **Comportamiento compartido**:
-        - Ambas producen 512-dim feature vectors (FEATURE_DIM=512)
+        - Ambas producen 512-dim feature vectors (FEATURE_DIM)
         - Se construyen en eval() para inferencia determinista de BatchNorm
         - Soportan serialización/deserialización para comunicación TCP distribuida
         - requires_grad NO cambia después de seleccionar arquitectura
@@ -715,7 +715,7 @@ class CNNExtractor:
                 mlp = MLPPyTorch(feature_dim=cnn.feature_dim, hidden1=2048, hidden2=1024, n_classes=1000)
 
         :note:
-            Constante global FEATURE_DIM=512 (no configurable per-instancia).
+            Constante global FEATURE_DIM (no configurable per-instancia).
         """
         return FEATURE_DIM
 

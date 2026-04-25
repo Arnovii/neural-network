@@ -31,6 +31,8 @@ import numpy as np
 import torch
 import torch.nn as nn
 
+from Utils.constants import NUM_CLASSES
+
 
 class MLPPyTorch(nn.Module):
     """
@@ -52,7 +54,7 @@ class MLPPyTorch(nn.Module):
         feature_dim: int,
         hidden1: int,
         hidden2: int,
-        n_classes: int = 1000,
+        n_classes: int = NUM_CLASSES,
     ) -> None:
         """
         Inicializa el MLP con arquitectura configurable.

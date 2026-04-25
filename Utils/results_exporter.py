@@ -54,6 +54,7 @@ import matplotlib
 matplotlib.use("Agg")  # Backend no-GUI para entornos headless
 import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec
+from Utils.constants import COLORS, EXPORT_DIR_DEFAULT
 from matplotlib.ticker import MaxNLocator
 
 
@@ -77,7 +78,7 @@ class ResultsExporter:
     def __init__(
         self,
         config: Dict[str, Any],
-        export_dir: str = "./Exports",
+        export_dir: str = EXPORT_DIR_DEFAULT,
         metrics_window: int = 500,
     ) -> None:
         """
@@ -307,9 +308,9 @@ class ResultsExporter:
         fig = plt.figure(figsize=(20, 5.5), dpi=95)
         gs = GridSpec(1, 3, figure=fig, wspace=0.35)
 
-        color_loss = "#F44336"
-        color_acc = "#2196F3"
-        color_workers = "#4CAF50"
+        color_loss = COLORS["loss"]
+        color_acc = COLORS["accuracy"]
+        color_workers = COLORS["workers"]
 
         ax1 = fig.add_subplot(gs[0])
         ax1.plot(steps, losses, "-o", color=color_loss, lw=2, ms=3, label="Train")
@@ -370,7 +371,7 @@ class ResultsExporter:
         """Genera gráfica individual de Loss (estilo idéntico a la GUI)."""
         fig, ax = plt.subplots(figsize=(10, 6.5))
 
-        color_loss = "#F44336"
+        color_loss = COLORS["loss"]
 
         ax.plot(steps, losses, "-o", color=color_loss, lw=2, ms=3, label="Train")
         ax.scatter(steps, losses, color=color_loss, s=30, zorder=5, label="Val")
@@ -395,7 +396,7 @@ class ResultsExporter:
         """Genera gráfica individual de Accuracy (estilo idéntico a la GUI)."""
         fig, ax = plt.subplots(figsize=(10, 6.5))
 
-        color_acc = "#2196F3"
+        color_acc = COLORS["accuracy"]
 
         ax.plot(steps, accuracies, "-o", color=color_acc, lw=2, ms=3, label="Train")
         ax.scatter(steps, accuracies, color=color_acc, s=30, zorder=5, label="Val")
@@ -420,7 +421,7 @@ class ResultsExporter:
         """Genera gráfica individual de Workers (estilo idéntico a la GUI)."""
         fig, ax = plt.subplots(figsize=(10, 6.5))
 
-        color_workers = "#4CAF50"
+        color_workers = COLORS["workers"]
 
         ax.step(steps, workers_count, color=color_workers, lw=2)
         ax.set_title("Workers activos")

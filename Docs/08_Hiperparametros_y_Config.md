@@ -359,6 +359,110 @@ python worker_imagenet.py --server-host 127.0.0.1
 
 ---
 
+## Regularización
+
+### Gradient Clipping (GRAD_CLIP_MAX_NORM)
+
+**Default**: 10.0  
+**Rango**: (0.1, 100.0)  
+**Efecto**: Recorta gradientes para evitar explosión
+
+```python
+# Implementación (en worker_node.py)
+nn.utils.clip_grad_norm_(parameters, max_norm=GRAD_CLIP_MAX_NORM)
+```
+
+**Tabla de valores**:
+
+| Valor | Efecto |
+|-------|-------|
+| 0.1 | Muy agresivo, puede bloquear aprendizaje |
+| 1.0 | Recomendado para stability |
+| 5.0 | Balance moderado |
+| 10.0 | **Default actual** - permite más variación |
+| Sin límite | Puede causar NaN por gradientes grandes |
+
+**Nota**: Solo afecta entrenamiento E2E (Simple CNN). En MLP-only (ResNet-18) los gradientes son más pequeños por defecto.
+
+---
+
+### Label Smoothing (LABEL_SMOOTHING)
+
+**Default**: 0.1  
+**Rango**: (0.0, 1.0)  
+**Efecto**: Suaviza las etiquetas para evitar overconfidence
+
+```python
+# Implementación (en worker_node.py)
+loss = nn.CrossEntropyLoss(label_smoothing=0.1)
+```
+
+**Tabla de valores**:
+
+| Valor | Efecto |
+|-------|-------|
+| 0.0 | Sin smoothing - hard labels |
+| 0.1 | **Default推荐** - suave pero no terlalu |
+| 0.2 | Más smoothing |
+| 0.5 | Muy smoothing, puede hinder aprendizaje |
+
+---
+
+### Weight Decay (WEIGHT_DECAY)
+
+**Default**: 1e-4 (0.0001)  
+**Efecto**: Regularización L2 en SGD
+
+```python
+# Implementación (en worker_node.py)
+optimizer = torch.optim.SGD(params, lr=lr, weight_decay=1e-4)
+```
+
+**Tabla de valores**:
+
+| Valor | Efecto |
+|-------|-------|
+| 0.0 | Sin regularización |
+| 1e-5 | Baja regularización |
+| 1e-4 | **Default** - balance óptimo |
+| 1e-3 | Alta regularización |
+| 1e-2 | Puede impedir convergencia |
+
+---
+
+## Control de Workers
+
+### Worker Accum Steps (WORKER_ACCUM_STEPS_DEFAULT)
+
+**Default**: 1  
+**Rango**: (1, 32)  
+**Efecto**: Número de batches a acumular antes de enviar gradientes al PS
+
+```
+accum_steps > 1 Reduce overhead de comunicación
+```
+
+**Tabla**:
+
+| Valor | Uso | Throughput |
+|-------|-----|-----------|
+| 1 | Default, cada batch se envía | Menor latencia |
+| 2-4 | Reduces red, más memoria | Balance |
+| 8+ | Para redes lentas | Máxima eficiencia |
+
+---
+
+### Validation Batch Size (VALIDATION_BATCH_SIZE_DEFAULT)
+
+**Default**: 256  
+**Efecto**: Batches usados para evaluación en validación
+
+```
+Mayor batch = evaluación más rápida pero más memoria
+```
+
+---
+
 ## Constantes del Proyecto (Utils/constants.py)
 
 ### Propósito
@@ -378,111 +482,46 @@ El módulo `Utils/constants.py` centraliza todos los valores de configuración d
 from Utils.constants import DEFAULT_BATCH_SIZE, IMAGE_SIZE, COLORS
 ```
 
-**Importación completa**:
-```python
-from Utils.constants import (
-    DEFAULT_HOST,
-    DEFAULT_PORT,
-    DEFAULT_BATCH_SIZE,
-    IMAGE_SIZE,
-    HIDDEN1_DEFAULT,
-    HIDDEN2_DEFAULT,
-    DEFAULT_LR,
-    DEFAULT_LR_CNN,
-    DEFAULT_STALENESS_LAMBDA,
-    STEPS_PER_REPORT,
-    METRICS_WINDOW,
-    COLORS,
-    HF_DATASET_DEFAULT,
-    VAL_BATCHES_DEFAULT,
-)
-```
-
-**Uso en widgets GUI**:
-```python
-self._v_batch_size = tk.IntVar(value=DEFAULT_BATCH_SIZE)
-self._v_image_size = tk.IntVar(value=IMAGE_SIZE)
-```
-
-**Uso en argparse**:
-```python
-parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE)
-```
-
 ### Catálogo Completo de Constantes
 
-#### Configuración de Modelo
-
 | Constante | Valor | Descripción |
-|----------|-------|-----------|
-| `IMAGE_SIZE` | `224` | Resolución de imágenes ( crops cuadrados) |
-| `DEFAULT_BATCH_SIZE` | `64` | Imágenes por batch por Worker |
-| `HIDDEN1_DEFAULT` | `1024` | Neuronas capa oculta 1 del MLP |
-| `HIDDEN2_DEFAULT` | `512` | Neuronas capa oculta 2 del MLP |
-| `NUM_CLASSES` | `1000` | Clases ImageNet-1k |
-| `RESNET18_FEATURE_DIM` | `512` | Dimensión de features ResNet-18 |
-| `SIMPLECNN_FEATURE_DIM` | `512` | Dimensión de features SimpleCNN |
-
-#### Learning Rates y Entrenamiento
-
-| Constante | Valor | Descripción |
-|----------|-------|-----------|
-| `DEFAULT_LR` | `0.001` | Learning rate MLP |
-| `DEFAULT_LR_CNN` | `0.001` | Learning rate CNN (E2E) |
-| `DEFAULT_STALENESS_LAMBDA` | `0.1` | Factor corrección staleness λ |
-| `STEPS_PER_REPORT` | `10` | Steps entre reportes de métricas |
-| `METRICS_WINDOW` | `50` | Ventana deslizante para promedios |
-| `VAL_BATCHES_DEFAULT` | `50` | Batches para validación |
-
-#### Red y Conexión
-
-| Constante | Valor | Descripción |
-|----------|-------|-----------|
-| `DEFAULT_HOST` | `"0.0.0.0"` | Host de escucha del PS |
-| `DEFAULT_PORT` | `9999` | Puerto TCP del PS |
-
-#### Colores (GUI y Gráficas)
-
-| Constante | Clave | Valor | Uso |
-|----------|------|------|-----|
-| `COLORS["loss"]` | `"#F44336"` | Rojo | Gráfica de loss |
-| `COLORS["accuracy"]` | `"#2196F3"` | Azul | Gráfica de accuracy |
-| `COLORS["workers"]` | `"#4CAF50"` | Verde | Workers activos |
-| `COLORS["validation"]` | `"#FF9800"` | Naranja | Puntos validación |
-| `COLORS["training"]` | `"#1565C0"` | Azul oscuro | Estado training |
-| `COLORS["offline"]` | `"#607D8B"` | Gris | Estado offline |
-| `COLORS["error"]` | `"#F44336"` | Rojo | Errores |
-| `COLORS["warning"]` | `"#FF9800"` | Naranja | Warnings |
-
-#### GUI
-
-| Constante | Valor | Descripción |
-|----------|-------|-----------|
-| `MAX_LOG_LINES` | `300` | Máximo líneas en panel de logs |
-| `POLL_TIMEOUT_MS` | `100` | Timeout del poll loop (ms) |
-| `CLOCK_UPDATE_MS` | `1000` | Actualización del Clock (ms) |
-| `TOOLTIP_DELAY_MS` | `500` | Delay para mostrar tooltips (ms) |
-
-#### Streaming y HuggingFace
-
-| Constante | Valor | Descripción |
-|----------|-------|-----------|
-| `PREFETCH_DEFAULT` | `4` | Batches en cola de prefetch |
-| `SHUFFLE_BUFFER_DEFAULT` | `1000` | Buffer de shuffle |
-| `HF_DATASET_DEFAULT` | `"ILSVRC/imagenet-1k"` | Dataset por defecto |
-| `EXPORT_DIR_DEFAULT` | `"./Exports"` | Directorio de resultados |
-
-### Acceso en Utils/__init__.py
-
-El módulo también se exporta desde `Utils/__init__.py`:
-```python
-from Utils import (
-    DEFAULT_BATCH_SIZE,
-    IMAGE_SIZE,
-    COLORS,
-    # ... todas las constantes
-)
-```
+|----------|-------|-------------|
+| CLOCK_UPDATE_MS | 1000 | Intervalo de actualización del reloj de la GUI (ms) |
+| COLORS | dict | Paleta principal de colores (estado, métricas y UI) |
+| DEFAULT_BATCH_SIZE | 64 | Imágenes por batch en cada Worker |
+| DEFAULT_HOST | "0.0.0.0" | Host de escucha del PS por defecto |
+| DEFAULT_LR | 0.001 | Learning rate MLP |
+| DEFAULT_LR_CNN | 0.001 | Learning rate CNN (E2E) |
+| DEFAULT_PORT | 9999 | Puerto TCP del PS por defecto |
+| DEFAULT_SEED | None | Semilla por defecto (None = aleatorio) |
+| DEFAULT_STALENESS_LAMBDA | 0.1 | Factor de corrección staleness λ |
+| EXPORT_DIR_DEFAULT | "./Exports" | Directorio de resultados exportados |
+| FEATURE_DIM | 512 | Dimensión features de CNN |
+| GRAD_CLIP_MAX_NORM | 10.0 | Umbral de gradient clipping |
+| GUI_COLORS | dict | Paleta de colores específica de la GUI |
+| GUI_INITIAL_XMAX | 4 | Límite inicial del eje X en gráficas GUI |
+| HF_DATASET_DEFAULT | "ILSVRC/imagenet-1k" | Dataset por defecto |
+| HIDDEN1_DEFAULT | 1024 | Neuronas capa oculta 1 del MLP |
+| HIDDEN2_DEFAULT | 512 | Neuronas capa oculta 2 del MLP |
+| IMAGE_SIZE | 224 | Resolución de imágenes |
+| LABEL_SMOOTHING | 0.1 | Suavizado de etiquetas |
+| MAX_LOG_LINES | 300 | Cantidad máxima de líneas en log (GUI) |
+| MAX_STEPS_UNLIMITED | 0 | Valor para desactivar límites de steps |
+| METRICS_WINDOW | 200 | Ventana para promedios |
+| NUM_CLASSES | 1000 | Clases de dataset |
+| POLL_TIMEOUT_MS | 100 | Intervalo de polling de la GUI (ms) |
+| PREFETCH_DEFAULT | 4 | Batches en cola de prefetch |
+| PS_METRICS_WINDOW_DEFAULT | 200 | Ventana de métricas por defecto en runtime del PS |
+| PS_STEPS_PER_REPORT_DEFAULT | 500 | Steps/reporte por defecto en runtime del PS |
+| SHUFFLE_BUFFER_DEFAULT | 1000 | Valor de shuffle buffer |
+| STEPS_PER_REPORT | 500 | Steps entre reportes |
+| TOOLTIP_DELAY_MS | 500 | Delay de aparición de tooltips (ms) |
+| VALIDATION_BATCH_SIZE_DEFAULT | 256 | Batch size por defecto para evaluación de validación |
+| VAL_BATCHES_DEFAULT | 50 | Batches para validación GUI |
+| WEIGHT_DECAY | 1e-4 | Valor de Weight decay L2 |
+| WORKER_ACCUM_STEPS_DEFAULT | 1 | Accum steps por worker |
+| WORKER_COLORS | list | Paleta rotativa para colorear workers en la GUI |
+| WORKER_SERVER_HOST_DEFAULT | "127.0.0.1" | Host por defecto de conexión del Worker al PS |
 
 ---
 
