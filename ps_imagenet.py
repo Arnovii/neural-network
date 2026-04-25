@@ -50,6 +50,18 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from Distributed.parameter_server import ParameterServer
 from Model.cnn_extractor import CNNExtractor
 from Model.mlp_pytorch import MLPPyTorch
+from Utils.constants import (
+    DEFAULT_HOST,
+    DEFAULT_PORT,
+    DEFAULT_LR,
+    DEFAULT_STALENESS_LAMBDA,
+    HIDDEN1_DEFAULT,
+    HIDDEN2_DEFAULT,
+    DEFAULT_BATCH_SIZE,
+    IMAGE_SIZE,
+    STEPS_PER_REPORT,
+    METRICS_WINDOW,
+)
 
 
 def main() -> None:
@@ -93,21 +105,23 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Parameter Server asíncrono — ImageNet-1k"
     )
-    parser.add_argument("--host", type=str, default="0.0.0.0")
-    parser.add_argument("--port", type=int, default=9999)
-    parser.add_argument("--lr", type=float, default=0.001)
-    parser.add_argument("--staleness-lambda", type=float, default=0.1)
-    parser.add_argument("--hidden1", type=int, default=1024)
-    parser.add_argument("--hidden2", type=int, default=512)
-    parser.add_argument("--batch-size", type=int, default=64)
-    parser.add_argument("--image-size", type=int, default=224)
+    parser.add_argument("--host", type=str, default=DEFAULT_HOST)
+    parser.add_argument("--port", type=int, default=DEFAULT_PORT)
+    parser.add_argument("--lr", type=float, default=DEFAULT_LR)
+    parser.add_argument(
+        "--staleness-lambda", type=float, default=DEFAULT_STALENESS_LAMBDA
+    )
+    parser.add_argument("--hidden1", type=int, default=HIDDEN1_DEFAULT)
+    parser.add_argument("--hidden2", type=int, default=HIDDEN2_DEFAULT)
+    parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE)
+    parser.add_argument("--image-size", type=int, default=IMAGE_SIZE)
     parser.add_argument(
         "--cnn-arch", type=str, default="resnet18", choices=["resnet18", "simple"]
     )
     parser.add_argument("--seed", type=int, default=None)
-    parser.add_argument("--steps-per-report", type=int, default=500)
+    parser.add_argument("--steps-per-report", type=int, default=STEPS_PER_REPORT)
     parser.add_argument("--max-steps", type=int, default=0)
-    parser.add_argument("--metrics-window", type=int, default=200)
+    parser.add_argument("--metrics-window", type=int, default=METRICS_WINDOW)
     parser.add_argument(
         "--hf-token",
         type=str,

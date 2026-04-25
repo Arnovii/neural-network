@@ -151,6 +151,22 @@ from Utils.imagenet_streaming import (
     get_val_transform,
 )
 from Utils.logging_util import FormattedLogger, get_logger
+from Utils.constants import (
+    DEFAULT_HOST,
+    DEFAULT_PORT,
+    DEFAULT_BATCH_SIZE,
+    IMAGE_SIZE,
+    HIDDEN1_DEFAULT,
+    HIDDEN2_DEFAULT,
+    DEFAULT_LR,
+    DEFAULT_LR_CNN,
+    DEFAULT_STALENESS_LAMBDA,
+    STEPS_PER_REPORT,
+    METRICS_WINDOW,
+    COLORS,
+    HF_DATASET_DEFAULT,
+    VAL_BATCHES_DEFAULT,
+)
 
 __all__ = [
     "ImageNetStream",
@@ -161,4 +177,19 @@ __all__ = [
     "get_val_transform",
     "FormattedLogger",
     "get_logger",
+    # Constantes
+    "DEFAULT_HOST",
+    "DEFAULT_PORT",
+    "DEFAULT_BATCH_SIZE",
+    "IMAGE_SIZE",
+    "HIDDEN1_DEFAULT",
+    "HIDDEN2_DEFAULT",
+    "DEFAULT_LR",
+    "DEFAULT_LR_CNN",
+    "DEFAULT_STALENESS_LAMBDA",
+    "STEPS_PER_REPORT",
+    "METRICS_WINDOW",
+    "COLORS",
+    "HF_DATASET_DEFAULT",
+    "VAL_BATCHES_DEFAULT",
 ]

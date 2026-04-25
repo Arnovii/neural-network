@@ -359,6 +359,133 @@ python worker_imagenet.py --server-host 127.0.0.1
 
 ---
 
+## Constantes del Proyecto (Utils/constants.py)
+
+### Propósito
+
+El módulo `Utils/constants.py` centraliza todos los valores de configuración del proyecto para evitar **magic numbers** dispersos en el código. Facilita el mantenimiento y asegura consistencia entre GUI y línea de comandos.
+
+**Beneficios**:
+- ✅ Un solo lugar para modificar valores por defecto
+- ✅ Tipos definidos (type hints) para mejor soporte de IDE
+- ✅ Nombres claros que documentan el propósito
+- ✅ Consistency entre CLI y GUI
+
+### Uso en Código
+
+**Importación básica**:
+```python
+from Utils.constants import DEFAULT_BATCH_SIZE, IMAGE_SIZE, COLORS
+```
+
+**Importación completa**:
+```python
+from Utils.constants import (
+    DEFAULT_HOST,
+    DEFAULT_PORT,
+    DEFAULT_BATCH_SIZE,
+    IMAGE_SIZE,
+    HIDDEN1_DEFAULT,
+    HIDDEN2_DEFAULT,
+    DEFAULT_LR,
+    DEFAULT_LR_CNN,
+    DEFAULT_STALENESS_LAMBDA,
+    STEPS_PER_REPORT,
+    METRICS_WINDOW,
+    COLORS,
+    HF_DATASET_DEFAULT,
+    VAL_BATCHES_DEFAULT,
+)
+```
+
+**Uso en widgets GUI**:
+```python
+self._v_batch_size = tk.IntVar(value=DEFAULT_BATCH_SIZE)
+self._v_image_size = tk.IntVar(value=IMAGE_SIZE)
+```
+
+**Uso en argparse**:
+```python
+parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE)
+```
+
+### Catálogo Completo de Constantes
+
+#### Configuración de Modelo
+
+| Constante | Valor | Descripción |
+|----------|-------|-----------|
+| `IMAGE_SIZE` | `224` | Resolución de imágenes ( crops cuadrados) |
+| `DEFAULT_BATCH_SIZE` | `64` | Imágenes por batch por Worker |
+| `HIDDEN1_DEFAULT` | `1024` | Neuronas capa oculta 1 del MLP |
+| `HIDDEN2_DEFAULT` | `512` | Neuronas capa oculta 2 del MLP |
+| `NUM_CLASSES` | `1000` | Clases ImageNet-1k |
+| `RESNET18_FEATURE_DIM` | `512` | Dimensión de features ResNet-18 |
+| `SIMPLECNN_FEATURE_DIM` | `512` | Dimensión de features SimpleCNN |
+
+#### Learning Rates y Entrenamiento
+
+| Constante | Valor | Descripción |
+|----------|-------|-----------|
+| `DEFAULT_LR` | `0.001` | Learning rate MLP |
+| `DEFAULT_LR_CNN` | `0.001` | Learning rate CNN (E2E) |
+| `DEFAULT_STALENESS_LAMBDA` | `0.1` | Factor corrección staleness λ |
+| `STEPS_PER_REPORT` | `10` | Steps entre reportes de métricas |
+| `METRICS_WINDOW` | `50` | Ventana deslizante para promedios |
+| `VAL_BATCHES_DEFAULT` | `50` | Batches para validación |
+
+#### Red y Conexión
+
+| Constante | Valor | Descripción |
+|----------|-------|-----------|
+| `DEFAULT_HOST` | `"0.0.0.0"` | Host de escucha del PS |
+| `DEFAULT_PORT` | `9999` | Puerto TCP del PS |
+
+#### Colores (GUI y Gráficas)
+
+| Constante | Clave | Valor | Uso |
+|----------|------|------|-----|
+| `COLORS["loss"]` | `"#F44336"` | Rojo | Gráfica de loss |
+| `COLORS["accuracy"]` | `"#2196F3"` | Azul | Gráfica de accuracy |
+| `COLORS["workers"]` | `"#4CAF50"` | Verde | Workers activos |
+| `COLORS["validation"]` | `"#FF9800"` | Naranja | Puntos validación |
+| `COLORS["training"]` | `"#1565C0"` | Azul oscuro | Estado training |
+| `COLORS["offline"]` | `"#607D8B"` | Gris | Estado offline |
+| `COLORS["error"]` | `"#F44336"` | Rojo | Errores |
+| `COLORS["warning"]` | `"#FF9800"` | Naranja | Warnings |
+
+#### GUI
+
+| Constante | Valor | Descripción |
+|----------|-------|-----------|
+| `MAX_LOG_LINES` | `300` | Máximo líneas en panel de logs |
+| `POLL_TIMEOUT_MS` | `100` | Timeout del poll loop (ms) |
+| `CLOCK_UPDATE_MS` | `1000` | Actualización del Clock (ms) |
+| `TOOLTIP_DELAY_MS` | `500` | Delay para mostrar tooltips (ms) |
+
+#### Streaming y HuggingFace
+
+| Constante | Valor | Descripción |
+|----------|-------|-----------|
+| `PREFETCH_DEFAULT` | `4` | Batches en cola de prefetch |
+| `SHUFFLE_BUFFER_DEFAULT` | `1000` | Buffer de shuffle |
+| `HF_DATASET_DEFAULT` | `"ILSVRC/imagenet-1k"` | Dataset por defecto |
+| `EXPORT_DIR_DEFAULT` | `"./Exports"` | Directorio de resultados |
+
+### Acceso en Utils/__init__.py
+
+El módulo también se exporta desde `Utils/__init__.py`:
+```python
+from Utils import (
+    DEFAULT_BATCH_SIZE,
+    IMAGE_SIZE,
+    COLORS,
+    # ... todas las constantes
+)
+```
+
+---
+
 ## Impact Tuning Guide
 
 Si **loss no baja**:

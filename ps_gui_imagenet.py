@@ -42,6 +42,20 @@ except ImportError as e:
 from Distributed.parameter_server import ParameterServer
 from Model.cnn_extractor import CNNExtractor
 from Model.mlp_pytorch import MLPPyTorch
+from Utils.constants import (
+    DEFAULT_PORT,
+    IMAGE_SIZE,
+    DEFAULT_BATCH_SIZE,
+    HIDDEN1_DEFAULT,
+    HIDDEN2_DEFAULT,
+    DEFAULT_LR,
+    DEFAULT_LR_CNN,
+    DEFAULT_STALENESS_LAMBDA,
+    STEPS_PER_REPORT,
+    METRICS_WINDOW,
+    HF_DATASET_DEFAULT,
+    VAL_BATCHES_DEFAULT,
+)
 
 
 # ================================================================
@@ -230,7 +244,7 @@ class PSApp:
         self._status = tk.StringVar(value="Listo.")
 
         # Referencia al campo LR CNN para habilitarlo/deshabilitarlo según arch
-        self._ent_lr_cnn: ttk.Entry | None
+        self._ent_lr_cnn: ttk.Entry | None = None
 
         # Lista de widgets de configuración (para desactivar durante entrenamiento)
         self._config_widgets: list = []
@@ -312,7 +326,7 @@ class PSApp:
         # ── Conexión ──
         self._section(frm, "Conexión TCP")
         self._v_host = tk.StringVar(value="0.0.0.0")
-        self._v_port = tk.IntVar(value=9999)
+        self._v_port = tk.IntVar(value=DEFAULT_PORT)
         ent_host = self._entry(frm, "Host:", self._v_host)
         ent_port = self._entry(frm, "Puerto:", self._v_port, width=10)
         ToolTip(
@@ -322,7 +336,7 @@ class PSApp:
 
         # ── Dataset ──
         self._section(frm, "Dataset")
-        self._v_dataset = tk.StringVar(value="ILSVRC/imagenet-1k")
+        self._v_dataset = tk.StringVar(value=HF_DATASET_DEFAULT)
         self._v_hf_token = tk.StringVar(value=os.environ.get("HF_TOKEN", ""))
         ent_dataset = self._entry(frm, "Dataset HF Hub:", self._v_dataset, width=30)
         ttk.Label(frm, text="HF Token:").pack(anchor=tk.W)
@@ -352,8 +366,8 @@ class PSApp:
 
         # ── Streaming ──
         self._section(frm, "Streaming")
-        self._v_batch_size = tk.IntVar(value=64)
-        self._v_image_size = tk.IntVar(value=224)
+        self._v_batch_size = tk.IntVar(value=DEFAULT_BATCH_SIZE)
+        self._v_image_size = tk.IntVar(value=IMAGE_SIZE)
         ent_bs = self._entry(frm, "Batch size:", self._v_batch_size, width=12)
         ent_is = self._entry(frm, "Image size:", self._v_image_size, width=12)
         ToolTip(ent_bs, "Tamaño de batch para SGD local en cada Worker")
@@ -393,8 +407,8 @@ class PSApp:
 
         # ── MLP ──
         self._section(frm, "Clasificador MLP")
-        self._v_h1 = tk.IntVar(value=1024)
-        self._v_h2 = tk.IntVar(value=512)
+        self._v_h1 = tk.IntVar(value=HIDDEN1_DEFAULT)
+        self._v_h2 = tk.IntVar(value=HIDDEN2_DEFAULT)
         ent_h1 = self._entry(frm, "Neuronas capa 1:", self._v_h1, width=8)
         ent_h2 = self._entry(frm, "Neuronas capa 2:", self._v_h2, width=8)
         ToolTip(ent_h1, "1ª capa oculta del MLP (features → h1)")
@@ -402,8 +416,8 @@ class PSApp:
 
         # ── Learning Rates ──
         self._section(frm, "Learning Rates (SGD)")
-        self._v_lr = tk.StringVar(value="0.01")
-        self._v_lr_cnn = tk.StringVar(value="0.001")
+        self._v_lr = tk.StringVar(value=str(DEFAULT_LR))
+        self._v_lr_cnn = tk.StringVar(value=str(DEFAULT_LR_CNN))
 
         # LR MLP
         ent_lr_mlp = self._entry(frm, "LR MLP:", self._v_lr, width=12)
@@ -440,9 +454,9 @@ class PSApp:
 
         # ── Async SGD ──
         self._section(frm, "Async SGD")
-        self._v_lambda = tk.StringVar(value="0.1")
-        self._v_report = tk.IntVar(value=10)
-        self._v_window = tk.IntVar(value=50)
+        self._v_lambda = tk.StringVar(value=str(DEFAULT_STALENESS_LAMBDA))
+        self._v_report = tk.IntVar(value=STEPS_PER_REPORT)
+        self._v_window = tk.IntVar(value=METRICS_WINDOW)
         self._v_max_steps = tk.StringVar(value="")  # Vacío = sin límite
         ent_lambda = self._entry(frm, "Staleness λ (0–1):", self._v_lambda, width=12)
         ent_report = self._entry(frm, "Steps por reporte:", self._v_report, width=12)
@@ -480,7 +494,7 @@ class PSApp:
 
         # ── Evaluación ──
         self._section(frm, "Evaluación")
-        self._v_val_batches = tk.IntVar(value=50)
+        self._v_val_batches = tk.IntVar(value=VAL_BATCHES_DEFAULT)
         ent_vb = self._entry(
             frm, "Batches de validación:", self._v_val_batches, width=8
         )
