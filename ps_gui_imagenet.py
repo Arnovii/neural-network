@@ -34,6 +34,7 @@ try:
     from tkinter import messagebox, ttk
     import matplotlib.pyplot as plt
     from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+    from matplotlib.ticker import MaxNLocator
 except ImportError as e:
     print(f"Error cargando librerías gráficas: {e}")
     sys.exit(1)
@@ -690,7 +691,11 @@ class PSApp:
             ax.set_xlabel("Steps")
             ax.set_ylabel(ylabel)
             ax.grid(True, alpha=0.3)
+            ax.xaxis.set_major_locator(MaxNLocator(integer=True))
+            ax.set_xlim(0, 4)  # Rango inicial: 0 a 4 steps
         self._ax_acc.set_ylim(0, 100)
+        self._ax_wk.set_ylim(0, 2)
+        self._ax_wk.yaxis.set_major_locator(MaxNLocator(integer=True))
         self._fig.tight_layout(rect=(0, 0, 1, 0.93))
 
     def _update_lr_cnn_state(self) -> None:
@@ -1562,6 +1567,17 @@ class PSApp:
                 self._steps_hist, self._workers_hist, color="#4CAF50", lw=2
             )
             self._ax_wk.set_ylim(0, max(self._workers_hist, default=1) + 1)
+            self._ax_wk.yaxis.set_major_locator(MaxNLocator(integer=True))
+
+            # Actualiza límites X dinámicamente basados en los datos
+            # Si hay steps, extender xlim para mostrar todos los datos
+            if self._steps_hist:
+                max_step = max(self._steps_hist)
+                # Mantiene rango mínimo de 4 (ancho inicial)
+                # Agrega margen de 1 para visualización
+                xlim_max = max(4, max_step + 1)
+                for ax in (self._ax_loss, self._ax_acc, self._ax_wk):
+                    ax.set_xlim(0, xlim_max)
 
         self._canvas.draw()
 

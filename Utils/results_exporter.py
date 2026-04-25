@@ -54,6 +54,7 @@ import matplotlib
 matplotlib.use("Agg")  # Backend no-GUI para entornos headless
 import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec
+from matplotlib.ticker import MaxNLocator
 
 
 class ResultsExporter:
@@ -318,6 +319,7 @@ class ResultsExporter:
         ax1.set_ylabel("Loss")
         ax1.grid(True, alpha=0.3)
         ax1.legend(fontsize=8)
+        ax1.xaxis.set_major_locator(MaxNLocator(integer=True))
         # Establecer límites de ejes para que coincidan con GUI
         ax1.set_xlim(steps[0] - 1, steps[-1] + 1)
         ax1.margins(y=0.05)  # 5% de margen en Y
@@ -331,6 +333,7 @@ class ResultsExporter:
         ax2.grid(True, alpha=0.3)
         ax2.set_ylim(0, 100)
         ax2.legend(fontsize=8)
+        ax2.xaxis.set_major_locator(MaxNLocator(integer=True))
         # Establecer límites de ejes para que coincidan con GUI
         ax2.set_xlim(steps[0] - 1, steps[-1] + 1)
 
@@ -341,6 +344,8 @@ class ResultsExporter:
         ax3.set_ylabel("N Workers")
         ax3.grid(True, alpha=0.3)
         ax3.set_ylim(0, max(workers_count) + 1)
+        ax3.xaxis.set_major_locator(MaxNLocator(integer=True))
+        ax3.yaxis.set_major_locator(MaxNLocator(integer=True))
         # Establecer límites de ejes para que coincidan con GUI
         ax3.set_xlim(steps[0] - 1, steps[-1] + 1)
 
@@ -374,6 +379,7 @@ class ResultsExporter:
         ax.set_ylabel("Loss")
         ax.grid(True, alpha=0.3)
         ax.legend(fontsize=8)
+        ax.xaxis.set_major_locator(MaxNLocator(integer=True))
         # Establecer límites de ejes para que coincidan con GUI
         ax.set_xlim(steps[0] - 1, steps[-1] + 1)
         ax.margins(y=0.05)  # 5% de margen en Y
@@ -399,6 +405,7 @@ class ResultsExporter:
         ax.grid(True, alpha=0.3)
         ax.set_ylim(0, 100)
         ax.legend(fontsize=8)
+        ax.xaxis.set_major_locator(MaxNLocator(integer=True))
         # Establecer límites de ejes para que coincidan con GUI
         ax.set_xlim(steps[0] - 1, steps[-1] + 1)
 
@@ -421,6 +428,8 @@ class ResultsExporter:
         ax.set_ylabel("N Workers")
         ax.grid(True, alpha=0.3)
         ax.set_ylim(0, max(workers_count) + 1)
+        ax.xaxis.set_major_locator(MaxNLocator(integer=True))
+        ax.yaxis.set_major_locator(MaxNLocator(integer=True))
         # Establecer límites de ejes para que coincidan con GUI
         ax.set_xlim(steps[0] - 1, steps[-1] + 1)
 
