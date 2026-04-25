@@ -162,6 +162,7 @@ La interfaz gráfica es el **front-end de control y monitoreo** del sistema dist
 - `λ (Staleness)` (float): default 0.1,range (0.0, 1.0)
 - `Steps/Reporte` (int): default 500
 - `Ventana Métricas` (int): default 200
+- `Límite Steps` (int, opcional): default vacío (sin límite)
 
 **Evaluación**:
 - `Batches Validación` (int): default 50
@@ -196,11 +197,12 @@ La GUI muestra **dos** tipos de tiempo:
 
 | Métrica | Descripción | Formato | Inicio |
 |---------|-------------|---------|--------|
-| **Clock** | Reloj tiempo real | HH:MM:SS | Primer step recibido |
-| **elapsed** | Tiempo desde inicio | Segundos | Primer step recibido |
+| **Clock** | Reloj tiempo real | HH:MM:SS | Mensaje START enviado |
+| **elapsed** | Tiempo desde inicio | Segundos | Mensaje START enviado |
 
 - **Clock**: Actualiza cada 1 segundo, se reinicia a 00:00:00 al apagar
 - **elapsed**: Del PS, usado en status bar y exportado a CSV
+- **Inicio**: Ambos начинают حساب desde el mensaje START (no desde primer STEP)
 
 ### Entendiendo Accuracy: 3 Fuentes Distintas
 
@@ -424,6 +426,61 @@ Text widget con scrollbar:
 - **Colores**: [verde: conexión], [azul: step], [rojo: error]
 - **Timestamps**: Automático con `datetime.now()`
 - **Scroll auto**: Siempre muestra línea más nueva
+
+---
+
+## Limitador de Steps (Auto-detención)
+
+### Propósito
+
+El limitador de steps permite detener automáticamente el entrenamiento cuando se alcanza una cantidad específica de steps. Es útil para:
+- Experimentos controlados
+- Experimentación con duración fija
+- Debugging con número conocido de iteraciones
+- Evita entrenamiento infinito
+
+### Configuración
+
+El campo **Límite steps** se encuentra en la sección Async SGD:
+
+| Campo | Tipo | Descripción |
+|-------|------|-------------|
+| `Límite steps` | int (opcional) | Vacío = sin límite, Entero > 0 = detener al alcanzar |
+
+**Validación**:
+- Vacío → Sin límite (entrenamiento indefinido)
+- Entero positivo → Límite activo
+- Cero o negativo → Error de validación
+
+### Comportamiento
+
+| Escenario | Acción |
+|----------|--------|
+| Manual (botón) | Pide confirmación con `messagebox.askyesno()` |
+| Automático (límite) | Detiene sin preguntar, luego muestra `messagebox.showinfo()` |
+
+### Flujo de Auto-detención
+
+```
+1. GUI detecta: step >= _max_steps (en callback _on_step)
+2. Llama _auto_stop() (sin askyesno)
+   → ps.stop() 
+   → Limpia estado (workers, métricas, Clock)
+   → _set_config_enabled(True)  ← Reactivar campos
+3. Muestra messagebox.showinfo:
+   "Entrenamiento detenido"
+   "Se alcanzó el límite de steps configurado.
+    Último step: N"
+```
+
+### Diferencia: Manual vs Automático
+
+| Aspecto | Manual | Automático |
+|--------|--------|------------|
+| Botón | "■ Detener Todo" | Límite alcanzado |
+| Confirmación | askyesno (Sí/No) | Ninguna |
+| Mensaje | Ninguno | showinfo informativo |
+| Estado final | OFFLINE | OFFLINE |
 
 ---
 

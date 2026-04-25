@@ -82,6 +82,7 @@ READY → WORKER_ID → CONFIG → CNN_WEIGHTS → CNN_ACK → START
 | `--hidden1` | 1024 | MLP hidden layer 1 |
 | `--hidden2` | 512 | MLP hidden layer 2 |
 | `--batch-size` | 64 | Batch size por Worker |
+| `--max-steps` | 0 | Limit de steps (0=sin límite) |
 
 ## Key Classes
 

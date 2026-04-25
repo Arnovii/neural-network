@@ -117,6 +117,8 @@ CRÍTICO:
 - ✅ Soporta múltiples devices (CPU, CUDA, MPS)
 - ✅ Auto-detección de GPU disponible
 - ✅ Logging estructurado con colores
+- ✅ Limitador de steps (auto-detención en GUI + CLI)
+- ✅ Temporizador (Clock HH:MM:SS + elapsed) desde mensaje START
 
 ### Por Diseño (No en Roadmap)
 - ℹ️ Sincronización global entre Workers (Sync-FedAvg) - arquitectura asincrónica por diseño

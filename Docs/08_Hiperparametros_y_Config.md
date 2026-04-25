@@ -196,7 +196,48 @@ ventana=200, steps_per_report=500:
 
 ---
 
-### Steps per Report
+### Max Steps (Límite de Entrenamiento)
+
+**Default**: 0 (sin límite)  
+**Rango**: 0 o entero positivo  
+**Efecto**: Detiene automáticamente el entrenamiento al alcanzar N steps
+
+```
+Si max_steps > 0 Y current_step >= max_steps:
+    → Detener entrenamiento
+    → Exportar métricas
+    → Cerrar conexiones
+```
+
+**Comportamiento**:
+
+| Valor | Efecto |
+|-------|-------|
+| 0 (default) | Sin límite, entrenamiento infinito |
+| > 0 | Detiene al alcanzar el límite |
+
+**Diferencia GUI vs Terminal**:
+
+| Interfaz | Campo | Comportamiento al alcanzar límite |
+|---------|-------|----------------------------------|
+| GUI | "Límite steps (vacío=∞)" | Auto-detención sin askyesno + messagebox.showinfo |
+| Terminal | `--max-steps N` | Detiene silenciosamente |
+
+**Ejemplos de uso**:
+
+```bash
+# GUI: deixar campo vacío = sin límite
+# GUI: introducir 10000 = detiene automático a step 10000
+
+# Terminal: sin límite
+python ps_imagenet.py --hf-token "hf_..."
+
+# Terminal: detener a 10000 steps
+python ps_imagenet.py --max-steps 10000 --hf-token "hf_..."
+
+# Terminal: experimentar con 1000 steps
+python ps_imagenet.py --max-steps 1000 --steps-per-report 100 --hf-token "hf_..."
+```
 
 ---
 

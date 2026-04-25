@@ -93,6 +93,10 @@ El repositorio incluye documentación exhaustiva en el subdirectorio `./Docs/`:
 
 ✅ **Soporte para múltiples máquinas** vía TCP con configuración por línea de comandos
 
+✅ **Limitador de steps** con auto-detención (GUI + CLI)
+
+✅ **Temporizador** (Clock HH:MM:SS + elapsed) desde mensaje START
+
 ---
 
 ## Arquitectura del Sistema
