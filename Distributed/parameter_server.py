@@ -65,8 +65,8 @@ from Utils.constants import (
     HIDDEN1_DEFAULT,
     HIDDEN2_DEFAULT,
     IMAGE_SIZE,
-    PS_METRICS_WINDOW_DEFAULT,
-    PS_STEPS_PER_REPORT_DEFAULT,
+    METRICS_WINDOW_DEFAULT,
+    STEPS_PER_REPORT_DEFAULT,
 )
 
 _log = get_logger(use_colors=True)
@@ -202,8 +202,8 @@ class ParameterServer:
         learning_rate: float = DEFAULT_LR,
         learning_rate_cnn: float = DEFAULT_LR_CNN,
         staleness_lambda: float = DEFAULT_STALENESS_LAMBDA,
-        steps_per_report: int = PS_STEPS_PER_REPORT_DEFAULT,
-        metrics_window: int = PS_METRICS_WINDOW_DEFAULT,
+        steps_per_report: int = STEPS_PER_REPORT_DEFAULT,
+        metrics_window: int = METRICS_WINDOW_DEFAULT,
         batch_size: int = DEFAULT_BATCH_SIZE,
         image_size: int = IMAGE_SIZE,
         seed: int | None = DEFAULT_SEED,

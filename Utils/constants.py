@@ -21,18 +21,14 @@ HIDDEN1_DEFAULT: int = 1024
 HIDDEN2_DEFAULT: int = 512
 
 # Learning rates
-DEFAULT_LR: float = 0.001
+DEFAULT_LR: float = 0.01
 DEFAULT_LR_CNN: float = 0.001
 DEFAULT_STALENESS_LAMBDA: float = 0.1
 
-# Informe y ventana (CLI defaults para PS)
-STEPS_PER_REPORT: int = 500
-METRICS_WINDOW: int = 200
+# Valores predeterminados runtime
+STEPS_PER_REPORT_DEFAULT: int = 10
+METRICS_WINDOW_DEFAULT: int = 50
 VAL_BATCHES_DEFAULT: int = 50
-
-# Valores predeterminados runtime (para GUI display)
-PS_STEPS_PER_REPORT_DEFAULT: int = 500
-PS_METRICS_WINDOW_DEFAULT: int = 200
 WORKER_ACCUM_STEPS_DEFAULT: int = 1
 MAX_STEPS_UNLIMITED: int = 0
 

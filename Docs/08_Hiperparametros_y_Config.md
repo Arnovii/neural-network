@@ -507,14 +507,12 @@ from Utils.constants import DEFAULT_BATCH_SIZE, IMAGE_SIZE, COLORS
 | LABEL_SMOOTHING | 0.1 | Suavizado de etiquetas |
 | MAX_LOG_LINES | 300 | Cantidad máxima de líneas en log (GUI) |
 | MAX_STEPS_UNLIMITED | 0 | Valor para desactivar límites de steps |
-| METRICS_WINDOW | 200 | Ventana para promedios |
 | NUM_CLASSES | 1000 | Clases de dataset |
 | POLL_TIMEOUT_MS | 100 | Intervalo de polling de la GUI (ms) |
 | PREFETCH_DEFAULT | 4 | Batches en cola de prefetch |
-| PS_METRICS_WINDOW_DEFAULT | 200 | Ventana de métricas por defecto en runtime del PS |
-| PS_STEPS_PER_REPORT_DEFAULT | 500 | Steps/reporte por defecto en runtime del PS |
+| METRICS_WINDOW_DEFAULT | 50 | Ventana para promedios |
+| STEPS_PER_REPORT_DEFAULT | 10 | Steps entre reportes |
 | SHUFFLE_BUFFER_DEFAULT | 1000 | Valor de shuffle buffer |
-| STEPS_PER_REPORT | 500 | Steps entre reportes |
 | TOOLTIP_DELAY_MS | 500 | Delay de aparición de tooltips (ms) |
 | VALIDATION_BATCH_SIZE_DEFAULT | 256 | Batch size por defecto para evaluación de validación |
 | VAL_BATCHES_DEFAULT | 50 | Batches para validación GUI |

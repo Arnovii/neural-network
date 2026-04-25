@@ -59,8 +59,8 @@ from Utils.constants import (
     MAX_LOG_LINES,
     POLL_TIMEOUT_MS,
     TOOLTIP_DELAY_MS,
-    STEPS_PER_REPORT,
-    METRICS_WINDOW,
+    STEPS_PER_REPORT_DEFAULT,
+    METRICS_WINDOW_DEFAULT,
     HF_DATASET_DEFAULT,
     VAL_BATCHES_DEFAULT,
     WORKER_COLORS as WORKER_COLOR_PALETTE,
@@ -455,8 +455,8 @@ class PSApp:
         # ── Async SGD ──
         self._section(frm, "Async SGD")
         self._v_lambda = tk.StringVar(value=str(DEFAULT_STALENESS_LAMBDA))
-        self._v_report = tk.IntVar(value=STEPS_PER_REPORT)
-        self._v_window = tk.IntVar(value=METRICS_WINDOW)
+        self._v_report = tk.IntVar(value=STEPS_PER_REPORT_DEFAULT)
+        self._v_window = tk.IntVar(value=METRICS_WINDOW_DEFAULT)
         self._v_max_steps = tk.StringVar(value="")  # Vacío = sin límite
         ent_lambda = self._entry(frm, "Staleness λ (0–1):", self._v_lambda, width=12)
         ent_report = self._entry(frm, "Steps por reporte:", self._v_report, width=12)
@@ -1382,9 +1382,9 @@ class PSApp:
 
     def _on_report(self, step: int, loss: float, acc: float, elapsed: float) -> None:
         """
-        Agrega métricas a historial y actualiza gráficas (cada steps_per_report steps).
+        Agrega métricas a historial y actualiza gráficas (cada STEPS_PER_REPORT_DEFAULT steps).
 
-        Se dispara periódicamente (cada N steps según steps_per_report).
+        Se dispara periódicamente (cada N steps según STEPS_PER_REPORT_DEFAULT).
         Agrega puntos al historial de entrenamiento para reconstrucción de gráficas.
 
         Acciones:

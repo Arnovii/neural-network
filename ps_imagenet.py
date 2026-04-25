@@ -59,8 +59,8 @@ from Utils.constants import (
     HIDDEN2_DEFAULT,
     DEFAULT_BATCH_SIZE,
     IMAGE_SIZE,
-    STEPS_PER_REPORT,
-    METRICS_WINDOW,
+    STEPS_PER_REPORT_DEFAULT,
+    METRICS_WINDOW_DEFAULT,
     DEFAULT_SEED,
     EXPORT_DIR_DEFAULT,
     MAX_STEPS_UNLIMITED,
@@ -82,7 +82,7 @@ def main() -> None:
        - MLPPyTorch (feature_dim → hidden1 → hidden2 → 1000 clases)
     4. **Creación de ParameterServer**:
        - Establece callbacks para eventos (step, report, connected, disconnected)
-       - Configura hiperparámetros Async-SGD (lr, staleness_lambda, metrics_window)
+       - Configura hiperparámetros Async-SGD (lr, staleness_lambda, METRICS_WINDOW_DEFAULT)
     5. **Apertura de servidor TCP**: ps.listen() inicia socket de escucha
     6. **Inicio de entrenamiento**: Loop sin esperar número específico de workers
     7. **Loop de entrenamiento**:
@@ -123,9 +123,11 @@ def main() -> None:
         "--cnn-arch", type=str, default="resnet18", choices=["resnet18", "simple"]
     )
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED)
-    parser.add_argument("--steps-per-report", type=int, default=STEPS_PER_REPORT)
+    parser.add_argument(
+        "--steps-per-report", type=int, default=STEPS_PER_REPORT_DEFAULT
+    )
     parser.add_argument("--max-steps", type=int, default=MAX_STEPS_UNLIMITED)
-    parser.add_argument("--metrics-window", type=int, default=METRICS_WINDOW)
+    parser.add_argument("--metrics-window", type=int, default=METRICS_WINDOW_DEFAULT)
     parser.add_argument(
         "--hf-token",
         type=str,
@@ -158,7 +160,7 @@ def main() -> None:
     )
     print(f"  LR                : {args.lr}")
     print(f"  Staleness λ       : {args.staleness_lambda}")
-    print(f"  Steps/reporte     : {args.steps_per_report}")
+    print(f"  Steps/reporte     : {args.STEPS_PER_REPORT_DEFAULT}")
     print(f"  Max steps         : {args.max_steps or '∞'}")
     print(f"  Export dir        : {args.export_dir}")
     print(
