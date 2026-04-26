@@ -10,14 +10,12 @@ OPCIONES:
     --server-host     IP del Parameter Server            (default: 127.0.0.1)
     --server-port     Puerto TCP                         (default: 9999)
     --device          cpu | cuda | cuda:0 | mps           (default: auto-detect CUDA/MPS/CPU)
-    --dataset         Dataset HF Hub                     (default: ILSVRC/imagenet-1k)
     --shuffle-buffer  Imágenes en buffer de shuffle      (default: 1000)
     --prefetch        Batches pre-cargados en background  (default: 4)
     --seed            Semilla RNG (None = aleatorio)     (default: None)
     --accum-steps     Batches a acumular antes de enviar  (default: 1)
-    --quiet           Suprimir mensajes de progreso
 
-NOTA: El rank, num_workers, batch_size, image_size, seed y hf_token
+NOTA: El rank, num_workers, dataset_name, batch_size, image_size, seed y hf_token
       se reciben del PS mediante mensaje CONFIG.
 
 EJEMPLO — 2 Workers en la misma máquina con GPUs distintas:
@@ -46,7 +44,6 @@ from Utils.constants import (
     DEFAULT_PORT,
     PREFETCH_DEFAULT,
     SHUFFLE_BUFFER_DEFAULT,
-    HF_DATASET_DEFAULT,
     WORKER_SERVER_HOST_DEFAULT,
 )
 
@@ -86,21 +83,19 @@ def main() -> None:
     parser.add_argument("--server-host", type=str, default=WORKER_SERVER_HOST_DEFAULT)
     parser.add_argument("--server-port", type=int, default=DEFAULT_PORT)
     parser.add_argument("--device", type=str, default=get_default_device())
-    parser.add_argument("--dataset", type=str, default=HF_DATASET_DEFAULT)
     parser.add_argument("--shuffle-buffer", type=int, default=SHUFFLE_BUFFER_DEFAULT)
     parser.add_argument("--prefetch", type=int, default=PREFETCH_DEFAULT)
     parser.add_argument(
         "--seed", type=int, default=None, help="Semilla RNG (None = aleatorio)"
     )
     parser.add_argument("--accum-steps", type=int, default=WORKER_ACCUM_STEPS_DEFAULT)
-    parser.add_argument("--quiet", action="store_true")
+
     args = parser.parse_args()
 
     print("=" * 68)
     print("WORKER ASÍNCRONO — ImageNet-1k Distribuido")
     print("=" * 68)
     print(f"  PS             : {args.server_host}:{args.server_port}")
-    print(f"  Dataset        : {args.dataset}")
     device_str = (
         f"{args.device} (auto-detected)"
         if args.device == get_default_device()
@@ -109,18 +104,16 @@ def main() -> None:
     print(f"  Device         : {device_str}")
     print(f"  Shuffle buffer : {args.shuffle_buffer}")
     print(f"  Prefetch       : {args.prefetch} batches")
-    print(f"  Seed           : {args.seed or 'aleatorio'}")
     print(f"  Accum steps    : {args.accum_steps}")
-    print(f"  HF Token       : recibido vía CONFIG del PS")
     print("=" * 68)
     print(
-        "\n  ℹ rank, num_workers, batch_size, image_size, hf_token se reciben del PS via CONFIG\n"
+        "\n  ℹ rank, num_workers, dataset_name, batch_size, image_size, seed, hf_token se reciben del PS via CONFIG\n"
     )
 
     WorkerNode(
         server_host=args.server_host,
         server_port=args.server_port,
-        dataset_name=args.dataset,
+        dataset_name=None,  # Recibido vía CONFIG del PS
         device=args.device,
         shuffle_buffer=args.shuffle_buffer,
         prefetch_batches=args.prefetch,

@@ -50,6 +50,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from Distributed.parameter_server import ParameterServer
 from Model.cnn_extractor import CNNExtractor
 from Model.mlp_pytorch import MLPPyTorch
+from Utils.config_loader import get_hf_token
 from Utils.constants import (
     DEFAULT_HOST,
     DEFAULT_PORT,
@@ -59,6 +60,7 @@ from Utils.constants import (
     HIDDEN2_DEFAULT,
     DEFAULT_BATCH_SIZE,
     IMAGE_SIZE,
+    HF_DATASET_DEFAULT,
     STEPS_PER_REPORT_DEFAULT,
     METRICS_WINDOW_DEFAULT,
     DEFAULT_SEED,
@@ -120,6 +122,12 @@ def main() -> None:
     parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE)
     parser.add_argument("--image-size", type=int, default=IMAGE_SIZE)
     parser.add_argument(
+        "--dataset",
+        type=str,
+        default=HF_DATASET_DEFAULT,
+        help="Dataset HuggingFace (default: ILSVRC/imagenet-1k)",
+    )
+    parser.add_argument(
         "--cnn-arch", type=str, default="resnet18", choices=["resnet18", "simple"]
     )
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED)
@@ -142,8 +150,8 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    # HF token: argumento CLI tiene prioridad sobre variable de entorno
-    hf_token = args.hf_token or os.environ.get("HF_TOKEN")
+    # HF token: argumento CLI tiene prioridad, luego .env, luego variable de entorno
+    hf_token = get_hf_token(args.hf_token)
 
     print("=" * 68)
     print("PARAMETER SERVER ASÍNCRONO — ImageNet-1k")
@@ -305,6 +313,7 @@ def main() -> None:
         metrics_window=args.metrics_window,
         batch_size=args.batch_size,
         image_size=args.image_size,
+        dataset_name=args.dataset,
         seed=args.seed,
         hf_token=hf_token,
         export_dir=args.export_dir,

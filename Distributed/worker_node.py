@@ -79,6 +79,7 @@ from Model.mlp_pytorch import MLPPyTorch
 from Utils.imagenet_streaming import PrefetchBuffer, build_worker_stream
 from Utils.logging_util import get_logger
 from Utils.constants import (
+    HF_DATASET_DEFAULT,
     DEFAULT_LR,
     DEFAULT_LR_CNN,
     DEFAULT_SEED,
@@ -118,8 +119,8 @@ class WorkerNode:
     :param server_port: Puerto TCP en el que escucha el Parameter Server.
     :type server_port: int
 
-    :param dataset_name: Nombre del dataset en HuggingFace Hub para streaming.
-    :type dataset_name: str
+    :param dataset_name: Nombre del dataset en HuggingFace Hub (recibido vía CONFIG del PS).
+    :type dataset_name: str | None
 
     :param device: Dispositivo PyTorch donde ejecutar ('cpu', 'cuda', 'cuda:0', 'mps').
     :type device: str
@@ -146,7 +147,7 @@ class WorkerNode:
         self,
         server_host: str,
         server_port: int,
-        dataset_name: str = HF_DATASET_DEFAULT,
+        dataset_name: str | None = None,
         device: str = "cpu",
         shuffle_buffer: int = SHUFFLE_BUFFER_DEFAULT,
         prefetch_batches: int = PREFETCH_DEFAULT,
@@ -278,13 +279,14 @@ class WorkerNode:
             raise ConnectionError(f"Esperaba WORKER_ID, recibí {msg['type']}")
         self._worker_id = msg["payload"]["worker_id"]
 
-        # Recibe CONFIG (batch_size, image_size, rank, num_workers, seed, hf_token desde PS)
+        # Recibe CONFIG (batch_size, image_size, dataset_name, rank, num_workers, seed, hf_token desde PS)
         msg = receive_message(self._sock)
         if msg["type"] != MsgType.CONFIG:
             raise ConnectionError(f"Esperaba CONFIG, recibí {msg['type']}")
         config = msg["payload"]
         self.batch_size = config["batch_size"]
         self.image_size = config["image_size"]
+        self.dataset_name = config.get("dataset_name", HF_DATASET_DEFAULT)  # Del PS
         self.seed = config.get("seed")  # Sobrescribe seed del usuario con el del PS
         self.worker_rank = config.get("rank", 0)  # Rank asignado por PS
         self.num_workers = config.get("num_workers", 1)  # Total de workers
@@ -292,7 +294,8 @@ class WorkerNode:
         _log.worker_msg(
             self._worker_id,
             f"CONFIG recibida: rank={self.worker_rank}, num_workers={self.num_workers}, "
-            f"batch_size={self.batch_size}, image_size={self.image_size}, seed={self.seed}",
+            f"dataset_name={self.dataset_name}, batch_size={self.batch_size}, "
+            f"image_size={self.image_size}, seed={self.seed}",
         )
 
     def _cleanup(self) -> None:
@@ -346,6 +349,9 @@ class WorkerNode:
         # Garantiza que el batch_size e image_size fueron recibidos en CONFIG
         assert self.batch_size is not None, "batch_size debe ser configurado por CONFIG"
         assert self.image_size is not None, "image_size debe ser configurado por CONFIG"
+        assert self.dataset_name is not None, (
+            "dataset_name debe ser configurado por CONFIG"
+        )
 
         self._stream = build_worker_stream(
             worker_rank=self.worker_rank,

@@ -56,6 +56,7 @@ from Model.cnn_extractor import CNNExtractor
 from Utils.logging_util import get_logger
 from Utils.results_exporter import ResultsExporter
 from Utils.constants import (
+    HF_DATASET_DEFAULT,
     DEFAULT_BATCH_SIZE,
     DEFAULT_LR,
     DEFAULT_LR_CNN,
@@ -206,6 +207,7 @@ class ParameterServer:
         metrics_window: int = METRICS_WINDOW_DEFAULT,
         batch_size: int = DEFAULT_BATCH_SIZE,
         image_size: int = IMAGE_SIZE,
+        dataset_name: str = HF_DATASET_DEFAULT,
         seed: int | None = DEFAULT_SEED,
         hf_token: str | None = None,
         export_dir: str = EXPORT_DIR_DEFAULT,
@@ -286,6 +288,7 @@ class ParameterServer:
         self.steps_per_report = steps_per_report
         self.batch_size = batch_size
         self.image_size = image_size
+        self.dataset_name = dataset_name
         self.seed = seed
         self.hf_token = hf_token
         self.export_dir = export_dir
@@ -446,6 +449,7 @@ class ParameterServer:
             "staleness_lambda": self.staleness_lambda,
             "batch_size": self.batch_size,
             "image_size": self.image_size,
+            "dataset_name": self.dataset_name,
             "seed": self.seed,
             "host": self.host,
             "port": self.port,
@@ -636,6 +640,7 @@ class ParameterServer:
             config = {
                 "batch_size": self.batch_size,
                 "image_size": self.image_size,
+                "dataset_name": self.dataset_name,
                 "seed": self.seed,
                 "rank": rank,
                 "num_workers": self._next_rank,  # Total de workers conectados (incluyendo el actual)

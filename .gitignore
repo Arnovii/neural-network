@@ -13,8 +13,11 @@ Data/*
 Exports/*
 
 # Entorno virtual
-venv/
+.venv/
 
 # Agentes
 .agents/*
 .continue/*
+
+# Variables de entorno (contienen secretos)
+.env

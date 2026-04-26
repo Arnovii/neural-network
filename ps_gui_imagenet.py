@@ -42,13 +42,15 @@ except ImportError as e:
 from Distributed.parameter_server import ParameterServer
 from Model.cnn_extractor import CNNExtractor
 from Model.mlp_pytorch import MLPPyTorch
+from Utils.config_loader import get_hf_token
 from Utils.constants import (
     CLOCK_UPDATE_MS,
     COLORS,
     DEFAULT_HOST,
     DEFAULT_PORT,
-    IMAGE_SIZE,
     DEFAULT_BATCH_SIZE,
+    HF_DATASET_DEFAULT,
+    IMAGE_SIZE,
     GUI_COLORS,
     GUI_INITIAL_XMAX,
     HIDDEN1_DEFAULT,
@@ -61,7 +63,6 @@ from Utils.constants import (
     TOOLTIP_DELAY_MS,
     STEPS_PER_REPORT_DEFAULT,
     METRICS_WINDOW_DEFAULT,
-    HF_DATASET_DEFAULT,
     VAL_BATCHES_DEFAULT,
     WORKER_COLORS as WORKER_COLOR_PALETTE,
 )
@@ -337,7 +338,7 @@ class PSApp:
         # ── Dataset ──
         self._section(frm, "Dataset")
         self._v_dataset = tk.StringVar(value=HF_DATASET_DEFAULT)
-        self._v_hf_token = tk.StringVar(value=os.environ.get("HF_TOKEN", ""))
+        self._v_hf_token = tk.StringVar(value=get_hf_token() or "")
         ent_dataset = self._entry(frm, "Dataset HF Hub:", self._v_dataset, width=30)
         ttk.Label(frm, text="HF Token:").pack(anchor=tk.W)
         ent_token = ttk.Entry(frm, textvariable=self._v_hf_token, width=30, show="*")
@@ -858,6 +859,7 @@ class PSApp:
             arch = self._v_arch.get()
             bs = int(self._v_batch_size.get())
             img_sz = int(self._v_image_size.get())
+            dataset = self._v_dataset.get().strip() or HF_DATASET_DEFAULT
 
             # Seed: vacío o "None" → None (Python = aleatorio), o int string → int
             seed_str = self._v_seed.get().strip()
@@ -938,6 +940,7 @@ class PSApp:
                     metrics_window=win,
                     batch_size=bs,
                     image_size=img_sz,
+                    dataset_name=dataset,
                     seed=seed,
                     hf_token=hf_token,
                     hidden1=h1,
