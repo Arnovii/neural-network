@@ -132,8 +132,7 @@ FLUJO TÍPICO
 
     worker = WorkerNode(
         server_host='127.0.0.1', server_port=9999,
-        dataset_name='ILSVRC/imagenet-1k',
-        worker_rank=0, num_workers=1, batch_size=64
+        device='cpu', shuffle_buffer=1000, prefetch_batches=4
     )
     worker.run()
 """

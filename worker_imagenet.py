@@ -12,7 +12,6 @@ OPCIONES:
     --device          cpu | cuda | cuda:0 | mps           (default: auto-detect CUDA/MPS/CPU)
     --shuffle-buffer  Imágenes en buffer de shuffle      (default: 1000)
     --prefetch        Batches pre-cargados en background  (default: 4)
-    --seed            Semilla RNG (None = aleatorio)     (default: None)
     --accum-steps     Batches a acumular antes de enviar  (default: 1)
 
 NOTA: El rank, num_workers, dataset_name, batch_size, image_size, seed y hf_token
@@ -85,9 +84,6 @@ def main() -> None:
     parser.add_argument("--device", type=str, default=get_default_device())
     parser.add_argument("--shuffle-buffer", type=int, default=SHUFFLE_BUFFER_DEFAULT)
     parser.add_argument("--prefetch", type=int, default=PREFETCH_DEFAULT)
-    parser.add_argument(
-        "--seed", type=int, default=None, help="Semilla RNG (None = aleatorio)"
-    )
     parser.add_argument("--accum-steps", type=int, default=WORKER_ACCUM_STEPS_DEFAULT)
 
     args = parser.parse_args()
@@ -113,11 +109,9 @@ def main() -> None:
     WorkerNode(
         server_host=args.server_host,
         server_port=args.server_port,
-        dataset_name=None,  # Recibido vía CONFIG del PS
         device=args.device,
         shuffle_buffer=args.shuffle_buffer,
         prefetch_batches=args.prefetch,
-        seed=args.seed,
         accum_steps=args.accum_steps,
     ).run()
 

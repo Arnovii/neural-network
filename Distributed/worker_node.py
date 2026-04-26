@@ -79,18 +79,15 @@ from Model.mlp_pytorch import MLPPyTorch
 from Utils.imagenet_streaming import PrefetchBuffer, build_worker_stream
 from Utils.logging_util import get_logger
 from Utils.constants import (
-    HF_DATASET_DEFAULT,
     DEFAULT_LR,
     DEFAULT_LR_CNN,
-    DEFAULT_SEED,
     GRAD_CLIP_MAX_NORM,
-    HF_DATASET_DEFAULT,
     LABEL_SMOOTHING,
     NUM_CLASSES,
-    WORKER_ACCUM_STEPS_DEFAULT,
     PREFETCH_DEFAULT,
     SHUFFLE_BUFFER_DEFAULT,
     WEIGHT_DECAY,
+    WORKER_ACCUM_STEPS_DEFAULT,
 )
 
 _log = get_logger(use_colors=True)
@@ -119,9 +116,6 @@ class WorkerNode:
     :param server_port: Puerto TCP en el que escucha el Parameter Server.
     :type server_port: int
 
-    :param dataset_name: Nombre del dataset en HuggingFace Hub (recibido vía CONFIG del PS).
-    :type dataset_name: str | None
-
     :param device: Dispositivo PyTorch donde ejecutar ('cpu', 'cuda', 'cuda:0', 'mps').
     :type device: str
 
@@ -131,13 +125,12 @@ class WorkerNode:
     :param prefetch_batches: Número de batches a pre-cargar en background.
     :type prefetch_batches: int
 
-    :param seed: Semilla para RNG (None = determinismo deshabilitado, aleatorio).
-    :type seed: int | None
-
     :param accum_steps: Número de batches a acumular antes de enviar UPDATES al PS.
     :type accum_steps: int
 
-    :note: worker_rank, num_workers, batch_size, image_size, seed y hf_token se reciben del PS mediante mensaje CONFIG durante conexión. lr y lr_cnn se reciben del PS mediante PARAMS en cada iteración.
+    :note: worker_rank, num_workers, dataset_name, batch_size, image_size, seed y hf_token
+        se reciben del PS mediante mensaje CONFIG durante conexión. lr y lr_cnn se reciben
+        del PS mediante PARAMS en cada iteración.
 
     :raises ConnectionError: Si falla la conexión inicial con el Parameter Server.
     :raises RuntimeError: Si hay mismatch de parámetros con la CNN recibida del PS.
@@ -147,19 +140,15 @@ class WorkerNode:
         self,
         server_host: str,
         server_port: int,
-        dataset_name: str | None = None,
         device: str = "cpu",
         shuffle_buffer: int = SHUFFLE_BUFFER_DEFAULT,
         prefetch_batches: int = PREFETCH_DEFAULT,
-        seed: int | None = DEFAULT_SEED,
         accum_steps: int = WORKER_ACCUM_STEPS_DEFAULT,
     ) -> None:
         # Configuración de red
         self.server_host = server_host
         self.server_port = server_port
 
-        # Dataset a utilizar
-        self.dataset_name = dataset_name
         self.hf_token: str | None = None  # Recibido via CONFIG del PS
 
         # Identificadores para paralelismo (recibidos desde PS en _connect)
@@ -171,7 +160,8 @@ class WorkerNode:
         self.prefetch_batches = prefetch_batches
 
         # Otros ajustes necesarios
-        self.seed = seed
+        self.dataset_name: str | None = None
+        self.seed: int | None = None
         self.device = torch.device(device)
         self.accum_steps = accum_steps
 
@@ -286,8 +276,8 @@ class WorkerNode:
         config = msg["payload"]
         self.batch_size = config["batch_size"]
         self.image_size = config["image_size"]
-        self.dataset_name = config.get("dataset_name", HF_DATASET_DEFAULT)  # Del PS
-        self.seed = config.get("seed")  # Sobrescribe seed del usuario con el del PS
+        self.dataset_name = config["dataset_name"]
+        self.seed = config["seed"]
         self.worker_rank = config.get("rank", 0)  # Rank asignado por PS
         self.num_workers = config.get("num_workers", 1)  # Total de workers
         self.hf_token = config.get("hf_token")  # Token HF para streaming (del PS)
