@@ -50,7 +50,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from Distributed.parameter_server import ParameterServer
 from Model.cnn_extractor import CNNExtractor
 from Model.mlp_pytorch import MLPPyTorch
-from Utils.config_loader import get_hf_token
+from Utils.config_loader import get_hf_token, get_worker_ip
 from Utils.constants import (
     DEFAULT_HOST,
     DEFAULT_PORT,
@@ -157,6 +157,9 @@ def main() -> None:
     print("PARAMETER SERVER ASÍNCRONO — ImageNet-1k")
     print("=" * 68)
     print(f"  Host              : {args.host}:{args.port}")
+    print(
+        f"  Worker host      : {get_worker_ip(args.host)}  (usar como --server-host en workers)"
+    )
     print(f"  CNN               : {args.cnn_arch}")
     print(
         f"  MLP               : feature_dim → {args.hidden1} → {args.hidden2} → {NUM_CLASSES}"

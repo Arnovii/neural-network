@@ -1,4 +1,5 @@
 import os
+import socket
 from pathlib import Path
 from typing import Optional
 
@@ -77,3 +78,29 @@ def get_hf_token_or_raise() -> str:
             "  3. Pasar --hf-token via CLI"
         )
     return token
+
+
+def get_worker_ip(host: str) -> str:
+    """
+    Retorna la IP que el worker debe usar para conectar al PS.
+
+    :param host: Host configurado en el PS (ej: '0.0.0.0', '127.0.0.1', IP específica).
+    :type host: str
+
+    :returns: IP que el worker debe usar como --server-host
+    :rtype: str
+
+    :example:
+        >>> get_worker_ip("0.0.0.0")
+        '192.168.1.100'
+        >>> get_worker_ip("127.0.0.1")
+        '127.0.0.1'
+    """
+    if host == "0.0.0.0":
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+                s.connect(("8.8.8.8", 80))
+                return s.getsockname()[0]
+        except Exception:
+            return "<TU_IP>"
+    return host

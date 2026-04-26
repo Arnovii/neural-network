@@ -32,9 +32,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 try:
     import tkinter as tk
     from tkinter import messagebox, ttk
-    import matplotlib.pyplot as plt
-    from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
-    from matplotlib.ticker import MaxNLocator
+    import matplotlib.pyplot as plt # pyright: ignore[reportMissingModuleSource]
+    from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg # pyright: ignore[reportMissingModuleSource]
+    from matplotlib.ticker import MaxNLocator # pyright: ignore[reportMissingModuleSource]
 except ImportError as e:
     print(f"Error cargando librerías gráficas: {e}")
     sys.exit(1)
@@ -42,7 +42,7 @@ except ImportError as e:
 from Distributed.parameter_server import ParameterServer
 from Model.cnn_extractor import CNNExtractor
 from Model.mlp_pytorch import MLPPyTorch
-from Utils.config_loader import get_hf_token
+from Utils.config_loader import get_hf_token, get_worker_ip
 from Utils.constants import (
     CLOCK_UPDATE_MS,
     COLORS,
@@ -1190,14 +1190,15 @@ class PSApp:
                     self._refresh_buttons()
                     # NO programar update del reloj aún — esperamos primer on_step()
                     mode = (
-                        "freeze (CNN congelada)"
+                        "CNN congelada"
                         if arch == "resnet18"
                         else "E2E (CNN + MLP)"
                     )
+                    worker_ip = get_worker_ip(host)
                     self._log(
-                        f"[PS] ✓ Servidor en {host}:{port} | arch={arch} ({mode}) | "
-                        f"feature_dim={fdim} | MLP {fdim}→{h1}→{h2}→1000 | "
-                        f"lr_mlp={lr} lr_cnn={lr_cnn} | batch={bs} img={img_sz} seed={seed}"
+                        f"[PS] ✓ Servidor en {host}:{port} | Worker host: {worker_ip} | arch={arch} ({mode}) | "
+                        f"feature_dim={fdim} | MLP {fdim}→{h1}→{h2}→1000 | lr_mlp={lr} | lr_cnn={lr_cnn} | "
+                        f"batch={bs} | img={img_sz} | seed={seed}"
                     )
                     self._status.set(
                         f"Escuchando en {host}:{port} — esperando Workers..."
