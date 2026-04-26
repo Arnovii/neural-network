@@ -45,8 +45,56 @@ Nuestro sistema distribuye el entrenamiento entre N máquinas independientes y g
 
 **Desventajas que explicaremos después:**
 - Convergencia potencialmente más lenta que entrenamiento centralizado sincrónico
-- Gradientes en CNN muy ruidosos (redes profundas sin momentum persistente)
+- Gradientes en CNN muy噪音 (redes profundas sin momentum persistente)
 - Requiere infraestructura TCP confiable
+
+---
+
+## 1.1 Configuración del Sistema
+
+### Token de HuggingFace
+
+El token HF se puede configurar de tres formas (prioridad: CLI > .env > variable de entorno):
+
+```bash
+# Opción 1: Variable de entorno
+export HF_TOKEN=hf_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+
+# Opción 2: Archivo .env (recomendado)
+echo "HF_TOKEN=hf_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" > .env
+python ps_imagenet.py  # Se carga automáticamente
+
+# Opción 3: Argumento CLI
+python ps_imagenet.py --hf-token "hf_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+```
+
+### Dataset Centralizado
+
+El dataset se especifica en el **Parameter Server**, NO en los Workers:
+
+- El PS recibe `--dataset ILSVRC/imagenet-1k` por CLI o usa el valor por defecto
+- El PS envía el nombre del dataset a todos los Workers vía mensaje CONFIG
+- El Worker recibe `dataset_name` del PS y lo usa para streaming
+
+```
+PS (--dataset ILSVRC/imagenet-1k)
+    ↓ CONFIG {dataset_name, batch_size, image_size, rank, num_workers, seed, hf_token}
+Worker (recibe dataset_name del PS)
+    ↓
+ImageNetStream(dataset_name=recibido)
+```
+
+### Mensaje de Worker Host
+
+Al iniciar el PS, se muestra automáticamente la IP que los Workers deben usar:
+
+```
+==================================== PARAMETER SERVER ASÍNCRONO — ImageNet-1k ====================================
+  Host              : 0.0.0.0:9999
+  Worker host      : 192.168.1.100  (usar como --server-host en workers)
+  CNN               : resnet18
+  ...
+```
 
 ---
 

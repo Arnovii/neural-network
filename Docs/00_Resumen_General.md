@@ -57,6 +57,54 @@ CRÍTICO:
 - ⚠️ **SIMPLE CNN features iniciales aleatorias**: Primeros centenares de batches con ruido puro → convergencia extremadamente lenta, no recomendada para producción
 - ⚠️ **ResNet-18 convergencia limitada**: CNN congelada restringe adaptación de features, pero convergencia más rápida que SIMPLE CNN (transfer learning)
 
+---
+
+## Configuración del Sistema
+
+### Token de HuggingFace
+
+El token HF se puede configurar de tres formas (prioridad: CLI > .env > variable de entorno):
+
+```bash
+# Opción 1: Variable de entorno
+export HF_TOKEN=hf_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+
+# Opción 2: Archivo .env (recomendado)
+echo "HF_TOKEN=hf_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" > .env
+
+# Opción 3: Argumento CLI (máxima prioridad)
+python ps_imagenet.py --hf-token "hf_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+```
+
+### Dataset
+
+El dataset se especifica en el **Parameter Server**, NO en los Workers:
+
+- El PS recibe `--dataset ILSVRC/imagenet-1k` por CLI o usa el valor por defecto
+- El PS envía el nombre del dataset a todos los Workers vía mensaje CONFIG
+- El Worker recibe `dataset_name` del PS y lo usa para streaming
+
+```
+PS (--dataset ILSVRC/imagenet-1k)
+    ↓ CONFIG {dataset_name, batch_size, ...}
+Worker (recibe dataset_name del PS)
+    ↓
+ImageNetStream(dataset_name=recibido)
+```
+
+### Archivo .env
+
+Crear archivo `.env` en la raíz del proyecto:
+
+```bash
+# .env
+HF_TOKEN=hf_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+```
+
+ Este archivo se carga automáticamente. El archivo `.env` debe estar en `.gitignore`.
+
+---
+
 ## Componentes Principales
 
 | Componente | Rol | Ubicación |
@@ -66,6 +114,8 @@ CRÍTICO:
 | **CNN Extractor** | ResNet-18 preentrenada (congelada) O SIMPLE CNN (entrenable E2E) | `Model/cnn_extractor.py` |
 | **MLP Classifier** | Clasificador con 2-3 capas entrenables | `Model/mlp_pytorch.py` |
 | **Streaming Pipeline** | Descarga y prepara batches desde HuggingFace | `Utils/imagenet_streaming.py` |
+| **Config Loader** | Carga .env y funciones de configuración | `Utils/config_loader.py` |
+| **Constants** | Constantes globales del proyecto | `Utils/constants.py` |
 | **Results Exporter** | Exporta métricas, logs y gráficas al finalizar | `Utils/results_exporter.py` |
 | **GUI** | Interfaz gráfica para control y monitoreo | `ps_gui_imagenet.py` |
 | **Terminal PS** | Point of entry para PS sin GUI | `ps_imagenet.py` |
@@ -80,16 +130,16 @@ CRÍTICO:
 └──────────┬──────────┘
            │ (streaming)
     ┌──────▼──────────┐
-    │ Worker 0        │         ┌──────────────────────────────┐
-    │ CNN+MLP train   │         │ Parameter Server             │
-    │ (E2E)           │──┐      │ • CNN state (promediada)     │
-    │ Sync+Train+Send │  │ ─────► • MLP state (promediada)     │
-    └─────────────────┘  │      │ • version                    │
-                         │      │ • staleness correction       │
-    ┌─────────────────┐  │ ◄────│                              │
-    │ Worker 1        │──┤ PARAMS                              │
-    │ CNN+MLP train   │  │ +UPDATES                            │
-    │ (E2E)           │  │      └──────────────────────────────┘
+    │ Worker 0        │          ┌──────────────────────────────┐
+    │ CNN+MLP train   │          │ Parameter Server             │
+    │ (E2E)           │──┐       │ • CNN state (promediada)     │
+    │ Sync+Train+Send │  │ ─────►│ • MLP state (promediada)     │
+    └─────────────────┘  │       │ • version                    │
+                         │       │ • staleness correction       │
+    ┌─────────────────┐  │ ◄─────│                              │
+    │ Worker 1        │──┤ PARAMS                               │
+    │ CNN+MLP train   │  │ +UPDATES                             │
+    │ (E2E)           │  │       └──────────────────────────────┘
     │ Sync+Train+Send │  │
     └─────────────────┘  │
                          │
@@ -187,6 +237,8 @@ neural-network/
 │   └── mlp_pytorch.py          # Clasificador MLP
 ├── Utils/
 │   ├── __init__.py
+│   ├── constants.py           # Constantes globales del proyecto
+│   ├── config_loader.py       # Funciones de configuración (.env, get_hf_token)
 │   ├── imagenet_streaming.py   # Streaming desde HF
 │   ├── logging_util.py         # Logging estructurado
 │   └── results_exporter.py     # Exportar resultados
@@ -195,6 +247,7 @@ neural-network/
 ├── worker_imagenet.py          # CLI Worker
 ├── requirements.txt
 ├── pyproject.toml
+├── .env.example               # Plantilla de configuración
 └── Docs/
     ├── 00_Resumen_General.md   (este archivo)
     ├── 01_Arquitectura.md

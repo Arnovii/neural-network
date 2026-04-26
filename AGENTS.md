@@ -82,7 +82,10 @@ READY → WORKER_ID → CONFIG → CNN_WEIGHTS → CNN_ACK → START
 | `--hidden1` | 1024 | MLP hidden layer 1 |
 | `--hidden2` | 512 | MLP hidden layer 2 |
 | `--batch-size` | 64 | Batch size por Worker |
+| `--image-size` | 224 | Image resolution |
+| `--dataset` | ILSVRC/imagenet-1k | Dataset (specified in PS, not Worker) |
 | `--max-steps` | 0 | Limit de steps (0=sin límite) |
+| `--hf-token` | None | HuggingFace token |
 
 ## Key Classes
 
@@ -122,10 +125,16 @@ Sistema completamente desacoplado de exportación de resultados que genera:
 - Resolución: 300 DPI, formato PNG, `bbox_inches="tight"`, `pad_inches=0.3`
 
 ## Dependencies (requirements.txt)
-- `torch==2.10.0`, `torchvision==0.25.0`
-- `matplotlib==3.10.8`
-- `datasets` (HuggingFace streaming)
-- `numpy==2.4.2`, `psutil==7.0.0`
+
+| Paquete | Versión | Propósito |
+|--------|---------|---------|
+| `python-dotenv` | 1.0.1 | Carga variables desde .env |
+| `torch` | 2.10.0 | Redes neuronales |
+| `torchvision` | 0.25.0 | Transformaciones de imágenes |
+| `matplotlib` | 3.10.8 | Visualización de métricas |
+| `datasets` | 4.8.4 | Streaming HuggingFace |
+| `numpy` | 2.4.2 | Operaciones numéricas |
+| `psutil` | 7.2.2 | Utilidades del sistema |
 
 ## No CI/Lint/Typecheck
 Este repo NO tiene configurado:
@@ -180,3 +189,63 @@ Este repo NO tiene configurado:
 - **Dynamic scaling**: Loss ±10%, Accuracy ±20%, Workers ±15%
 - **No dependencies**: Completamente desacoplado de ParameterServer
 - **Integration**: Registrado via logging_util.add_log_handler() en PS.listen()
+
+---
+
+## Environment Configuration (.env)
+
+El token de HuggingFace puede configurarse mediante archivo `.env`:
+
+```bash
+# Crear archivo .env en la raíz del proyecto
+echo "HF_TOKEN=hf_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" > .env
+
+# El sistema carga automáticamente el token desde .env
+python ps_imagenet.py
+```
+
+### Prioridad de HF_TOKEN
+
+```
+CLI (--hf-token) > .env > HF_TOKEN (variable de entorno)
+```
+
+---
+
+## CLI Reference
+
+### Parameter Server (ps_imagenet.py)
+
+| Parámetro | Default | Descripción |
+|-----------|---------|------------|
+| `--host` | 0.0.0.0 | Host del PS |
+| `--port` | 9999 | Puerto TCP |
+| `--lr` | 0.001 | Learning rate MLP |
+| `--staleness-lambda` | 0.1 | Factor corrección staleness |
+| `--hidden1` | 1024 | Capa oculta MLP 1 |
+| `--hidden2` | 512 | Capa oculta MLP 2 |
+| `--batch-size` | 64 | Batch size |
+| `--image-size` | 224 | Resolución imágenes |
+| `--dataset` | ILSVRC/imagenet-1k | Dataset HuggingFace |
+| `--seed` | None | Semilla RNG |
+| `--steps-per-report` | 500 | Steps entre reportes |
+| `--max-steps` | 0 (ilimitado) | Límite de steps |
+| `--hf-token` | None | Token HuggingFace |
+
+### Parameter Server GUI (ps_gui_imagenet.py)
+
+Interfaz gráfica con los mismos parámetros que ps_imagenet.py más configuración visual.
+
+### Worker (worker_imagenet.py)
+
+| Parámetro | Default | Descripción |
+|-----------|---------|------------|
+| `--server-host` | 127.0.0.1 | IP del PS |
+| `--server-port` | 9999 | Puerto del PS |
+| `--device` | auto | cpu, cuda, cuda:N, mps |
+| `--shuffle-buffer` | 1000 | Buffer de shuffle |
+| `--prefetch` | 4 | Batches en prefetch |
+| `--seed` | None | Semilla RNG |
+| `--accum-steps` | 1 | Batches a acumular |
+
+**Nota**: El dataset se especifica en el PS, no en el Worker.

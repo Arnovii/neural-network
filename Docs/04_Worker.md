@@ -37,7 +37,7 @@ def _connect(self) -> None:
         raise ConnectionError(f"Esperaba WORKER_ID, recibí {msg['type']}")
     self._worker_id = msg["payload"]["worker_id"]
     
-    # 3. Recibir CONFIG (batch_size, image_size, rank, num_workers, seed, hf_token)
+    # 3. Recibir CONFIG (batch_size, image_size, dataset_name, rank, num_workers, seed, hf_token)
     msg = receive_message(self._sock)
     if msg["type"] != MsgType.CONFIG:
         raise ConnectionError(f"Esperaba CONFIG, recibí {msg['type']}")
@@ -532,4 +532,100 @@ TOTAL: ~100-120 MB por Worker (típico)
 | Memory error | Buffer demasiado grande | Reducir `--prefetch` |
 | muy lento | Throughput bajo | Aumentar batch size o usar GPU |
 | Accuracy = 0% siempre | MLP no se actualiza | Ver métricas del PS |
+
+---
+
+## Línea de Comandos (CLI)
+
+### Uso básico
+
+```bash
+# Conectar al PS en localhost
+python worker_imagenet.py --server-host 127.0.0.1
+
+# Conectar al PS en otra máquina
+python worker_imagenet.py --server-host 192.168.1.100
+
+# Conectar al PS con personalizado
+python worker_imagenet.py \
+    --server-host 192.168.1.100 \
+    --server-port 9999 \
+    --device cuda:0 \
+    --prefetch 8 \
+    --shuffle-buffer 2000 \
+    --accum-steps 2
+```
+
+### Parámetros del Worker
+
+| Parámetro | Default | Descripción |
+|----------|---------------|-------------|
+| `--server-host` | `127.0.0.1` | IP del Parameter Server |
+| `--server-port` | `9999` | Puerto TCP del PS |
+| `--device` | `auto` | cpu, cuda, cuda:N, mps |
+| `--shuffle-buffer` | `1000` | Imágenes en buffer de shuffle |
+| `--prefetch` | `4` | Batches pre-cargados |
+| `--seed` | `None` | Semilla RNG (None = aleatorio) |
+| `--accum-steps` | `1` | Batches a acumular antes de enviar |
+
+### Nota Importante
+
+**El dataset se especifica en el PS, NO en el Worker**.
+
+- El Worker **recibe** el nombre del dataset del PS vía mensaje CONFIG
+- No existe parámetro `--dataset` en el Worker
+- Si necesitas un dataset diferente, configúralo en el PS
+
+---
+
+## CONFIG: Mensaje de Configuración
+
+Cuando el Worker se conecta, el PS envía un mensaje CONFIG con los parámetros globales:
+
+```python
+config = {
+    "batch_size": 64,                    # Batch size global
+    "image_size": 224,               # Resolución de imágenes
+    "dataset_name": "ILSVRC/imagenet-1k",  # Dataset (ENVÍADO DESDE EL PS)
+    "seed": 42,                     # Semilla global
+    "rank": 0,                     # Rank asignado al Worker
+    "num_workers": 2,                # Total de Workers
+    "hf_token": "hf_...",            # Token para HuggingFace
+}
+```
+
+### Parámetros recibidos en CONFIG
+
+| Campo | Tipo | Descripción |
+|-------|------|------------|
+| `batch_size` | int | Imágenes por batch |
+| `image_size` | int | Resolución (ancho=alto) |
+| `dataset_name` | str | Dataset de HuggingFace |
+| `seed` | int \| None | Semilla global |
+| `rank` | int | Índice del Worker (0, 1, 2, ...) |
+| `num_workers` | int | Total de Workers conectados |
+| `hf_token` | str | Token para streaming |
+
+### Importancia del Sharding
+
+- `rank` + `num_workers` determinan qué porción del dataset procesa cada Worker
+- Worker 0 procesa: indices 0, N, 2N, ...
+- Worker 1 procesa: indices 1, 1+N, 1+2N, ...
+- No hay overlap entre Workers
+
+---
+
+## Historial de Cambios
+
+### Eliminación de --quiet
+
+El parámetro `--quiet` fue **eliminado** porque no funcionaba:
+
+- No había lógica que usara `args.quiet`
+- Todo el logging era siempre mostrado
+- Si necesitas silencio, redirige la salida:
+
+```bash
+python worker_imagenet.py --server-host 127.0.0.1 2>&1 > /dev/null
+```
 

@@ -735,6 +735,179 @@ tolerando múltiples Workers distribuidos.
 Convergence rate: O(1/√T + s_max/T)
                 = algo más lento que SGD sincrónico
                 = pero N veces más throughput
-═════════════════════════════════════════════════════════════════
+═══════════════════════════════════════════════════════════════
+```
+
+---
+
+## Línea de Comandos (CLI)
+
+### PS con GUI (Recomendado)
+
+```bash
+python ps_gui_imagenet.py --hf-token "hf_..."
+```
+
+Inicia el Parameter Server con interfaz gráfica. Requiere HF Token para streaming.
+
+### PS Terminal (Consola)
+
+```bash
+# Básico
+python ps_imagenet.py --hf-token "hf_..."
+
+# Completo con todos los parámetros
+python ps_imagenet.py \
+    --host 0.0.0.0 \
+    --port 9999 \
+    --lr 0.001 \
+    --staleness-lambda 0.1 \
+    --hidden1 1024 \
+    --hidden2 512 \
+    --batch-size 64 \
+    --image-size 224 \
+    --dataset "ILSVRC/imagenet-1k" \
+    --seed 42 \
+    --steps-per-report 500 \
+    --max-steps 10000 \
+    --export-dir ./mis_resultados \
+    --hf-token "hf_..."
+```
+
+---
+
+## Parámetro --dataset
+
+### Descripción
+
+El dataset de HuggingFace se especifica en el **PS**, NO en los Workers.
+
+| Parámetro | Valor por defecto | Descripción |
+|----------|---------------|-------------|
+| `--dataset` | `ILSVRC/imagenet-1k` | Dataset HuggingFace para streaming |
+
+### Valores comunes
+
+| Dataset | Descripción |
+|---------|-----------|
+| `ILSVRC/imagenet-1k` | ImageNet estándar (1000 clases) - **Default** |
+| `ILSVRC/imagenet-1k-wds` | ImageNet en formato WebDataset |
+| `timm/imagenet-1k` | ImageNet desde timm |
+| `custom/dataset` | Dataset privado (requiere HF_TOKEN) |
+
+### Flujo de datos
+
+```
+PS (--dataset ILSVRC/imagenet-1k)
+    ↓ CONFIG {dataset_name, batch_size, image_size, ...}
+Worker (recibe dataset_name del PS)
+    ↓
+ImageNetStream(dataset_name=recibido)
+    ↓
+Pipeline de entrenamiento
+```
+
+### Importancia
+
+- **Centralización**: El dataset se configura una sola vez en el PS
+- **Consistencia**: Todos los Workers usan el mismo dataset
+- **Simplicidad**: Workers no necesitan especificar dataset
+
+---
+
+## Mensaje Worker Host
+
+Al iniciar el PS, se muestra un mensaje indicando la IP que los Workers deben usar:
+
+```
+==================================== PARAMETER SERVER ASÍNCRONO — ImageNet-1k ====================================
+  Host              : 0.0.0.0:9999
+  Worker host      : 192.168.1.100  (usar como --server-host en workers)
+  CNN               : resnet18
+  ...
+```
+
+### Para qué sirve
+
+- El mensaje `Worker host` indica la **IP de esta máquina**
+- Los Workers remotos deben usar esta IP como `--server-host`
+- Si el PS usa `0.0.0.0`, se detecta automáticamente la IP real
+- Si el PS usa `127.0.0.1`, se muestra `127.0.0.1` (solo Workers locales)
+
+### Ejemplo de uso
+
+**En el Worker (máquina remota)**:
+```bash
+python worker_imagenet.py --server-host 192.168.1.100
+```
+
+**En la misma máquina (testing)**:
+```bash
+python worker_imagenet.py --server-host 127.0.0.1
+```
+
+### Función get_worker_ip()
+
+Esta funcionalidad está implementada en `Utils/config_loader.py`:
+
+```python
+from Utils.config_loader import get_worker_ip
+
+ip = get_worker_ip("0.0.0.0")      # Retorna: "192.168.1.100" (IP real)
+ip = get_worker_ip("127.0.0.1")      # Retorna: "127.0.0.1"
+ip = get_worker_ip("192.168.1.50")  # Retorna: "192.168.1.50" (sin cambio)
+```
+
+---
+
+## Configuración de HF_TOKEN
+
+El token de HuggingFace puede configurarse de tres formas:
+
+### Opción 1: Variable de entorno
+
+```bash
+export HF_TOKEN=hf_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+python ps_imagenet.py --hf-token "hf_..."
+```
+
+### Opción 2: Archivo .env
+
+```bash
+# Crear archivo .env en la raíz del proyecto
+echo "HF_TOKEN=hf_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" > .env
+
+# Ejecutar (auto-carga)
+python ps_imagenet.py
+```
+
+### Opción 3: Argumento CLI (máxima prioridad)
+
+```bash
+python ps_imagenet.py --hf-token "hf_..."
+```
+
+### Prioridad
+
+```
+CLI (--hf-token) > .env > HF_TOKEN (variable de entorno)
+```
+
+---
+
+## Resumen de Archivos y Rutas
+
+| Archivo | Propósito | CLI |
+|---------|----------|-----|
+| `ps_imagenet.py` | PS en terminal | `python ps_imagenet.py --lr 0.001 --hf-token "hf_..."` |
+| `ps_gui_imagenet.py` | PS con GUI | `python ps_gui_imagenet.py` |
+| `worker_imagenet.py` | Worker | `python worker_imagenet.py --server-host IP_PS` |
+
+| Módulo | Propósito |
+|--------|----------|
+| `Distributed/parameter_server.py` | Clase ParameterServer |
+| `Distributed/worker_node.py` | Clase WorkerNode |
+| `Utils/config_loader.py` | Funciones get_hf_token, get_worker_ip |
+| `Utils/constants.py` | Constantes globales del proyecto |══
 ```
 

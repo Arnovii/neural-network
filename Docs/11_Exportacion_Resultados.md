@@ -85,18 +85,41 @@ result_dir = exporter.finalize()
 
 ```json
 {
-  "lr": 0.1,
+  "lr": 0.001,
   "lr_cnn": 0.001,
   "staleness_lambda": 0.1,
   "batch_size": 64,
   "image_size": 224,
+  "dataset_name": "ILSVRC/imagenet-1k",
   "seed": 42,
   "cnn_arch": "resnet18",
+  "hidden1": 1024,
+  "hidden2": 512,
+  "steps_per_report": 500,
   "host": "0.0.0.0",
   "port": 9999,
   "description": "Distributed Async-SGD on ImageNet-1k"
 }
 ```
+
+### Campos de config.json
+
+| Campo | Tipo | Descripción |
+|------|------|------------|
+| `lr` | float | Learning rate del MLP |
+| `lr_cnn` | float | Learning rate de la CNN (E2E) |
+| `staleness_lambda` | float | Factor λ de corrección staleness |
+| `batch_size` | int | Imágenes por batch |
+| `image_size` | int | Resolución de imágenes |
+| `dataset_name` | str | Dataset de HuggingFace |
+| `seed` | int \| null | Semilla RNG (null = aleatorio) |
+| `cnn_arch` | str | Arquitectura CNN ("resnet18" o "simple") |
+| `hidden1` | int | Neuronas capa oculta 1 del MLP |
+| `hidden2` | int | Neuronas capa oculta 2 del MLP |
+| `steps_per_report` | int | Steps entre reportes de métricas |
+| `host` | str | Host del PS |
+| `port` | int | Puerto del PS |
+| `description` | str | Descripción del experimento |
 
 ### 2. metrics.csv
 

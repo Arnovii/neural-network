@@ -239,7 +239,110 @@ rank=2, num_workers=3 → muestras 2, 5, 8, 11, ... (1/3 del dataset)
 → SIN NECESIDAD DE COORDINACIÓN MANUAL
 ```
 
-### 6. Comunicación (Protocolo)
+---
+
+### 6. Constantes del Proyecto
+
+**Archivo**: `Utils/constants.py`
+
+**Responsabilidades**:
+- Definir valores por defecto centralizados para todo el proyecto
+- Evitar magic numbers dispersos en el código
+- Facilitar configuración global
+
+**Constantes principales**:
+
+| Constante | Valor | Descripción |
+|---|---|---|
+| `DEFAULT_LR` | 0.001 | Learning rate del MLP |
+| `DEFAULT_LR_CNN` | 0.001 | Learning rate CNN (E2E) |
+| `HIDDEN1_DEFAULT` | 1024 | Neuronas capa oculta 1 |
+| `HIDDEN2_DEFAULT` | 512 | Neuronas capa oculta 2 |
+| `DEFAULT_BATCH_SIZE` | 64 | Imágenes por batch |
+| `IMAGE_SIZE` | 224 | Resolución de imágenes |
+| `HF_DATASET_DEFAULT` | ILSVRC/imagenet-1k | Dataset por defecto |
+| `DEFAULT_PORT` | 9999 | Puerto del PS |
+| `GRAD_CLIP_MAX_NORM` | 10.0 | Threshold gradient clipping |
+| `LABEL_SMOOTHING` | 0.1 | Label smoothing |
+| `WEIGHT_DECAY` | 1e-4 | Weight decay L2 |
+
+---
+
+### 7. Configuración del Entorno
+
+**Archivo**: `Utils/config_loader.py`
+
+**Responsabilidades**:
+- Cargar variables desde archivo `.env`
+- Proporcionar funciones helper para configuración
+- Centralizar la lógica de configuración
+
+**Funciones principales**:
+
+| Función | Descripción |
+|---|---|
+| `load_dotenv(env_path)` | Carga archivo .env si existe |
+| `get_hf_token(override)` | Obtiene token HF con prioridad: CLI > .env > env |
+| `get_worker_ip(host)` | Obtiene IP para Workers: 0.0.0.0 → IP real |
+| `get_hf_token_or_raise()` | Obtiene token o lanza error |
+
+**Ejemplo de uso**:
+
+```python
+from Utils.config_loader import get_hf_token, get_worker_ip
+
+# Obtener token (auto-detecta)
+token = get_hf_token()
+
+# Con override CLI
+token = get_hf_token("hf_xxx")  # Prioridad máxima
+
+# Obtener IP para Workers
+ip = get_worker_ip("0.0.0.0")  # "192.168.1.100"
+ip = get_worker_ip("127.0.0.1")  # "127.0.0.1"
+```
+
+---
+
+### 8. Results Exporter
+
+**Archivo**: `Utils/results_exporter.py`
+
+**Responsabilidades**:
+- Exportar métricas, configuraciones y logs al finalizar el entrenamiento
+- Generar gráficas automáticamente (loss, accuracy, workers activos)
+- Escribir archivos organizados en directorio por timestamp
+- Thread-safe: permite escritura concurrente sin bloqueos
+
+**Archivos generados por experimento**:
+```
+./Exports/[timestamp]/
+├── config.json           # Configuración completa del experimento
+├── metrics.csv         # Series de tiempo (step, loss, acc, workers, elapsed)
+├── ps_logs.txt        # Todos los logs del Parameter Server
+├── metadata.json      # Estadísticas finales (step final, loss/acc final, workers máx)
+├── plot_3panels.png # 3 gráficas combinadas (Loss | Accuracy | Workers)
+├── plot_loss.png     # Gráfica individual de Loss
+├── plot_accuracy.png # Gráfica individual de Accuracy
+└── plot_workers.png # Gráfica individual de Workers activos
+```
+
+**Estilos de visualización**:
+- Loss: `#E74C3C` (rojo), markers "o"
+- Accuracy: `#27AE60` (verde), markers "s"  
+- Workers: `#3498DB` (azul), markers "^"
+- Grid: alpha=0.15 (Loss/Workers), alpha=0.4 (Accuracy)
+- Escala: Loss/Workers (±10%), Accuracy (dinámico ±20%)
+
+**Integración**:
+```python
+# En parameter_server.py:
+self._results_exporter = ResultsExporter(config=config, export_dir="./Exports")
+_log.add_log_handler(self._results_exporter.record_log)
+export_path = self._results_exporter.finalize()  # Al finalizar
+```
+
+### 9. Comunicación (Protocolo)
 
 **Archivo**: `Distributed/protocol.py`
 
@@ -261,7 +364,7 @@ rank=2, num_workers=3 → muestras 2, 5, 8, 11, ... (1/3 del dataset)
 9. `UPDATES`: Worker → PS (envía pesos actualizados tras SGD local)
 10. `STOP`: PS → Worker (apagado)
 
-### 7. GUI y Monitoreo
+### 10. GUI y Monitoreo
 
 **Archivo**: `ps_gui_imagenet.py`
 

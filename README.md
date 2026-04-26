@@ -655,14 +655,23 @@ python worker_imagenet.py \
   --server-host 192.168.1.10 \
   --server-port 9999 \
   --device cuda:0 \
-  --dataset ILSVRC/imagenet-1k \
   --shuffle-buffer 1000 \
   --prefetch 4 \
-  --accum-steps 4 \
-  --quiet
+  --accum-steps 4
 ```
 
-**Nota**: `batch_size`, `image_size`, y `hf_token` se reciben automáticamente del PS en CONFIG.
+**Nota**: `dataset_name`, `batch_size`, `image_size`, `seed`, `rank`, `num_workers`, y `hf_token` se reciben automáticamente del PS en CONFIG.
+
+### Archivo .env (Recomendado)
+
+Crear archivo `.env` en la raíz del proyecto:
+
+```bash
+# .env
+HF_TOKEN=hf_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+```
+
+Este archivo se carga automáticamente al ejecutar el PS. El `.env` debe estar en `.gitignore`.
 
 ### Variable de Entorno
 
@@ -681,6 +690,20 @@ python worker_imagenet.py --server-host 127.0.0.1
 2. **PS**: Almacena token internamente
 3. **PS**: Envía token a cada Worker en el mensaje CONFIG
 4. **Worker**: Usa el token del CONFIG para autenticarse con HuggingFace
+
+### Mensaje de Worker Host
+
+Al iniciar el PS, se muestra automáticamente la IP que los Workers deben usar:
+
+```
+================================ PARAMETER SERVER ASÍNCRONO — ImageNet-1k ================================
+  Host              : 0.0.0.0:9999
+  Worker host      : 192.168.1.100  (usar como --server-host en workers)
+  CNN               : resnet18
+  ...
+```
+
+Si el PS usa `0.0.0.0`, se detecta automáticamente la IP real de la máquina. Si usa `127.0.0.1`, se muestra `127.0.0.1` (solo para Workers locales).
 
 ---
 
@@ -710,9 +733,14 @@ neural-network/
 │
 ├── Utils/                             ← Utilidades
 │   ├── __init__.py
+│   ├── constants.py                   ← Constantes globales del proyecto
+│   ├── config_loader.py               ← Carga .env, get_hf_token, get_worker_ip
 │   ├── imagenet_streaming.py          ← ImageNetStream, PrefetchBuffer, transforms
 │   ├── logging_util.py                ← FormattedLogger con colorización ANSI
 │   └── results_exporter.py            ← Export de históricos a JSON
+│
+├── .env.example                       ← Plantilla de configuración
+├── .gitignore                         ← Ignora .env, Exports, venv, __pycache__
 │
 └── Docs/                              ← Documentación técnica exhaustiva
     ├── 00_Resumen_General.md

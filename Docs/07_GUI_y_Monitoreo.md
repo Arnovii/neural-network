@@ -150,6 +150,10 @@ La interfaz gráfica es el **front-end de control y monitoreo** del sistema dist
 - `Dataset HF Hub` (str): default "ILSVRC/imagenet-1k"
 - `HF Token` (str, password): Token de acceso
 
+**Streaming**:
+- `Batch size` (int): default 64 - Imágenes por batch
+- `Image size` (int): default 224 - Resolución de imágenes (ancho=alto)
+
 **CNN**:
 - Radio button: ResNet-18 (✓) | Simple
 
@@ -426,6 +430,24 @@ Text widget con scrollbar:
 - **Colores**: [verde: conexión], [azul: step], [rojo: error]
 - **Timestamps**: Automático con `datetime.now()`
 - **Scroll auto**: Siempre muestra línea más nueva
+
+---
+
+## Mensaje de Worker Host
+
+Al iniciar el PS, se muestra automáticamente un mensaje indicando la IP que los Workers deben usar:
+
+```
+[PS] ✓ Servidor en 0.0.0.0:9999 | Worker host: 192.168.1.100 (usar --server-host en workers)
+[PS]   | arch=resnet18 (freeze) | feature_dim=512 | MLP 512→1024→512→1000 | lr_mlp=0.001 lr_cnn=0.001 | batch=64 img=224 seed=None
+```
+
+### Para qué sirve
+
+- El mensaje `Worker host` indica la **IP de esta máquina** donde corre el PS
+- Los Workers remotos deben usar esta IP como `--server-host`
+- Si el PS usa `0.0.0.0`, se detecta automáticamente la IP real de la máquina
+- Si el PS usa `127.0.0.1`, se muestra `127.0.0.1` (solo para Workers locales)
 
 ---
 

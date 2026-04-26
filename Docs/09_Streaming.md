@@ -52,6 +52,42 @@ Generar un iterator infinito sobre ImageNet-1k que:
 - Aplique transformaciones (crop, flip, normalize)
 - Retorne batches (imágenes, labels)
 
+### Origen del Dataset
+
+El nombre del dataset que utiliza `ImageNetStream` viene **del Parameter Server**, no de argumentos CLI del Worker:
+
+```
+PS (recibe --dataset CLI o usa default)
+    ↓
+PS almacena dataset_name internamente
+    ↓
+PS envía dataset_name en CONFIG a cada Worker
+    ↓
+Worker recibe dataset_name del CONFIG
+    ↓
+Worker pasa dataset_name a ImageNetStream
+    ↓
+ImageNetStream usa dataset_name para descargar desde HuggingFace
+```
+
+**Ventajas de este diseño**:
+- ✅ Centralización: dataset gestionado solo en el PS
+- ✅ Consistencia: todos los Workers usan el mismo dataset
+- ✅ Simplicity: Workers no necesitan especificar dataset
+
+**En código**:
+```python
+# En Distributed/worker_node.py:
+config = receive_message(CONFIG)
+dataset_name = config.get("dataset_name")  # ← Del PS
+
+# Luego:
+self._stream = build_worker_stream(
+    dataset_name=dataset_name,
+    ...
+)
+```
+
 ### Origen del HF Token
 
 El token HuggingFace que utiliza `ImageNetStream` viene **del Parameter Server**, no de argumentos CLI del Worker:
