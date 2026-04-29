@@ -171,7 +171,7 @@ def main() -> None:
     )
     print(f"  LR                : {args.lr}")
     print(f"  Staleness λ       : {args.staleness_lambda}")
-    print(f"  Steps/reporte     : {args.STEPS_PER_REPORT_DEFAULT}")
+    print(f"  Steps/reporte     : {args.steps_per_report}")
     print(f"  Max steps         : {args.max_steps or '∞'}")
     print(f"  Export dir        : {args.export_dir}")
     print(

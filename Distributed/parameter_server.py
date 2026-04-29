@@ -178,12 +178,23 @@ class RunningMetrics:
         with self._lock:
             return self._total
 
-    def snapshot(self) -> Tuple[float, float]:
-        """Devuelve (avg_loss, avg_acc) de la ventana actual."""
+    def snapshot(self) -> Tuple[float, float, float, float]:
+        """Devuelve (avg_loss, avg_acc, std_loss, std_acc) de la ventana actual."""
         with self._lock:
             if not self._losses:
-                return 0.0, 0.0
-            return float(np.mean(self._losses)), float(np.mean(self._accs))
+                return 0.0, 0.0, 0.0, 0.0
+
+            mean_loss = float(np.mean(self._losses))
+            mean_acc = float(np.mean(self._accs))
+            if len(self._losses) < 2:
+                return mean_loss, mean_acc, 0.0, 0.0
+
+            return (
+                mean_loss,
+                mean_acc,
+                float(np.std(self._losses)),
+                float(np.std(self._accs)),
+            )
 
 
 # ================================================================
@@ -286,6 +297,7 @@ class ParameterServer:
         self.learning_rate_cnn = learning_rate_cnn  # LR de la CNN (E2E)
         self.staleness_lambda = staleness_lambda
         self.steps_per_report = steps_per_report
+        self.metrics_window = metrics_window
         self.batch_size = batch_size
         self.image_size = image_size
         self.dataset_name = dataset_name
@@ -352,6 +364,20 @@ class ParameterServer:
 
         # Exportador de resultados (desacoplado, se inicializa posteriormente)
         self._results_exporter: ResultsExporter | None = None
+
+        # Contadores para estadísticas
+        self._nan_rejected: int = 0
+        self._total_requests: int = 0
+
+    @property
+    def nan_rejected_count(self) -> int:
+        """Retorna el número de actualizaciones rechazadas por NaN."""
+        return self._nan_rejected
+
+    @property
+    def tcp_request_count(self) -> int:
+        """Retorna el número total de requests TCP recibidos."""
+        return self._total_requests
 
     # ================================================================
     # CONFIGURACIÓN
@@ -447,6 +473,7 @@ class ParameterServer:
             "lr": self.learning_rate,
             "lr_cnn": self.learning_rate_cnn,
             "staleness_lambda": self.staleness_lambda,
+            "metrics_window": self.metrics_window,
             "batch_size": self.batch_size,
             "image_size": self.image_size,
             "dataset_name": self.dataset_name,
@@ -515,6 +542,8 @@ class ParameterServer:
         if self._results_exporter is not None:
             # Desregistra handler de logs
             _log.remove_log_handler(self._results_exporter.record_log)
+            self._results_exporter.tcp_request_count = self._total_requests
+            self._results_exporter.nan_rejected_count = self._nan_rejected
             # Finaliza y exporta
             export_path = self._results_exporter.finalize()
             _log.ps(f"Resultados exportados a: {export_path}")
@@ -756,6 +785,16 @@ class ParameterServer:
             # Notifica a la GUI que el primer worker ha recibido START
             if self.on_start_sent:
                 self.on_start_sent(wid)
+
+            if self._results_exporter is not None:
+                with self._workers_lock:
+                    worker_addr = self._addrs.get(wid, f"{addr[0]}:{addr[1]}")
+                self._results_exporter.record_worker_event(
+                    step=self.current_version,
+                    event_type="connected",
+                    worker_id=wid,
+                    worker_addr=worker_addr,
+                )
         except Exception as e:
             _log.error(f"Error enviando START a Worker {wid}: {e}")
             self._remove_worker(wid)
@@ -796,6 +835,7 @@ class ParameterServer:
 
                 elif mtype == MsgType.REQUEST_PARAMS:
                     with self._params_lock:
+                        self._total_requests += 1
                         mlp_copy = {
                             key: value.copy() for key, value in self._mlp_state.items()
                         }
@@ -825,6 +865,8 @@ class ParameterServer:
                         break
 
                 elif mtype == MsgType.UPDATES:
+                    with self._params_lock:
+                        self._total_requests += 1
                     self._apply_update(msg["payload"])
 
         finally:
@@ -866,6 +908,7 @@ class ParameterServer:
 
         # VALIDACIÓN: Rechaza actualizaciones con NaN
         if np.isnan(loss) or np.isnan(acc):
+            self._nan_rejected += 1
             _log.error(
                 f"RECHAZADA actualización con NaN: loss={loss}, acc={acc}. "
                 f"Posible inestabilidad numérica en Worker. "
@@ -911,21 +954,32 @@ class ParameterServer:
         # Tiempo de entrenamiento desde que se envió START al primer worker
         elapsed = time.perf_counter() - self._t_start if self._t_start != 0.0 else 0.0
 
-        self._metrics.update(loss, acc)
-        if self.on_step:
-            self.on_step(step, loss, acc, staleness, elapsed)
+        staleness = max(0, self._version - version_read)
+        alpha = 1.0 / (1.0 + self.staleness_lambda * staleness)
 
+        self._metrics.update(loss, acc)
         n = self._metrics.total_batches
         if n > 0:
-            avg_loss, avg_acc = self._metrics.snapshot()
+            avg_loss, avg_acc, std_loss, std_acc = self._metrics.snapshot()
         else:
-            avg_loss, avg_acc = loss, acc
+            avg_loss, avg_acc, std_loss, std_acc = loss, acc, 0.0, 0.0
+
+        if self.on_step:
+            self.on_step(step, loss, acc, staleness, elapsed)
 
         if self._results_exporter is not None:
             with self._workers_lock:
                 n_workers = len(self._sockets)
             self._results_exporter.record_metric(
-                step, avg_loss, avg_acc, n_workers, elapsed
+                step,
+                avg_loss,
+                avg_acc,
+                n_workers,
+                elapsed,
+                loss_std=std_loss,
+                acc_std=std_acc,
+                staleness=staleness,
+                alpha=alpha,
             )
 
         if n > 0 and n % self.steps_per_report == 0:
@@ -1116,6 +1170,7 @@ class ParameterServer:
         :rtype: None
         """
         with self._workers_lock:
+            worker_addr = self._addrs.get(wid, "")
             sock = self._sockets.pop(wid, None)
             self._addrs.pop(wid, None)
             self._worker_freeze.pop(wid, None)
@@ -1124,5 +1179,12 @@ class ParameterServer:
                 sock.close()
             except Exception:
                 pass
+        if self._results_exporter is not None:
+            self._results_exporter.record_worker_event(
+                step=self.current_version,
+                event_type="disconnected",
+                worker_id=wid,
+                worker_addr=worker_addr,
+            )
         if self.on_worker_disconnected:
             self.on_worker_disconnected(wid)

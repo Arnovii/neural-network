@@ -32,9 +32,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 try:
     import tkinter as tk
     from tkinter import messagebox, ttk
-    import matplotlib.pyplot as plt # pyright: ignore[reportMissingModuleSource]
-    from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg # pyright: ignore[reportMissingModuleSource]
-    from matplotlib.ticker import MaxNLocator # pyright: ignore[reportMissingModuleSource]
+    import matplotlib.pyplot as plt  # pyright: ignore[reportMissingModuleSource]
+    from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg  # pyright: ignore[reportMissingModuleSource]
+    from matplotlib.ticker import MaxNLocator  # pyright: ignore[reportMissingModuleSource]
 except ImportError as e:
     print(f"Error cargando librerías gráficas: {e}")
     sys.exit(1)
@@ -1189,11 +1189,7 @@ class PSApp:
                     self._state = self._S_LISTENING
                     self._refresh_buttons()
                     # NO programar update del reloj aún — esperamos primer on_step()
-                    mode = (
-                        "CNN congelada"
-                        if arch == "resnet18"
-                        else "E2E (CNN + MLP)"
-                    )
+                    mode = "CNN congelada" if arch == "resnet18" else "E2E (CNN + MLP)"
                     worker_ip = get_worker_ip(host)
                     self._log(
                         f"[PS] ✓ Servidor en {host}:{port} | Worker host: {worker_ip} | arch={arch} ({mode}) | "

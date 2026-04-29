@@ -110,6 +110,8 @@ class ResultsExporter:
         self.config = config
         self.export_dir = Path(export_dir)
         self.export_dir.mkdir(parents=True, exist_ok=True)
+        self._metrics_window = metrics_window
+        self._config_metrics_window = int(config.get("metrics_window", metrics_window))
 
         # Timestamp único para esta ejecución
         self.timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[
@@ -129,7 +131,19 @@ class ResultsExporter:
         self._metrics_elapsed: deque = deque(
             maxlen=metrics_window
         )  # Tiempo elapsed en segundos
+        # Nuevosbuffers para std, staleness y alpha
+        self._metrics_loss_std: deque = deque(maxlen=metrics_window)
+        self._metrics_acc_std: deque = deque(maxlen=metrics_window)
+        self._metrics_staleness: deque = deque(maxlen=metrics_window)
+        self._metrics_alpha: deque = deque(maxlen=metrics_window)
         self._logs: List[str] = []
+
+        # worker events
+        self._worker_events: List[dict] = []
+
+        # Contadores auxiliares expuestos por el PS antes de finalize()
+        self.tcp_request_count: int = 0
+        self.nan_rejected_count: int = 0
 
         # Estadísticas para reporte final
         self._total_metrics = 0
@@ -141,6 +155,10 @@ class ResultsExporter:
         accuracy: float,
         num_workers: int,
         elapsed: float = 0.0,
+        loss_std: float = 0.0,
+        acc_std: float = 0.0,
+        staleness: int = 0,
+        alpha: float = 1.0,
     ) -> None:
         """
         Registra un punto de métrica.
@@ -153,6 +171,10 @@ class ResultsExporter:
         :param accuracy: Valor de accuracy (0-1)
         :param num_workers: Número de workers conectados
         :param elapsed: Tiempo elapsed en segundos desde inicio del entrenamiento
+        :param loss_std: Desviación estándar del loss en la ventana
+        :param acc_std: Desviación estándar de accuracy en la ventana
+        :param staleness: Valor de staleness del update
+        :param alpha: Factor de corrección alpha
         """
         with self._lock:
             self._metrics_steps.append(step)
@@ -160,6 +182,10 @@ class ResultsExporter:
             self._metrics_accuracy.append(accuracy)
             self._metrics_workers.append(num_workers)
             self._metrics_elapsed.append(elapsed)
+            self._metrics_loss_std.append(loss_std)
+            self._metrics_acc_std.append(acc_std)
+            self._metrics_staleness.append(staleness)
+            self._metrics_alpha.append(alpha)
             self._total_metrics += 1
 
     def record_log(self, text: str) -> None:
@@ -174,6 +200,36 @@ class ResultsExporter:
         with self._lock:
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
             self._logs.append(f"[{timestamp}] {text}")
+
+    def record_worker_event(
+        self,
+        step: int,
+        event_type: str,
+        worker_id: int,
+        worker_addr: str,
+    ) -> None:
+        """
+        Registra un evento de worker (conexión/desconexión).
+
+        Llamado desde ParameterServer al conectar/desconectar workers.
+        Thread-safe.
+
+        :param step: Step actual del entrenamiento
+        :param event_type: "connected" o "disconnected"
+        :param worker_id: ID del worker
+        :param worker_addr: Dirección IP del worker
+        """
+        with self._lock:
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+            self._worker_events.append(
+                {
+                    "timestamp": timestamp,
+                    "step": step,
+                    "event_type": event_type,
+                    "worker_id": worker_id,
+                    "worker_addr": worker_addr,
+                }
+            )
 
     def finalize(self) -> Path:
         """
@@ -208,10 +264,13 @@ class ResultsExporter:
         # 3. Guardar logs
         self._write_logs()
 
-        # 4. Generar gráficas
+        # 4. Guardar eventos de workers
+        self._write_worker_events()
+
+        # 5. Generar gráficas
         self._generate_plots()
 
-        # 5. Guardar metadata
+        # 6. Guardar metadata
         self._write_metadata()
 
         self._finalized = True
@@ -230,16 +289,35 @@ class ResultsExporter:
         metrics_file = self.session_dir / "metrics.csv"
 
         with open(metrics_file, "w", encoding="utf-8") as f:
-            f.write("step,loss,accuracy,num_workers,elapsed_seconds\n")
+            f.write(
+                "step,loss,loss_std,accuracy,acc_std,num_workers,elapsed_seconds,staleness,alpha\n"
+            )
 
-            for step, loss, acc, workers, elapsed in zip(
+            for (
+                step,
+                loss,
+                loss_std,
+                acc,
+                acc_std,
+                workers,
+                elapsed,
+                staleness,
+                alpha,
+            ) in zip(
                 self._metrics_steps,
                 self._metrics_loss,
+                self._metrics_loss_std,
                 self._metrics_accuracy,
+                self._metrics_acc_std,
                 self._metrics_workers,
                 self._metrics_elapsed,
+                self._metrics_staleness,
+                self._metrics_alpha,
             ):
-                f.write(f"{step},{loss:.4f},{acc:.2f}%,{workers},{elapsed:.1f}\n")
+                f.write(
+                    f"{step},{loss:.4f},{loss_std:.4f},{acc:.2f},{acc_std:.2f},"
+                    f"{workers},{elapsed:.1f},{staleness},{alpha:.4f}\n"
+                )
 
     def _write_logs(self) -> None:
         """Escribe todos los logs en un archivo de texto."""
@@ -259,6 +337,17 @@ class ResultsExporter:
             f.write("END OF LOGS\n")
             f.write("=" * 80 + "\n")
 
+    def _write_worker_events(self) -> None:
+        """Escribe eventos de workers en CSV."""
+        events_file = self.session_dir / "worker_events.csv"
+        with open(events_file, "w", encoding="utf-8") as f:
+            f.write("timestamp,step,event_type,worker_id,worker_addr\n")
+            for ev in self._worker_events:
+                f.write(
+                    f"{ev['timestamp']},{ev['step']},{ev['event_type']},"
+                    f"{ev['worker_id']},{ev['worker_addr']}\n"
+                )
+
     def _generate_plots(self) -> None:
         """Genera gráficas de resultados: combinada + individuales."""
         if len(self._metrics_steps) == 0:
@@ -268,6 +357,15 @@ class ResultsExporter:
         losses = np.array(list(self._metrics_loss))
         accuracies = np.array(list(self._metrics_accuracy))
         workers_count = np.array(list(self._metrics_workers))
+        loss_std = np.array(list(self._metrics_loss_std))
+        acc_std = np.array(list(self._metrics_acc_std))
+        staleness = np.array(list(self._metrics_staleness))
+        alpha = np.array(list(self._metrics_alpha))
+        event_steps = [ev["step"] for ev in self._worker_events]
+        event_types = [ev["event_type"] for ev in self._worker_events]
+
+        loss_xlim, loss_ylim = self._compute_line_limits(steps, losses)
+        acc_xlim, acc_ylim = self._compute_accuracy_limits(steps, accuracies)
 
         try:
             self._plot_3panels(steps, losses, accuracies, workers_count)
@@ -277,14 +375,35 @@ class ResultsExporter:
             traceback.print_exc()
 
         try:
-            self._plot_individual_loss(steps, losses)
+            self._plot_individual_loss(steps, losses, loss_xlim, loss_ylim)
         except Exception:
             import traceback
 
             traceback.print_exc()
 
         try:
-            self._plot_individual_accuracy(steps, accuracies)
+            self._plot_band_loss(steps, losses, loss_std, loss_xlim, loss_ylim)
+        except Exception:
+            import traceback
+
+            traceback.print_exc()
+
+        try:
+            self._plot_individual_accuracy(steps, accuracies, acc_xlim, acc_ylim)
+        except Exception:
+            import traceback
+
+            traceback.print_exc()
+
+        try:
+            self._plot_band_accuracy(steps, accuracies, acc_std, acc_xlim, acc_ylim)
+        except Exception:
+            import traceback
+
+            traceback.print_exc()
+
+        try:
+            self._plot_staleness(steps, staleness, alpha, event_steps, event_types)
         except Exception:
             import traceback
 
@@ -296,6 +415,63 @@ class ResultsExporter:
             import traceback
 
             traceback.print_exc()
+
+        try:
+            self._plot_std(steps, loss_std, acc_std, event_steps, event_types)
+        except Exception:
+            import traceback
+
+            traceback.print_exc()
+
+    def _compute_line_limits(
+        self, steps: np.ndarray, values: np.ndarray
+    ) -> Tuple[Tuple[float, float], Tuple[float, float]]:
+        if len(steps) == 0:
+            return (0.0, 1.0), (0.0, 1.0)
+
+        xlim = (float(steps[0] - 1), float(steps[-1] + 1))
+        if len(values) == 1:
+            delta = max(1.0, abs(float(values[0])) * 0.1)
+            ylim = (float(values[0] - delta), float(values[0] + delta))
+        else:
+            vmin = float(np.min(values))
+            vmax = float(np.max(values))
+            span = vmax - vmin
+            pad = max(span * 0.05, 1e-6)
+            ylim = (vmin - pad, vmax + pad)
+        return xlim, ylim
+
+    def _compute_accuracy_limits(
+        self, steps: np.ndarray, values: np.ndarray
+    ) -> Tuple[Tuple[float, float], Tuple[float, float]]:
+        if len(steps) == 0:
+            return (0.0, 1.0), (0.0, 100.0)
+        return (float(steps[0] - 1), float(steps[-1] + 1)), (0.0, 100.0)
+
+    def _add_event_markers(
+        self,
+        axes,
+        event_steps: List[int],
+        event_types: List[str],
+    ) -> None:
+        if not event_steps:
+            return
+
+        for ax in axes:
+            labels_added: set[str] = set()
+            for step, event_type in zip(event_steps, event_types):
+                color = "#4CAF50" if event_type == "connected" else "#F44336"
+                label = event_type if event_type not in labels_added else None
+                ax.axvline(
+                    step,
+                    color=color,
+                    linestyle=":",
+                    alpha=0.5,
+                    linewidth=1.2,
+                    label=label,
+                )
+                if label is not None:
+                    labels_added.add(event_type)
 
     def _plot_3panels(
         self,
@@ -367,7 +543,13 @@ class ResultsExporter:
         plt.savefig(output_path, dpi=300, pad_inches=0.4)
         plt.close()
 
-    def _plot_individual_loss(self, steps: np.ndarray, losses: np.ndarray) -> None:
+    def _plot_individual_loss(
+        self,
+        steps: np.ndarray,
+        losses: np.ndarray,
+        xlim: Tuple[float, float],
+        ylim: Tuple[float, float],
+    ) -> None:
         """Genera gráfica individual de Loss (estilo idéntico a la GUI)."""
         fig, ax = plt.subplots(figsize=(10, 6.5))
 
@@ -381,17 +563,49 @@ class ResultsExporter:
         ax.grid(True, alpha=0.3)
         ax.legend(fontsize=8)
         ax.xaxis.set_major_locator(MaxNLocator(integer=True))
-        # Establecer límites de ejes para que coincidan con GUI
-        ax.set_xlim(steps[0] - 1, steps[-1] + 1)
-        ax.margins(y=0.05)  # 5% de margen en Y
+        ax.set_xlim(*xlim)
+        ax.set_ylim(*ylim)
 
         plt.tight_layout()
         output_path = self.session_dir / "plot_loss.png"
         plt.savefig(output_path, dpi=300, pad_inches=0.4)
         plt.close()
 
+    def _plot_band_loss(
+        self,
+        steps: np.ndarray,
+        losses: np.ndarray,
+        loss_std: np.ndarray,
+        xlim: Tuple[float, float],
+        ylim: Tuple[float, float],
+    ) -> None:
+        fig, ax = plt.subplots(figsize=(10, 6.5))
+        color_loss = COLORS["loss"]
+        lower = losses - loss_std
+        upper = losses + loss_std
+        ax.plot(steps, losses, "-o", color=color_loss, lw=2, ms=3, label="Train")
+        ax.fill_between(steps, lower, upper, color=color_loss, alpha=0.2, label="±1σ")
+        ax.set_title(
+            f"Pérdida con Banda de Confianza ±1σ (ventana de {self._config_metrics_window} pasos)"
+        )
+        ax.set_xlabel("Steps")
+        ax.set_ylabel("Loss")
+        ax.grid(True, alpha=0.3)
+        ax.legend(fontsize=8)
+        ax.xaxis.set_major_locator(MaxNLocator(integer=True))
+        ax.set_xlim(*xlim)
+        ax.set_ylim(*ylim)
+        plt.tight_layout()
+        output_path = self.session_dir / "plot_band_loss.png"
+        plt.savefig(output_path, dpi=300, pad_inches=0.4)
+        plt.close()
+
     def _plot_individual_accuracy(
-        self, steps: np.ndarray, accuracies: np.ndarray
+        self,
+        steps: np.ndarray,
+        accuracies: np.ndarray,
+        xlim: Tuple[float, float],
+        ylim: Tuple[float, float],
     ) -> None:
         """Genera gráfica individual de Accuracy (estilo idéntico a la GUI)."""
         fig, ax = plt.subplots(figsize=(10, 6.5))
@@ -404,14 +618,42 @@ class ResultsExporter:
         ax.set_xlabel("Steps")
         ax.set_ylabel("Precisión (%)")
         ax.grid(True, alpha=0.3)
-        ax.set_ylim(0, 100)
         ax.legend(fontsize=8)
         ax.xaxis.set_major_locator(MaxNLocator(integer=True))
-        # Establecer límites de ejes para que coincidan con GUI
-        ax.set_xlim(steps[0] - 1, steps[-1] + 1)
+        ax.set_xlim(*xlim)
+        ax.set_ylim(*ylim)
 
         plt.tight_layout()
         output_path = self.session_dir / "plot_accuracy.png"
+        plt.savefig(output_path, dpi=300, pad_inches=0.4)
+        plt.close()
+
+    def _plot_band_accuracy(
+        self,
+        steps: np.ndarray,
+        accuracies: np.ndarray,
+        acc_std: np.ndarray,
+        xlim: Tuple[float, float],
+        ylim: Tuple[float, float],
+    ) -> None:
+        fig, ax = plt.subplots(figsize=(10, 6.5))
+        color_acc = COLORS["accuracy"]
+        lower = accuracies - acc_std
+        upper = accuracies + acc_std
+        ax.plot(steps, accuracies, "-o", color=color_acc, lw=2, ms=3, label="Train")
+        ax.fill_between(steps, lower, upper, color=color_acc, alpha=0.2, label="±1σ")
+        ax.set_title(
+            f"Precisión con Banda de Confianza ±1σ (ventana de {self._config_metrics_window} pasos)"
+        )
+        ax.set_xlabel("Steps")
+        ax.set_ylabel("Precisión (%)")
+        ax.grid(True, alpha=0.3)
+        ax.legend(fontsize=8)
+        ax.xaxis.set_major_locator(MaxNLocator(integer=True))
+        ax.set_xlim(*xlim)
+        ax.set_ylim(*ylim)
+        plt.tight_layout()
+        output_path = self.session_dir / "plot_band_acc.png"
         plt.savefig(output_path, dpi=300, pad_inches=0.4)
         plt.close()
 
@@ -439,19 +681,198 @@ class ResultsExporter:
         plt.savefig(output_path, dpi=300, pad_inches=0.4)
         plt.close()
 
+    def _plot_staleness(
+        self,
+        steps: np.ndarray,
+        staleness: np.ndarray,
+        alpha: np.ndarray,
+        event_steps: List[int],
+        event_types: List[str],
+    ) -> None:
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 7.5), sharex=True)
+
+        ax1.plot(steps, staleness, color=COLORS["info"], lw=2, label="Staleness")
+        ax1.set_title("Staleness por Step")
+        ax1.set_ylabel("Staleness (versiones de retraso)")
+        ax1.grid(True, alpha=0.3)
+
+        ax2.plot(steps, alpha, color=COLORS["warning"], lw=2, label="Alpha")
+        ax2.axhline(1.0, color="#757575", linestyle=":", lw=1.5, label="alpha=1.0")
+        ax2.set_title("Factor de Corrección α = 1/(1+λ·s)")
+        ax2.set_ylabel("α")
+        ax2.set_xlabel("Steps")
+        ax2.set_ylim(0, 1.05)
+        ax2.grid(True, alpha=0.3)
+
+        self._add_event_markers((ax1, ax2), event_steps, event_types)
+        if event_steps:
+            ax1.legend(fontsize=8)
+            ax2.legend(fontsize=8)
+
+        ax2.xaxis.set_major_locator(MaxNLocator(integer=True))
+        fig.tight_layout()
+        output_path = self.session_dir / "plot_staleness.png"
+        plt.savefig(output_path, dpi=300, pad_inches=0.4)
+        plt.close()
+
+    def _plot_std(
+        self,
+        steps: np.ndarray,
+        loss_std: np.ndarray,
+        acc_std: np.ndarray,
+        event_steps: List[int],
+        event_types: List[str],
+    ) -> None:
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 7.5), sharex=True)
+
+        ax1.plot(steps, loss_std, color=COLORS["loss"], lw=2, label="σ Loss")
+        ax1.set_title(
+            f"Variabilidad de Loss — σ (ventana de {self._config_metrics_window} pasos)"
+        )
+        ax1.set_ylabel("σ Loss")
+        ax1.grid(True, alpha=0.3)
+
+        ax2.plot(steps, acc_std, color=COLORS["accuracy"], lw=2, label="σ Accuracy")
+        ax2.set_title(
+            f"Variabilidad de Accuracy — σ (ventana de {self._config_metrics_window} pasos)"
+        )
+        ax2.set_ylabel("σ Accuracy (%)")
+        ax2.set_xlabel("Steps")
+        ax2.grid(True, alpha=0.3)
+
+        self._add_event_markers((ax1, ax2), event_steps, event_types)
+        if event_steps:
+            ax1.legend(fontsize=8)
+            ax2.legend(fontsize=8)
+
+        ax2.xaxis.set_major_locator(MaxNLocator(integer=True))
+        fig.tight_layout()
+        output_path = self.session_dir / "plot_std.png"
+        plt.savefig(output_path, dpi=300, pad_inches=0.4)
+        plt.close()
+
     def _write_metadata(self) -> None:
         """Escribe estadísticas finales en metadata.json."""
         if len(self._metrics_loss) == 0:
             metadata = {"status": "no_metrics_recorded"}
         else:
-            # duration_seconds es el último elapsed recibido del ParameterServer
-            # Garantiza consistencia: mismo timer source (perf_counter) que PS y GUI
             duration = self._metrics_elapsed[-1] if self._metrics_elapsed else 0.0
+            batch_size = self.config.get("batch_size", 0)
+
+            staleness_arr = np.array(list(self._metrics_staleness))
+            alpha_arr = np.array(list(self._metrics_alpha))
+            loss_std_arr = np.array(list(self._metrics_loss_std))
+            acc_std_arr = np.array(list(self._metrics_acc_std))
+            steps_arr = np.array(list(self._metrics_steps))
+            acc_arr = np.array(list(self._metrics_accuracy))
+            elapsed_arr = np.array(list(self._metrics_elapsed))
+            workers_arr = np.array(list(self._metrics_workers))
+
+            staleness_analysis = {
+                "mean": float(np.mean(staleness_arr))
+                if len(staleness_arr) > 0
+                else 0.0,
+                "max": int(np.max(staleness_arr)) if len(staleness_arr) > 0 else 0,
+                "std": float(np.std(staleness_arr)) if len(staleness_arr) >= 2 else 0.0,
+                "alpha_mean": float(np.mean(alpha_arr)) if len(alpha_arr) > 0 else 1.0,
+                "alpha_min": float(np.min(alpha_arr)) if len(alpha_arr) > 0 else 1.0,
+                "alpha_std": float(np.std(alpha_arr)) if len(alpha_arr) >= 2 else 0.0,
+            }
+
+            delta_steps = np.diff(steps_arr)
+            delta_time = np.diff(elapsed_arr)
+            delta_time[delta_time == 0] = 1e-6
+            steps_per_sec = delta_steps / delta_time
+            throughput = {
+                "mean_steps_per_second": float(np.mean(steps_per_sec))
+                if len(steps_per_sec) > 0
+                else 0.0,
+                "peak_steps_per_second": float(np.max(steps_per_sec))
+                if len(steps_per_sec) > 0
+                else 0.0,
+                "min_steps_per_second": float(np.min(steps_per_sec))
+                if len(steps_per_sec) > 0
+                else 0.0,
+                "mean_images_per_second": float(np.mean(steps_per_sec) * batch_size)
+                if len(steps_per_sec) > 0
+                else 0.0,
+                "peak_images_per_second": float(np.max(steps_per_sec) * batch_size)
+                if len(steps_per_sec) > 0
+                else 0.0,
+                "samples_processed": int(steps_arr[-1] * batch_size)
+                if len(steps_arr) > 0
+                else 0,
+            }
+
+            accuracy_thresholds = [5, 10, 20, 30, 40, 50]
+            convergence = {}
+            for thresh in accuracy_thresholds:
+                mask = acc_arr >= thresh
+                if np.any(mask):
+                    idx = np.argmax(mask)
+                    convergence[f"steps_to_{thresh}_percent_accuracy"] = int(
+                        steps_arr[idx]
+                    )
+                    convergence[f"time_to_{thresh}_percent_accuracy_seconds"] = float(
+                        elapsed_arr[idx]
+                    )
+                else:
+                    convergence[f"steps_to_{thresh}_percent_accuracy"] = None
+                    convergence[f"time_to_{thresh}_percent_accuracy_seconds"] = None
+
+            stability = {
+                "loss_std_mean": float(np.mean(loss_std_arr))
+                if len(loss_std_arr) > 0
+                else 0.0,
+                "loss_std_final": float(loss_std_arr[-1])
+                if len(loss_std_arr) > 0
+                else 0.0,
+                "acc_std_mean": float(np.mean(acc_std_arr))
+                if len(acc_std_arr) > 0
+                else 0.0,
+                "acc_std_final": float(acc_std_arr[-1])
+                if len(acc_std_arr) > 0
+                else 0.0,
+            }
+
+            max_simultaneous = int(np.max(workers_arr)) if len(workers_arr) > 0 else 0
+            total_ever_connected = len(
+                [e for e in self._worker_events if e["event_type"] == "connected"]
+            )
+            total_disconnections = len(
+                [e for e in self._worker_events if e["event_type"] == "disconnected"]
+            )
+
+            workers_summary = {
+                "max_simultaneous": max_simultaneous,
+                "total_ever_connected": total_ever_connected,
+                "total_disconnections": total_disconnections,
+            }
+
+            updates_dict = {
+                "total_applied": int(steps_arr[-1]) if len(steps_arr) > 0 else 0,
+                "total_rejected_nan": int(self.nan_rejected_count),
+            }
+
+            mean_tcp_requests_per_second = (
+                float(self.tcp_request_count / duration) if duration > 0 else 0.0
+            )
+
+            training_summary = {
+                "total_steps": int(steps_arr[-1]) if len(steps_arr) > 0 else 0,
+                "total_samples_processed": int(steps_arr[-1] * batch_size)
+                if len(steps_arr) > 0
+                else 0,
+                "total_wall_time_seconds": duration,
+                "effective_training_seconds": duration,
+                "mean_tcp_requests_per_second": mean_tcp_requests_per_second,
+                "total_tcp_requests": int(self.tcp_request_count),
+            }
 
             metadata = {
                 "status": "completed",
                 "session_timestamp": self.timestamp,
-                "total_steps": int(self._metrics_steps[-1]),
+                "total_steps": int(steps_arr[-1]) if len(steps_arr) > 0 else 0,
                 "total_metrics_points": self._total_metrics,
                 "duration_seconds": duration,
                 "loss": {
@@ -472,6 +893,13 @@ class ResultsExporter:
                     "max_connected": int(np.max(list(self._metrics_workers))),
                 },
                 "total_log_lines": len(self._logs),
+                "staleness_analysis": staleness_analysis,
+                "throughput": throughput,
+                "convergence": convergence,
+                "stability": stability,
+                "updates": updates_dict,
+                "workers_summary": workers_summary,
+                "training_summary": training_summary,
             }
 
         metadata_file = self.session_dir / "metadata.json"
