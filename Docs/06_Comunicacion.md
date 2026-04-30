@@ -381,7 +381,97 @@ t=2050ms [Worker REQUEST_PARAMS again]
 
 ---
 
-## Problemas Potenciales y Soluciones
+## Diagrama de Secuencia Completo
+
+```
+┌──────────────────────────────────────────────────────────────────────────────────────────────┐
+│                           DIAGRAMA DE SECUENCIA                                              │
+├──────────────────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                              │
+│  WORKER                              PARAMETER SERVER                                        │
+│  ──────                              ───────────────                                         │
+│                                                                                              │
+│  1. socket.connect()  ───────────────►                                                       │
+│                                                                                              │
+│  2. READY {}        ───────────────► recv(READY)                                             │
+│                              Asigna ID=0                                                     │
+│                              Asigna rank=0                                                   │
+│                                                                                              │
+│  3.              ◄─────────────── WORKER_ID {id:0}                                           │
+│     recv()                                                                                   │
+│                                                                                              │
+│  4.              ◄─────────────── CONFIG {batch=64, img=224, ...}                            │
+│     recv()                                                                                   │
+│                                                                                              │
+│  5.              ◄─────────────── CNN_WEIGHTS {bytes...}                                     │
+│     recv() → load_weights()                                                                  │
+│                                                                                              │
+│  6. CNN_ACK {}   ───────────────► recv(CNN_ACK)                                              │
+│                                                                                              │
+│  7.              ◄─────────────── START {}                                                   │
+│     recv() → enter training                                                                  │
+│                                                                                              │
+│══════════════════════════════════════════════════════════════════════════════════════════════│
+│  LOOP (indefinido)                                                                           │
+│══════════════════════════════════════════════════════════════════════════════════════════════│
+│                                                                                              │
+│  8. REQUEST_PARAMS {} ───────────────► recv(REQUEST)                                         │
+│                              Copia mlp_state (thread-safe)                                   │
+│                              Copia cnn_state                                                 │
+│                              version=v=10                                                    │
+│                                                                                              │
+│  9.              ◄─────────────── PARAMS {mlp, cnn, v=10, lr}                                │
+│     recv() → guardar estados                                                                 │
+│                                                                                              │
+│  10. train_batch() ─────────────────────────────────────                                     │
+│       ├─ X, Y = next(stream)                                                                 │
+│       ├─ features = CNN(X)                                                                   │
+│       ├─ logits = MLP(features)                                                              │
+│       ├─ loss = CrossEntropy(logits, Y)                                                      │
+│       ├─ loss.backward()                                                                     │
+│       └─ SGD step                                                                            │
+│                                                                                              │
+│  11. UPDATES {mlp_weights, cnn_weights, loss, acc} ───────────────►                          │
+│                              recv() → calcular staleness                                     │
+│                              α = 1/(1+λ*s)                                                   │
+│                              mlp += α * Δmlp                                                 │
+│                              cnn += α * Δcnn                                                 │
+│                              version++                                                       │
+│                                                                                              │
+│  ← volver a paso 8 (sin esperar otros Workers)                                               │
+│                                                                                              │
+│══════════════════════════════════════════════════════════════════════════════════════════════│
+│  STOP (del PS)                                                                               │
+│══════════════════════════════════════════════════════════════════════════════════════════════│
+│                                                                                              │
+│  12.              ◄─────────────── STOP {}                                                   │
+│     recv() → cleanup                                                                         │
+│                                                                                              │
+│  13. socket.close()  ───────────────► recv(EOF)                                              │
+│                                                                                              │
+└──────────────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Leyenda del Diagrama
+
+| Símbolo | Significado |
+|---------|-----------|
+| ───► | Envío de mensaje TCP |
+| ◄─── | Recepción de mensaje |
+| ════ | Inicio/fin de bloque |
+| {data} | Contenido del payload |
+
+### Tiempos Típicos
+
+| Paso | Operación | Tiempo típico |
+|------|-----------|---------------|
+| 1-3 | Handshake inicial | 50-200ms |
+| 4-7 | Config + CNN transfer | 200-500ms (CNN ~45MB) |
+| 8-9 | REQUEST_PARAMS | 5-20ms |
+| 10 | Training batch | 50-500ms (GPU) |
+| 11 | UPDATES | 5-20ms |
+
+**Nota**: El tiempo dominante es la transferencia de CNN (~45MB) al inicio y el entrenamiento por batch.
 
 | Problema | Causa | Síntoma | Solución |
 |---|---|---|---|

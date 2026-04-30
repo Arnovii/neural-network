@@ -314,6 +314,82 @@ self._sgd = optim.SGD(
 
 ---
 
+## Por qué se usa SGD, NO Adam
+
+Este es un **diseño intencional**, no una omisión. El sistema usa **SGD puro** en lugar de Adam o AdamW por las siguientes razones:
+
+### El problema de Adam con FedAvg Asíncrono
+
+Adam mantiene dos conjuntos de estado interno por parámetro:
+
+```
+m_t = β1 * m_{t-1} + (1 - β1) * g_t    # Primer momento (media)
+v_t = β2 * v_{t-1} + (1 - β2) * g_t²  # Segundo momento (varianza)
+```
+
+**Problema**: Estos momentos (m, v) son **locales al Worker**:
+
+```
+Worker 0: m0, v0 congrads de sus batches
+Worker 1: m1, v1 congrads de otros batches
+Worker 2: m2, v2 congrads de más batches
+    ↓
+Cuando PS hace FedAvg: θ = avg(θ0, θ1, θ2)
+PERO: m ≠ avg(m0, m1, m2), v ≠ avg(v0, v1, v2)
+    ↓
+Los momentos apuntan a direcciones incorrectas
+    ↓
+Actualizaciones incorrectas → diverge
+```
+
+### Ejemplonumérico concreto
+
+```
+Worker 0 trainsobre datos de perros → m0 apunta a "perro"
+Worker 1 trainsobre datos de gatos → m1 apunta a "gato"
+Worker 2 trainsobre datos de autos → m2 apunta a "auto"
+
+PS promedia lospesos: θ = (θ0 + θ1 + θ2) / 3 ✓
+
+PERO Adam usaría: m = (m0 + m1 + m2) / 3 ✗
+                     v = (v0 + v1 + v2) / 3 ✗
+
+m y v ahora representan "mezcla" que no corresponde 
+a ningún conjunto real de pesos
+    ↓
+El paso de Adam sería incorrecto
+```
+
+### Por qué SGD funciona
+
+SGD **no tiene estado interno**:
+
+```
+θ_{t+1} = θ_t - lr * g_t
+```
+
+- No hay momentos que desincronizar
+- Cada update es correcto respecto a los pesos actuales- FedAvg puede promediar directamente
+
+### Comparación
+
+| Optimizer | Estado interno | Desincronización | ¿Funciona con FedAvg? |
+|---------|-------------|----------------|---------------------|
+| SGD | ❌ Ninguno | ❌ N/A | ✅ Sí |
+| Adam | ✅ m, v | ❌ Se desincroniza | ❌ No |
+| SGD + Momentum | ✅ Solo momentum | ⚠️ Parcial | ⚠️ Riesgo |
+| AdamW | ✅ m, v, decoupled | ❌ Se desincroniza | ❌ No |
+
+### Conclusión del diseño
+
+**SGD fue elegido deliberadamente** para garantizar:
+1. Correctitud matemática del FedAvg asíncrono
+2. Convergencia estable con múltiples Workers3. Simplicidad (sin momentos que gestionar)
+
+Este es un trade-off conocido en sistemas federados: Adam converge más rápido en training individual pero diverge en settings distribuidos. El sistema prioriza corrección sobre velocidad inicial.
+
+---
+
 ## Forward Pass Completo: _train_batch()
 
 ```python

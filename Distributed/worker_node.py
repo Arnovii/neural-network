@@ -200,24 +200,24 @@ class WorkerNode:
     # ================================================================
 
     def run(self) -> None:
-        """
-        Punto de entrada principal del Worker. Ejecuta la secuencia completa de inicio.
+        """Punto de entrada principal del Worker.
 
-        Realiza las siguientes operaciones en orden:
+        Ejecuta la secuencia completa de inicio:
 
-        1. Conecta al Parameter Server y recibe configuración (batch_size, image_size).
+        1. Conecta al Parameter Server y recibe configuración.
         2. Inicializa el pipeline de streaming de ImageNet-1k.
-        3. Realiza handshake con el PS para recibir estados iniciales de CNN y MLP.
+        3. Realiza handshake con el PS para recibir estados iniciales.
         4. Ejecuta el loop infinito de entrenamiento asincrónico.
 
-        Garantiza liberación de recursos (socket, stream) en caso de excepción
-        mediante bloque finally.
+        Returns:
+            None. El worker termina al recibir STOP del PS o por excepción.
 
-        :returns: None
-        :rtype: None
+        Raises:
+            ConnectionError: Si falla conexión TCP con Parameter Server.
+            RuntimeError: Si hay inconsistencias en mensajes o estados.
 
-        :raises ConnectionError: Si falla conexión TCP con Parameter Server.
-        :raises RuntimeError: Si hay inconsistencias en mensajes o estados recibidos.
+        Note:
+            Garantiza liberación de recursos (socket, stream) en caso de excepción.
         """
         self._connect()
         _log.worker_msg(

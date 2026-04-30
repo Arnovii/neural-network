@@ -68,22 +68,26 @@ class MsgType(str, Enum):
 
 
 def send_message(sock: socket.socket, msg_type: MsgType, payload: Any) -> None:
-    """
-    Serializa y envía un mensaje completo por TCP.
+    """Serializa y envía un mensaje completo por TCP.
 
-    :param sock: Socket TCP conectado (debe estar activo).
-    :type sock: socket.socket con estado ESTABLISHED.
+    El formato del mensaje es:
+        - 4 bytes (big-endian): longitud del cuerpo
+        - pickle(cuerpo): tipo + payload
 
-    :param msg_type: Tipo de mensaje (PARAMS, GRADIENTS, etc.).
-    :type msg_type: MsgType, ej. MsgType.GRADIENTS.
+    Args:
+        sock: Socket TCP conectado (debe estar activo).
+        msg_type: Tipo de mensaje del enum MsgType.
+                 Ejemplos: MsgType.PARAMS, MsgType.UPDATES, MsgType.STOP.
+        payload: Contenido del mensaje. Típicamente dict con datos numéricos.
 
-    :param payload: Contenido del mensaje (dict, array, etc.).
-    :type payload: Any, típicamente Dict con datos numéricos.
+    Returns:
+        None. El mensaje se envía completamente por el socket.
 
-    :return: None (mensaje enviado completo).
-    :rtype: NoneType.
+    Raises:
+        ConnectionError: Si el socket se cierra antes de enviar todo el mensaje.
 
-    :raises ConnectionError: Si socket se cierra antes de enviar todo.
+    Note:
+        Usa pickle.HIGHEST_PROTOCOL para máxima eficiencia de serialización.
     """
     body = pickle.dumps(
         {"type": msg_type, "payload": payload},
@@ -99,46 +103,45 @@ def send_message(sock: socket.socket, msg_type: MsgType, payload: Any) -> None:
 
 
 def receive_message(sock: socket.socket) -> Dict[str, Any]:
-    """
-    Lee exactamente un mensaje completo desde socket TCP (bloqueante).
+    """Lee exactamente un mensaje completo desde socket TCP (bloqueante).
 
     Decodificación:
-    1. Lee 4 bytes big-endian para obtener longitud
-    2. Lee exactamente 'longitud' bytes con _recv_exact (maneja recv parciales)
-    3. Deserializa con pickle.loads
+        1. Lee 4 bytes big-endian para obtener longitud
+        2. Lee exactamente 'longitud' bytes con _recv_exact (maneja recv parciales)
+        3. Deserializa con pickle.loads
 
-    Thread-safe para múltiples sockets (cada Worker tiene el suyo).
+    Args:
+        sock: Socket TCP conectado en modo bloqueante.
 
-    :param sock: Socket TCP conectado en modo bloqueante
-    :type sock: socket.socket
+    Returns:
+        Dict: Diccionario con campos "type" (MsgType) y "payload" (datos).
 
-    :returns: Dict con "type" (MsgType) y "payload" (datos)
-    :rtype: Dict[str, Any]
+    Raises:
+        ConnectionError: Si el socket se cierra antes de recibir mensaje completo.
+        pickle.UnpicklingError: Si los datos no son un pickle válido.
 
-    :raises ConnectionError: Si socket se cierra antes de recibir mensaje completo
-    :raises pickle.UnpicklingError: Si datos no son pickle válido
+    Note:
+        Thread-safe para múltiples sockets (cada Worker tiene el suyo).
     """
     length = struct.unpack(">I", _recv_exact(sock, 4))[0]
     return pickle.loads(_recv_exact(sock, length))
 
 
 def _recv_exact(sock: socket.socket, n: int) -> bytes:
-    """
-    Recibe exactamente n bytes del socket (maneja recv() parciales).
+    """Recibe exactamente n bytes del socket (maneja recv() parciales).
 
     Útil porque socket.recv() puede devolver menos bytes que n,
     especialmente en redes lentas. Esta función acumula hasta tener n bytes.
 
-    :param sock: Socket TCP conectado
-    :type sock: socket.socket
+    Args:
+        sock: Socket TCP conectado.
+        n: Número exacto de bytes a recibir.
 
-    :param n: Número exacto de bytes a recibir
-    :type n: int
+    Returns:
+        bytes: Exactamente n bytes recibidos del socket.
 
-    :returns: Exactamente n bytes
-    :rtype: bytes
-
-    :raises ConnectionError: Si socket se cierra antes de recibir n bytes
+    Raises:
+        ConnectionError: Si el socket se cierra antes de recibir n bytes.
     """
     buf = b""
     while len(buf) < n:  # Sigue leyendo hasta tener n bytes

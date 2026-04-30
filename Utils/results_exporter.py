@@ -82,29 +82,11 @@ class ResultsExporter:
         metrics_window: int = 500,
     ) -> None:
         """
-        Inicializa exportador de resultados.
+        Inicializa el ResultsExporter.
 
-        :param config:
-            Diccionario con configuración del experimento:
-            {
-              "lr": 0.01,
-              "lr_cnn": 0.001,
-              "staleness_lambda": 0.1,
-              "batch_size": 64,
-              "image_size": 224,
-              "seed": 42,
-              "cnn_arch": "resnet18" o "simple",
-              "description": "Descripción del experimento"
-            }
-        :type config: Dict[str, Any]
-
-        :param export_dir:
-            Directorio base para exportar (default: ./Exports)
-        :type export_dir: str
-
-        :param metrics_window:
-            Tamaño de ventana para buffers de métricas (default: 500)
-        :type metrics_window: int
+        :param config: Diccionario de configuración del experimento.
+        :param export_dir: Directorio base para exportar los resultados.
+        :param metrics_window: Tamaño de la ventana para buffers de métricas.
         """
         # Configuración
         self.config = config
@@ -114,9 +96,7 @@ class ResultsExporter:
         self._config_metrics_window = int(config.get("metrics_window", metrics_window))
 
         # Timestamp único para esta ejecución
-        self.timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[
-            :-3
-        ]  # ms precision
+        self.timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
         self.session_dir = self.export_dir / self.timestamp
 
         # No crear carpeta hasta finalize() para evitar archivos parciales
@@ -128,10 +108,8 @@ class ResultsExporter:
         self._metrics_loss: deque = deque(maxlen=metrics_window)
         self._metrics_accuracy: deque = deque(maxlen=metrics_window)
         self._metrics_workers: deque = deque(maxlen=metrics_window)
-        self._metrics_elapsed: deque = deque(
-            maxlen=metrics_window
-        )  # Tiempo elapsed en segundos
-        # Nuevosbuffers para std, staleness y alpha
+        self._metrics_elapsed: deque = deque(maxlen=metrics_window)
+        # Nuevos buffers para std, staleness y alpha
         self._metrics_loss_std: deque = deque(maxlen=metrics_window)
         self._metrics_acc_std: deque = deque(maxlen=metrics_window)
         self._metrics_staleness: deque = deque(maxlen=metrics_window)
@@ -140,6 +118,17 @@ class ResultsExporter:
 
         # worker events
         self._worker_events: List[dict] = []
+
+        # Full-history lists (sin límite) — usadas sólo para exportar gráficas completas
+        self._full_steps: list = []
+        self._full_losses: list = []
+        self._full_accuracies: list = []
+        self._full_workers: list = []
+        self._full_elapsed: list = []
+        self._full_loss_std: list = []
+        self._full_acc_std: list = []
+        self._full_staleness: list = []
+        self._full_alpha: list = []
 
         # Contadores auxiliares expuestos por el PS antes de finalize()
         self.tcp_request_count: int = 0
@@ -160,21 +149,43 @@ class ResultsExporter:
         staleness: int = 0,
         alpha: float = 1.0,
     ) -> None:
-        """
-        Registra un punto de métrica.
+        """Registra un punto de métrica.
 
         Llamado típicamente desde callback on_step del PS.
-        Thread-safe, no bloquea.
+        Thread-safe, no bloquea el entrenamiento.
 
-        :param step: Número del step de training
-        :param loss: Valor de loss
-        :param accuracy: Valor de accuracy (0-1)
-        :param num_workers: Número de workers conectados
-        :param elapsed: Tiempo elapsed en segundos desde inicio del entrenamiento
-        :param loss_std: Desviación estándar del loss en la ventana
-        :param acc_std: Desviación estándar de accuracy en la ventana
-        :param staleness: Valor de staleness del update
-        :param alpha: Factor de corrección alpha
+        Args:
+            step: Número del step de training (global).
+            loss: Valor de loss del batch actual.
+            accuracy: Valor de accuracy (0-1) del batch actual.
+            num_workers: Número de workers conectados actualmente.
+            elapsed: Tiempo acumulado en segundos desde inicio.
+            loss_std: Desviación estándar del loss en la ventana.
+            acc_std: Desviación estándar de accuracy en la ventana.
+            staleness: Valor de staleness del update.
+            alpha: Factor de corrección alpha = 1/(1+λ·s).
+
+        Returns:
+            None. Actualiza el estado interno thread-safe.
+
+        Note:
+            Los datos se almacenan en dos lugares:
+            - Deques con window fijo (para promedios recientes)
+            - Listas sin límite (para historial completo)
+
+        Example:
+            # Llamado desde PS on_step callback
+            exporter.record_metric(
+                step=1000,
+                loss=2.5,
+                accuracy=0.45,
+                num_workers=3,
+                elapsed=125.5,
+                loss_std=0.3,
+                acc_std=0.05,
+                staleness=2,
+                alpha=0.83
+            )
         """
         with self._lock:
             self._metrics_steps.append(step)
@@ -187,6 +198,20 @@ class ResultsExporter:
             self._metrics_staleness.append(staleness)
             self._metrics_alpha.append(alpha)
             self._total_metrics += 1
+            # También acumular en los historiales completos (sin límite)
+            try:
+                self._full_steps.append(step)
+                self._full_losses.append(loss)
+                self._full_accuracies.append(accuracy)
+                self._full_workers.append(num_workers)
+                self._full_elapsed.append(elapsed)
+                self._full_loss_std.append(loss_std)
+                self._full_acc_std.append(acc_std)
+                self._full_staleness.append(staleness)
+                self._full_alpha.append(alpha)
+            except Exception:
+                # Seguridad: nunca propagar errores de escritura de historial
+                pass
 
     def record_log(self, text: str) -> None:
         """
@@ -581,20 +606,147 @@ class ResultsExporter:
     ) -> None:
         fig, ax = plt.subplots(figsize=(10, 6.5))
         color_loss = COLORS["loss"]
+
         lower = losses - loss_std
         upper = losses + loss_std
+
         ax.plot(steps, losses, "-o", color=color_loss, lw=2, ms=3, label="Train")
         ax.fill_between(steps, lower, upper, color=color_loss, alpha=0.2, label="±1σ")
+
         ax.set_title(
             f"Pérdida con Banda de Confianza ±1σ (ventana de {self._config_metrics_window} pasos)"
         )
         ax.set_xlabel("Steps")
         ax.set_ylabel("Loss")
         ax.grid(True, alpha=0.3)
-        ax.legend(fontsize=8)
         ax.xaxis.set_major_locator(MaxNLocator(integer=True))
-        ax.set_xlim(*xlim)
-        ax.set_ylim(*ylim)
+
+        # Calcular ylim seguro según restricción del usuario
+        try:
+            ymin = float(np.min(lower)) * 0.998
+            ymax = float(np.max(upper)) * 1.002
+            ax.set_ylim(ymin, ymax)
+        except Exception:
+            ax.set_ylim(*ylim)
+
+        # xlim exacto para la banda
+        try:
+            ax.set_xlim(float(steps[0]), float(steps[-1]))
+        except Exception:
+            ax.set_xlim(*xlim)
+
+        # Anotación de estadísticas sobre el historial completo
+        try:
+            loss_std_arr = (
+                np.array(self._full_loss_std)
+                if len(self._full_loss_std) > 0
+                else loss_std
+            )
+            loss_std_mean = (
+                float(np.mean(loss_std_arr)) if len(loss_std_arr) > 0 else 0.0
+            )
+            loss_std_final = float(loss_std_arr[-1]) if len(loss_std_arr) > 0 else 0.0
+            text_box = f"σ medio: {loss_std_mean:.4f}\nσ final: {loss_std_final:.4f}"
+            # decidir esquina: usar superior derecha por defecto
+            ax.text(
+                0.98,
+                0.98,
+                text_box,
+                transform=ax.transAxes,
+                fontsize=9,
+                verticalalignment="top",
+                horizontalalignment="right",
+                bbox=dict(
+                    boxstyle="round,pad=0.4",
+                    facecolor="white",
+                    alpha=0.8,
+                    edgecolor="gray",
+                ),
+            )
+        except Exception:
+            pass
+
+        # Líneas de referencia del rango final ±1σ y anotaciones
+        try:
+            if len(loss_std) > 0 and not np.allclose(loss_std, 0.0):
+                y_upper = float(losses[-1] + loss_std[-1])
+                y_lower = float(losses[-1] - loss_std[-1])
+                ax.axhline(
+                    y_upper, color="gray", linestyle=":", linewidth=0.8, alpha=0.6
+                )
+                ax.axhline(
+                    y_lower, color="gray", linestyle=":", linewidth=0.8, alpha=0.6
+                )
+                # Anotar valores al final (derecha)
+                try:
+                    ax.annotate(
+                        f"{y_upper:.4f}",
+                        xy=(steps[-1], y_upper),
+                        xycoords="data",
+                        xytext=(6, 0),
+                        textcoords="offset points",
+                        va="center",
+                        fontsize=8,
+                        color="gray",
+                    )
+                    ax.annotate(
+                        f"{y_lower:.4f}",
+                        xy=(steps[-1], y_lower),
+                        xycoords="data",
+                        xytext=(6, 0),
+                        textcoords="offset points",
+                        va="center",
+                        fontsize=8,
+                        color="gray",
+                    )
+                except Exception:
+                    pass
+
+                # Eje Y secundario para σ
+                try:
+                    ax2 = ax.twinx()
+                    ax2.plot(
+                        steps,
+                        loss_std,
+                        color="gray",
+                        linestyle="--",
+                        linewidth=1.0,
+                        alpha=0.6,
+                        label="σ (eje der.)",
+                    )
+                    ax2.set_ylabel("σ", fontsize=9, color="gray")
+                    ax2.tick_params(axis="y", labelcolor="gray", labelsize=8)
+                    ax2.set_ylim(0, float(np.max(loss_std)) * 2.5)
+                    ax2.grid(False)
+                    # combinar leyendas
+                    lines1, labels1 = ax.get_legend_handles_labels()
+                    lines2, labels2 = ax2.get_legend_handles_labels()
+                    ax.legend(lines1 + lines2, labels1 + labels2, fontsize=8)
+                except Exception:
+                    pass
+
+        except Exception:
+            # Experimento corto: omitir líneas secundarias sin fallar
+            pass
+
+        # Marcar mínimo
+        try:
+            if len(losses) > 0:
+                idx_min = int(np.argmin(losses))
+                ax.scatter(
+                    steps[idx_min],
+                    losses[idx_min],
+                    color="darkred",
+                    s=80,
+                    zorder=6,
+                    marker="*",
+                    label=f"Mín: {losses[idx_min]:.4f}",
+                )
+                # actualizar leyenda para incluir mínimo si existe
+                ax.legend(fontsize=8)
+        except Exception:
+            pass
+
         plt.tight_layout()
         output_path = self.session_dir / "plot_band_loss.png"
         plt.savefig(output_path, dpi=300, pad_inches=0.4)
@@ -638,20 +790,136 @@ class ResultsExporter:
     ) -> None:
         fig, ax = plt.subplots(figsize=(10, 6.5))
         color_acc = COLORS["accuracy"]
+
         lower = accuracies - acc_std
         upper = accuracies + acc_std
+
         ax.plot(steps, accuracies, "-o", color=color_acc, lw=2, ms=3, label="Train")
         ax.fill_between(steps, lower, upper, color=color_acc, alpha=0.2, label="±1σ")
+
         ax.set_title(
             f"Precisión con Banda de Confianza ±1σ (ventana de {self._config_metrics_window} pasos)"
         )
         ax.set_xlabel("Steps")
         ax.set_ylabel("Precisión (%)")
         ax.grid(True, alpha=0.3)
-        ax.legend(fontsize=8)
         ax.xaxis.set_major_locator(MaxNLocator(integer=True))
-        ax.set_xlim(*xlim)
-        ax.set_ylim(*ylim)
+
+        # Calcular ylim seguro según restricción
+        try:
+            ymin = float(np.min(lower)) * 0.998
+            ymax = float(np.max(upper)) * 1.002
+            ax.set_ylim(ymin, ymax)
+        except Exception:
+            ax.set_ylim(*ylim)
+
+        try:
+            ax.set_xlim(float(steps[0]), float(steps[-1]))
+        except Exception:
+            ax.set_xlim(*xlim)
+
+        # Estadísticas sobre historial completo
+        try:
+            acc_std_arr = (
+                np.array(self._full_acc_std) if len(self._full_acc_std) > 0 else acc_std
+            )
+            acc_std_mean = float(np.mean(acc_std_arr)) if len(acc_std_arr) > 0 else 0.0
+            acc_std_final = float(acc_std_arr[-1]) if len(acc_std_arr) > 0 else 0.0
+            text_box = f"σ medio: {acc_std_mean:.4f}%\nσ final: {acc_std_final:.4f}%"
+            ax.text(
+                0.98,
+                0.98,
+                text_box,
+                transform=ax.transAxes,
+                fontsize=9,
+                verticalalignment="top",
+                horizontalalignment="right",
+                bbox=dict(
+                    boxstyle="round,pad=0.4",
+                    facecolor="white",
+                    alpha=0.8,
+                    edgecolor="gray",
+                ),
+            )
+        except Exception:
+            pass
+
+        # Líneas ±1σ en el final y eje secundario para σ
+        try:
+            if len(acc_std) > 0 and not np.allclose(acc_std, 0.0):
+                y_upper = float(accuracies[-1] + acc_std[-1])
+                y_lower = float(accuracies[-1] - acc_std[-1])
+                ax.axhline(
+                    y_upper, color="gray", linestyle=":", linewidth=0.8, alpha=0.6
+                )
+                ax.axhline(
+                    y_lower, color="gray", linestyle=":", linewidth=0.8, alpha=0.6
+                )
+                try:
+                    ax.annotate(
+                        f"{y_upper:.2f}%",
+                        xy=(steps[-1], y_upper),
+                        xycoords="data",
+                        xytext=(6, 0),
+                        textcoords="offset points",
+                        va="center",
+                        fontsize=8,
+                        color="gray",
+                    )
+                    ax.annotate(
+                        f"{y_lower:.2f}%",
+                        xy=(steps[-1], y_lower),
+                        xycoords="data",
+                        xytext=(6, 0),
+                        textcoords="offset points",
+                        va="center",
+                        fontsize=8,
+                        color="gray",
+                    )
+                except Exception:
+                    pass
+
+                try:
+                    ax2 = ax.twinx()
+                    ax2.plot(
+                        steps,
+                        acc_std,
+                        color="gray",
+                        linestyle="--",
+                        linewidth=1.0,
+                        alpha=0.6,
+                        label="σ (eje der.)",
+                    )
+                    ax2.set_ylabel("σ", fontsize=9, color="gray")
+                    ax2.tick_params(axis="y", labelcolor="gray", labelsize=8)
+                    ax2.set_ylim(0, float(np.max(acc_std)) * 2.5)
+                    ax2.grid(False)
+                    lines1, labels1 = ax.get_legend_handles_labels()
+                    lines2, labels2 = ax2.get_legend_handles_labels()
+                    ax.legend(lines1 + lines2, labels1 + labels2, fontsize=8)
+                except Exception:
+                    pass
+
+        except Exception:
+            pass
+
+        # Marcar máximo (precisión)
+        try:
+            if len(accuracies) > 0:
+                idx_max = int(np.argmax(accuracies))
+                ax.scatter(
+                    steps[idx_max],
+                    accuracies[idx_max],
+                    color="darkgreen",
+                    s=80,
+                    zorder=6,
+                    marker="*",
+                    label=f"Máx: {accuracies[idx_max]:.4f}%",
+                )
+                ax.legend(fontsize=8)
+        except Exception:
+            pass
+
         plt.tight_layout()
         output_path = self.session_dir / "plot_band_acc.png"
         plt.savefig(output_path, dpi=300, pad_inches=0.4)
@@ -704,6 +972,13 @@ class ResultsExporter:
         ax2.set_ylim(0, 1.05)
         ax2.grid(True, alpha=0.3)
 
+        # Establecer xlim completo según historial
+        try:
+            ax1.set_xlim(float(steps[0]), float(steps[-1]))
+            ax2.set_xlim(float(steps[0]), float(steps[-1]))
+        except Exception:
+            pass
+
         self._add_event_markers((ax1, ax2), event_steps, event_types)
         if event_steps:
             ax1.legend(fontsize=8)
@@ -739,6 +1014,13 @@ class ResultsExporter:
         ax2.set_ylabel("σ Accuracy (%)")
         ax2.set_xlabel("Steps")
         ax2.grid(True, alpha=0.3)
+
+        # Establecer xlim completo según historial
+        try:
+            ax1.set_xlim(float(steps[0]), float(steps[-1]))
+            ax2.set_xlim(float(steps[0]), float(steps[-1]))
+        except Exception:
+            pass
 
         self._add_event_markers((ax1, ax2), event_steps, event_types)
         if event_steps:

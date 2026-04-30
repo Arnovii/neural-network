@@ -449,7 +449,81 @@ Worker 3: [img0, img1, img2, img3, img4, ...]  ← DUPLICADO
 
 **Consecuencia**: Loss correlacionado, gradientes sesgados, convergencia pobre
 
-### Solución: Índice Strided
+### Solución: Índice Strided (División por Paso)
+
+El sistema usa **sharding con índice strided** para garantizar que cada Worker vea datos distintos sin solapamiento:
+
+```
+┌──────────────────────────────────────────────────────────────────────────┐
+│                IMAGENET-1K TRAIN (1.28M imágenes)                        │
+└──────────────┬──────────────┬──────────────┬──────────────┬──────────────┘
+               │              │              │              │
+               ▼              ▼              ▼              ▼
+        ┌───────────┐  ┌───────────┐  ┌───────────┐  ┌───────────┐
+        │ WORKER 0  │  │ WORKER 1  │  │ WORKER 2  │  │ WORKER 3  │
+        │  rank=0   │  │  rank=1   │  │  rank=2   │  │  rank=3   │
+        ├───────────┤  ├───────────┤  ├───────────┤  ├───────────┤
+        │ img[0]    │  │ img[1]    │  │ img[2]    │  │ img[3]    │
+        │ img[4]    │  │ img[5]    │  │ img[6]    │  │ img[7]    │
+        │ img[8]    │  │ img[9]    │  │ img[10]   │  │ img[11]   │
+        │  ...      │  │  ...      │  │  ...      │  │  ...      │
+        └───────────┘  └───────────┘  └───────────┘  └───────────┘
+            step=4        step=4         step=4        step=4
+```
+
+**Fórmula del sharding**:
+
+```python
+# Para un Worker con rank r en n Workers:
+indices = range(r, total_dataset, n)
+
+# Worker 0, n=4: [0, 4, 8, 12, 16, ...]
+# Worker 1, n=4: [1, 5, 9, 13, 17, ...]
+# Worker 2, n=4: [2, 6, 10, 14, 18, ...]
+# Worker 3, n=4: [3, 7, 11, 15, 19, ...]
+```
+
+**Propiedades**:
+
+| Propiedad | Valor |
+|----------|-------|
+| Total Workers | 4 |
+| Imágenes/Worker | 1,281,167 / 4 ≈ 320,000 |
+| Paso (stride) | 4 |
+| Solapamiento | 0% (disjoint) |
+| Coverag | 100% |
+
+### ¿Por qué strided, no random partition?
+
+**Otras opciones consideradas**:
+
+| Método | Ventaja | Desventaja |
+|--------|--------|---------|
+| **Strided (actual)** | Simple, determinista, balance exacto | Mismo orden cada época |
+| Random partition | Mezcla diferente cada época | Requires pre-shuffle completo |
+| Hash-based | Resilient a Workers | Unbalanced si hash collide |
+
+**Elección**: Strided por simplicidad y balance exacto guaranteed.
+
+### Batch Generation (Por qué no afecta shuffle)
+
+Una vez aplicado sharding, cada Worker itera sobre su subset:
+
+```
+Worker 0 tiene subset: [img0, img4, img8, img12, ...]
+    ↓
+batch(64): [img0, img4, img8, img12, ... img252]
+    ↓
+sig_batch(64): [img256, img260, ...]
+    ↓
+repite hasta final del subset
+    ↓
+wrap-around (reinicia desde img0)
+```
+
+**El shuffle buffer local** dentro de cada Worker:
+- No cambia la partición de datos entre Workers- Solo reordena el orden dentro de su subset propio
+- Previene patrones temporales en batch generation
 
 ```python
 dataset = load_dataset('ILSVRC/imagenet-1k', split='train', streaming=True)

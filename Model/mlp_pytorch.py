@@ -11,9 +11,9 @@ ARQUITECTURA:
         → fc3 (n_classes)   ← sin activación (CrossEntropyLoss la incluye)
 
 INICIALIZACIÓN:
-    Kaiming uniform (He) para capas con ReLU.
-    Produce logits con varianza razonable desde el primer paso,
-    evitando softmax uniforme y accuracy≈0% en las primeras iteraciones.
+    Xavier uniform para capas lineales compatible con BatchNorm.
+    Produce activaciones con varianza ~1 evitando softmax uniforme
+    y accuracy≈0% en las primeras iteraciones.
 
 FORMATO DE PARÁMETROS:
     PS y Workers intercambian parámetros como state_dict PyTorch:
@@ -35,18 +35,17 @@ from Utils.constants import NUM_CLASSES
 
 
 class MLPPyTorch(nn.Module):
-    """
-    Clasificador MLP de 2 capas ocultas para ImageNet (1000 clases).
+    """Clasificador MLP de 2 capas ocultas para ImageNet (1000 clases).
 
     Arquitectura:
     - Input: vector de features CNN (feature_dim, ej 512 de ResNet-18)
-    - Capa 1: feature_dim → hidden1 (ej 1024) + ReLU
-    - Capa 2: hidden1 → hidden2 (ej 512) + ReLU
+    - Capa 1: feature_dim → hidden1 (ej 1024) + BatchNorm + ReLU
+    - Capa 2: hidden1 → hidden2 (ej 512) + BatchNorm + ReLU
     - Output: hidden2 → 1000 (logits sin activación)
 
     Thread-safe: Múltiples Workers cargan state_dict sin conflictos.
     Serialización: state_dict_numpy() para transporte por TCP (numpy arrays).
-    Inicialización: Kaiming uniform (He) para producir logits con varianza razonable.
+    Inicialización: Xavier uniform para varianza ~1 compatible con BatchNorm.
     """
 
     def __init__(

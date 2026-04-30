@@ -71,8 +71,7 @@ from Utils.constants import (
 
 
 def main() -> None:
-    """
-    Punto de entrada para el Parameter Server en modo terminal.
+    """Punto de entrada para el Parameter Server en modo terminal.
 
     Orquesta el flujo completo del servidor PS asíncrono:
 
@@ -96,17 +95,37 @@ def main() -> None:
     9. **Salida**: Imprime resumen de entrenamiento (steps totales, loss final, acc final)
 
     Callbacks internos:
+
     - on_connected(): Incrementa contador de workers, registra en terminal
     - on_disconnected(): Registra desconexión en terminal
     - on_step(): Muestreo cada 50 steps, cálculo de throughput, chequeo de max_steps
     - on_report(): Resporte visual cada --steps-per-report steps
 
-    Exceptions:
-    - KeyboardInterrupt (Ctrl+C): Detiene entrenamiento gracefully y ejecuta cleanup
-    - Otras excepciones en ParameterServer se propagan y terminan el proceso
+    Returns:
+        None. El proceso termina al completar max_steps o con KeyboardInterrupt.
 
-    :returns: None
-    :rtype: None
+    Raises:
+        KeyboardInterrupt: Si el usuario presiona Ctrl+C, detiene el entrenamiento
+                      gracefully y ejecuta cleanup.
+        RuntimeError: Si el ParameterServer encuentra un error irrecuperable.
+
+    Note:
+        El número de workers es dinámico. Los workers se conectan y desconectan
+        libremente mientras el PS está ejecutándose.
+
+    Example:
+        # Ejecución básica con workers dinámicos
+        python ps_imagenet.py --max-steps 50000
+        # En otras terminales:
+        python worker_imagenet.py &
+        python worker_imagenet.py --device cuda:0 &
+
+        # Configuración personalizada
+        python ps_imagenet.py --lr 0.001 \\
+            --staleness-lambda 0.05 \\
+            --max-steps 100000 \\
+            --hidden1 1024 \\
+            --hidden2 512
     """
     parser = argparse.ArgumentParser(
         description="Parameter Server asíncrono — ImageNet-1k"

@@ -541,8 +541,7 @@ class CNNExtractor:
         device: str = "cpu",
         seed: int | None = None,
     ) -> None:
-        """
-        Inicializa extractor CNN con arquitectura y dispositivo especificados.
+        """Inicializa extractor CNN con arquitectura y dispositivo especificados.
 
         Flujo:
             1. Valida que arch esté en ('simple', 'resnet18')
@@ -557,58 +556,33 @@ class CNNExtractor:
             - requires_grad establecido permanentemente (NO cambia después)
             - Listo para forward pass o serialización
 
-        :param arch:
-            Arquitectura. Opciones válidas: 'resnet18' (preentrenada, congelada),
-            'simple' (SIMPLE CNN, entrenable). Default: 'resnet18'.
-        :type arch:
-            str
+        Args:
+            arch: Arquitectura. Opciones válidas: 'resnet18' (preentrenada, congelada),
+                  'simple' (SIMPLE CNN, entrenable). Default: 'resnet18'.
+            device: Dispositivo PyTorch. Opciones: 'cpu', 'cuda' (auto GPU0),
+                   'cuda:N' (GPU N), 'mps' (Apple Metal). Default: 'cpu'.
+            seed: Semilla RNG para reproducibilidad. Si None, no fija nada (aleatorio).
+                  Solo afecta a arch='simple' (SIMPLE CNN).
+                  No afecta a arch='resnet18' (pesos prefijos de ImageNet).
 
-        :param device:
-            Dispositivo PyTorch. Opciones: 'cpu', 'cuda' (auto GPU0),
-            'cuda:N' (GPU N), 'mps' (Apple Metal). Default: 'cpu'.
-        :type device:
-            str
+        Returns:
+            None. Inicializa self._model, self.arch, self.device, self.seed.
 
-        :param seed:
-            Semilla RNG para reproducibilidad. Si None, no fija nada (aleatorio).
-            Solo afecta a arch='simple' (SIMPLE CNN).
-            No afecta a arch='resnet18' (pesos prefijos de ImageNet).
-        :type seed:
-            int | None
+        Raises:
+            ValueError: Si arch no está en ARCHITECTURES = ('simple', 'resnet18').
+                        Mensaje: "arch debe ser ('simple', 'resnet18'), recibido: {arch!r}"
+            RuntimeError: Si device no es válido (ej: 'cuda' pero GPU no disponible).
+                        PyTorch levanta RuntimeError automáticamente.
 
-        :returns:
-            Nada. Inicializa self._model, self.arch, self.device, self.seed.
-        :rtype:
-            None
+        Example:
+            # ResNet-18 preentrenado (congelado)
+            cnn = CNNExtractor(arch='resnet18', device='cuda')
+            # Reentrenable desde cero
+            cnn = CNNExtractor(arch='simple', device='cpu', seed=42)
 
-        :raises ValueError:
-            Si arch no está en ARCHITECTURES = ('simple', 'resnet18').
-            Mensaje: "arch debe ser ('simple', 'resnet18'), recibido: {arch!r}"
-
-        :raises RuntimeError:
-            Si device no es válido (ej: 'cuda' pero GPU no disponible).
-            PyTorch levanta RuntimeError automáticamente.
-
-        :example:
-            Casos de uso comunes:
-
-            .. code-block:: python
-
-                # ResNet-18 preentrenada (congelada) en GPU 0
-                cnn_frozen = CNNExtractor(arch='resnet18', device='cuda:0')
-                assert cnn_frozen._model.training == False  # eval mode
-                p = list(cnn_frozen._model.parameters())[0]
-                assert p.requires_grad == False  # congelada
-
-                # SIMPLE CNN (entrenable) en CPU con semilla
-                cnn_trainable = CNNExtractor(arch='simple', device='cpu', seed=42)
-                assert cnn_trainable._model.training == False  # still eval
-                p = list(cnn_trainable._model.parameters())[0]
-                assert p.requires_grad == True  # entrenable
-
-        :note:
+        Note:
             - requires_grad se establece UNA SOLA VEZ en __init__ y NO cambia
-            - model.train() / model.eval() controla BatchNorm pero NO afecta requires_grad
+            - model.train() / model.eval() controla BatchNorm pero NO affecta requires_grad
             - Para cambiar requires_grad después: usa p.requires_grad_(False) manualmente
             - Las correcciones distribuidas NO modifican requires_grad
         """

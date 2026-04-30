@@ -48,15 +48,19 @@ from Utils.constants import (
 
 
 def get_default_device() -> str:
-    """
-    Detecta dispositivo disponible con prioridad: CUDA > MPS > CPU.
+    """Detecta dispositivo disponible con prioridad: CUDA > MPS > CPU.
 
     Selecciona automáticamente el mejor dispositivo PyTorch disponible para cómputo.
     Esto asegura que workers puedan ejecutarse en hardware heterogéneo sin configuración.
 
-    :returns: Identificador del dispositivo ('cuda' para GPU NVIDIA, 'mps' para Apple Metal,
-              'cpu' como fallback)
-    :rtype: str
+    Returns:
+        str: Identificador del dispositivo ('cuda' para GPU NVIDIA,
+            'mps' para Apple Metal, 'cpu' como fallback).
+
+    Example:
+        >>> device = get_default_device()
+        >>> device in ('cuda', 'mps', 'cpu')
+        True
     """
     if torch.cuda.is_available():
         return "cuda"
@@ -66,15 +70,33 @@ def get_default_device() -> str:
 
 
 def main() -> None:
-    """
-    Punto de entrada para el proceso worker asincrónico.
+    """Punto de entrada para el proceso worker asincrónico.
 
     Analiza argumentos de línea de comandos, muestra configuración, e inicializa
     una instancia WorkerNode para conectar con Parameter Server e iniciar
     entrenamiento distribuido de ImageNet-1k.
 
-    :returns: None
-    :rtype: None
+    Returns:
+        None. El worker termina al recibir mensaje STOP del PS o por error.
+
+    Raises:
+        ConnectionError: Si no puede conectar al Parameter Server.
+        RuntimeError: Si hay inconsistencias en el protocolo de comunicación.
+
+    Note:
+        El rank, num_workers, dataset_name, batch_size, image_size, seed
+        y hf_token se reciben del PS mediante mensaje CONFIG.
+
+    Example:
+        # Worker conectando a PS local
+        python worker_imagenet.py --server-host 127.0.0.1
+
+        # Worker con GPU específica
+        python worker_imagenet.py --device cuda:0
+
+        # Worker en máquina remota
+        python worker_imagenet.py --server-host 192.168.1.100 \\
+            --server-port 9999
     """
     parser = argparse.ArgumentParser(
         description="Worker asíncrono — Entrenamiento distribuido ImageNet-1k"

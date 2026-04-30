@@ -611,26 +611,27 @@ class ParameterServer:
             ).start()
 
     def _handle_new_connection(self, conn: socket.socket, addr: tuple) -> None:
-        """
-        Handshake completo para un Worker nuevo recien conectado.
+        """Handshake completo para un Worker nuevorecien conectado.
 
         Secuencia:
-          1. Recibir READY
-          2. Enviar WORKER_ID
-          3. Esperar a que CNN + MLP esten listos (max 120 s)
-          4. Enviar CNN_WEIGHTS (siempre, nunca opcional)
-          5. Esperar CNN_ACK con verificacion de arquitectura
-          6. Enviar START
-          7. Loop _serve_worker
+            1. Recibir READY
+            2. Enviar WORKER_ID
+            3. Enviar CONFIG (batch_size, image_size, dataset, seed, rank, etc.)
+            4. Enviar CNN_WEIGHTS (siempre, nunca opcional)
+            5. Esperar CNN_ACK con verificación de arquitectura
+            6. Enviar START
+            7. Iniciar loop _serve_worker para atender mensajes
 
-        :param conn: Socket de conexion entrante.
-        :type conn: socket.socket
+        Args:
+            conn: Socket de conexión entrante desde el Worker.
+            addr: Tupla (IP, puerto) del cliente.
 
-        :param addr: Tupla (IP, puerto) del cliente.
-        :type addr: tuple
+        Returns:
+            None. El método gestiona el handshake y lanza el thread de servicio.
 
-        :returns: None
-        :rtype: None
+        Note:
+            Timeout implícito: si CNN+MLP no están listo en 120s, el Worker
+            puede timeout waiting for weights.
         """
         # ----------------- 1. READY -----------------
         try:

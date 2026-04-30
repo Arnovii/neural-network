@@ -301,10 +301,61 @@ PS ESTADOS:
 ### Inicialización
 
 1. PS inicializa CNN (ResNet-18 con ImageNet weights)
-2. PS inicializa MLP (Kaiming init., random)
+2. PS inicializa MLP (Xavier init., random)
 3. Worker conecta → recibe CNN_WEIGHTS del PS
 4. Worker espera START → entra en training_loop
 5. Worker solicita PARAMS → recibe mlp_state actual + cnn_state actual
+
+### Flujo de la CNN: Por qué los Cambios NO Persisten Localmente
+
+Este es un concepto clave que a menudo causa confusión enentrenamiento E2E con SimpleCNN:
+
+#### El Ciclo de Vida de la CNN Local (SimpleCNN, modo E2E)
+
+```
+Worker (SimpleCNN)              PS (CNN Global)           Persiste?
+─────────────────────────────────────────────────────
+1. REQUEST_PARAMS          ──► Recibe cnn_state (v=10)
+2. Entrena 1 batch
+   CNN_local += aprendizaje
+3. Envía UPDATES           ──► PS promedia y actualiza
+4. REQUEST_PARAMS          ──► Recibe cnn_state (v=11)  ← SOBRESCRIBE
+   CNN_local = nueva versión (descarta aprendizaje local)
+```
+
+#### ¿Por qué funciona así?
+
+1. **Cada ciclo REQUEST_PARAMS sobrescribe la CNN local**
+2. **Los cambios locales se "pierden" entre ciclos**
+3. **Solo los cambios promediados persisten en el PS**
+
+#### analogía
+
+```
+Imagina un documento compartido en Google Docs:
+- Tú escribes notas locales (no guardadas)
+- Envías tus cambios al documento compartido
+- Cuando vuelves a abrir, tienes la versión latest
+- Tus notas locales se perdieron, pero el doc global avanzó
+```
+
+#### ¿Esto afecta el entrenamiento?
+
+**No**. El entrenamiento global SÍ funciona porque:
+
+1. **Cada Worker envía sus gradientes al PS**
+2. **PS promedia los gradientes de todos los Workers**
+3. **El promedio actualiza la CNN global**
+4. **La CNN global se distribuye a todos los Workers**
+
+#### Diferencia con MLP
+
+| Modelo | Persistencia Local | Persistencia Global |
+|--------|-----------------|-------------------|
+| MLP | ✅ Se entrena localmente todo el tiempo | ✅ Actualiza en cada update |
+| SimpleCNN | ❌ Se sobrescribe en cada REQUEST_PARAMS | ✅ Global via FedAvg |
+
+**La clave**: Aunque la CNN local no guarda cambios, los gradientes fluyen al PS via UPDATES y se promedian en la CNN global. El entrenamiento E2E funciona a través del promedio distribuido, no por acumulación local.
 
 ### Durante Entrenamiento
 

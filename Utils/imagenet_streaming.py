@@ -272,24 +272,25 @@ class ImageNetStream:
         self._samples = 0
 
     def _open_dataset(self):
-        """
-        Abre y divide el dataset de entrenamiento desde HuggingFace Hub con lazy loading.
+        """Abre y divide el dataset de entrenamiento desde HuggingFace Hub con lazy loading.
 
         Carga dataset con streaming=True (sin caché local), aplica división por Worker
         (cada Worker obtiene muestras contiguas), y buffer de shuffle opcional para
         aleatorización dentro de la división.
 
         División de Workers:
-          Con num_workers=4, worker_rank=2:
-            - Cada worker obtiene 1/4 del dataset completo, sin solapamiento
-            - Muestras asignadas por algoritmo de sharding contiguo de HF
-            - Buffers de shuffle independientes por worker (si shuffle_buffer > 0)
+            Con num_workers=4, worker_rank=2:
+                - Cada worker obtiene 1/4 del dataset completo, sin solapamiento
+                - Muestras asignadas por algoritmo de sharding contiguo de HF
+                - Buffers de shuffle independientes por worker (si shuffle_buffer > 0)
 
-        :returns: Iterador de dataset streaming, dividido y aleatorizado
-        :rtype: datasets.IterableDataset
+        Returns:
+            datasets.IterableDataset: Iterador de dataset streaming,
+                                     dividido y aleatorizado.
 
-        :raises EnvironmentError: Si dataset requiere autenticación y falta el token
-        :raises ConnectionError: Si no es posible conectar con HuggingFace Hub
+        Raises:
+            EnvironmentError: Si dataset requiere autenticación y falta el token.
+            ConnectionError: Si no es posible conectar con HuggingFace Hub.
         """
         # Importa librería de HuggingFace para acceder a datasets remotos
         import os

@@ -241,13 +241,18 @@ class FormattedLogger:
 
 
 def get_logger(use_colors: bool = False) -> FormattedLogger:
-    """
-    Función de fábrica para instanciar un FormattedLogger.
+    """Función de fábrica para instanciar un FormattedLogger.
 
-    :param use_colors: Si se deben habilitar códigos de color ANSI (default: False).
-    :type use_colors: bool
+    Args:
+        use_colors: Si se deben habilitar códigos de color ANSI.
+                    Default: False (útil para logs a archivo).
 
-    :returns: Nueva instancia FormattedLogger.
-    :rtype: FormattedLogger
+    Returns:
+        FormattedLogger: Nueva instancia configurada.
+
+    Example:
+        >>> logger = get_logger(use_colors=True)
+        >>> logger.ps("Servidor iniciado")  # Con colores
+        [PS] Servidor iniciado
     """
     return FormattedLogger(use_colors=use_colors)

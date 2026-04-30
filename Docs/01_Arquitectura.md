@@ -443,11 +443,72 @@ export_path = self._results_exporter.finalize()  # Al finalizar
 - Facilitaría migración a sistemas externos
 - Evita mapping de índices confusos
 
-### 3. **Staleness Correction**
-- Factor α(s) = 1/(1 + λ·s) reduce impacto de pesos viejos
-- λ (lambda) es hiperparámetro de **trade-off**:
-  - λ=0: Sin corrección (puro Async-FedAvg asincrónico)
-  - λ muy alto: Casi como Sync-FedAvg
+### 3. **Staleness Correction (Corrección de Obsolescencia)**
+
+El sistema implementa Async-FedAvg con corrección de staleness para mitigar la divergencia caused by asynchronous updates.
+
+#### ¿Por qué es necesaria?
+
+En entrenamiento asíncrono, cuando un Worker envía sus actualizaciones, los parámetros globales del PS pueden haber avanzado significativamente: otros Workers ya enviaron sus updates. Esto crea el problema de **staleness**:
+
+```
+Worker 0 envía update (versión 10)
+    ↓
+PS ya avanzó a versión 15 (por Workers 1, 2, 3)
+    ↓
+Update del Worker 0 está desactualizado (stale)
+```
+
+#### Fórmula matemática
+
+El factor de corrección α(s) se calcula como:
+
+```
+α(s) = 1 / (1 + λ · s)
+```
+
+Donde:
+- **s** = staleness = versión_actual - versión_del_worker
+- **λ** (lambda) = hiperparámetro de corrección (default: 0.1)
+
+#### Ejemplos numéricos
+
+| λ | s=0 (actual) | s=1 | s=2 | s=5 | s=10 |
+|---|--------------|-----|-----|-----|------|
+| 0.0 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 |
+| 0.1 | 1.00 | 0.91 | 0.83 | 0.67 | 0.50 |
+| 0.5 | 1.00 | 0.67 | 0.50 | 0.29 | 0.17 |
+| 1.0 | 1.00 | 0.50 | 0.33 | 0.17 | 0.09 |
+
+**Interpretación**:
+- **s=0**: Update actual → α=1.0 (sin reducción)
+- **s=1**: Update con 1 paso de retraso → α≈0.91 (9% reducción)
+- **s=5**: Update con 5 pasos de retraso → α≈0.67 (33% reducción)
+
+#### Aplicación en el PS
+
+```python
+# En Distributed/parameter_server.py: _apply_update()
+
+# Calcular staleness
+s = self._version - payload['version_read']
+
+# Calcular factor alpha
+alpha = 1.0 / (1.0 + self.staleness_lambda * s)
+
+# Aplicar update con corrección
+for key in mlp_state:
+    # θ_new = θ_old + α * Δθ
+    mlp_state[key] += alpha * (payload['mlp_weights'][key] - mlp_state[key])
+```
+
+#### Efecto en convergecia
+
+- **λ=0**: Sin corrección. Rápido pero puede diverger con muchos Workers.
+- **λ=0.1**: Recomendado. Balance entre velocidad y estabilidad.
+- **λ=1.0**: Muy conservador. Casi como FedAvg síncrono.
+
+El valor default `λ=0.1` es un trade-off validado empíricamente paraImageNet con 2-4 Workers.
 
 ### 4. **Prefetching en Thread Separado**
 - Training loop nunca espera I/O
