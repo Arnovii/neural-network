@@ -493,7 +493,7 @@ class ResultsExporter:
         ax1.scatter(steps, losses, color=color_loss, s=30, zorder=5, label="Val")
         ax1.set_title("Pérdida (ventana deslizante)")
         ax1.set_xlabel("Steps")
-        ax1.set_ylabel("Loss")
+        ax1.set_ylabel("Loss (nats)")
         ax1.grid(True, alpha=0.3)
         ax1.legend(fontsize=8)
         ax1.xaxis.set_major_locator(MaxNLocator(integer=True))

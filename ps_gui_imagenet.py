@@ -1423,7 +1423,7 @@ class PSApp:
             f"workers={len(self._workers)} | t={elapsed:.0f}s"
         )
         self._log(
-            f"[Step {step:,}] loss={loss:.4f} | acc={acc:.2f}% | t={elapsed:.0f}s"
+            f"[Step {step:,}] loss={loss:.4f} (nats) | acc={acc:.2f}% | t={elapsed:.0f}s"
         )
 
     def _update_clock(self) -> None:
