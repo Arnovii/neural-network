@@ -713,7 +713,7 @@ class ResultsExporter:
                 float(np.mean(loss_std_arr)) if len(loss_std_arr) > 0 else 0.0
             )
             loss_std_final = float(loss_std_arr[-1]) if len(loss_std_arr) > 0 else 0.0
-            text_box = f"σ medio: {loss_std_mean:.4f}\nσ final: {loss_std_final:.4f}"
+            text_box = f"σ medio: {loss_std_mean:.4f} (adim.)\nσ final: {loss_std_final:.4f} (adim.)"
             # decidir esquina: usar superior derecha por defecto
             ax.text(
                 0.98,
@@ -746,26 +746,50 @@ class ResultsExporter:
                 )
                 # Anotar valores al final (derecha)
                 try:
-                    ax.annotate(
-                        f"{y_upper:.4f}",
-                        xy=(steps[-1], y_upper),
-                        xycoords="data",
-                        xytext=(6, 0),
-                        textcoords="offset points",
-                        va="center",
-                        fontsize=8,
-                        color="gray",
-                    )
-                    ax.annotate(
-                        f"{y_lower:.4f}",
-                        xy=(steps[-1], y_lower),
-                        xycoords="data",
-                        xytext=(6, 0),
-                        textcoords="offset points",
-                        va="center",
-                        fontsize=8,
-                        color="gray",
-                    )
+                    # Calcular si las etiquetas están muy cercanas (< 3% del rango Y)
+                    y_range = ax.get_ylim()[1] - ax.get_ylim()[0]
+                    too_close = abs(y_upper - y_lower) < y_range * 0.03
+
+                    if too_close:
+                        # Si están muy cercas, usar offset horizontal
+                        ax.annotate(
+                            f"+1σ: {y_upper:.4f}",
+                            xy=(steps[-1], y_upper),
+                            xytext=(-70, 10),
+                            textcoords="offset points",
+                            fontsize=7.5,
+                            color="gray",
+                            va="center",
+                        )
+                        ax.annotate(
+                            f"-1σ: {y_lower:.4f}",
+                            xy=(steps[-1], y_lower),
+                            xytext=(-70, -14),
+                            textcoords="offset points",
+                            fontsize=7.5,
+                            color="gray",
+                            va="center",
+                        )
+                    else:
+                        # Si no, usar posicionamiento a la derecha
+                        ax.annotate(
+                            f"{y_upper:.4f}",
+                            xy=(steps[-1], y_upper),
+                            xytext=(6, 0),
+                            textcoords="offset points",
+                            fontsize=8,
+                            color="gray",
+                            va="center",
+                        )
+                        ax.annotate(
+                            f"{y_lower:.4f}",
+                            xy=(steps[-1], y_lower),
+                            xytext=(6, 0),
+                            textcoords="offset points",
+                            fontsize=8,
+                            color="gray",
+                            va="center",
+                        )
                 except Exception:
                     pass
 
@@ -781,9 +805,22 @@ class ResultsExporter:
                         alpha=0.6,
                         label="σ (eje der.)",
                     )
-                    ax2.set_ylabel("σ", fontsize=9, color="gray")
+                    ax2.set_ylabel("σ Loss (adim.)", fontsize=9, color="gray")
                     ax2.tick_params(axis="y", labelcolor="gray", labelsize=8)
-                    ax2.set_ylim(0, float(np.max(loss_std)) * 2.5)
+                    # Calcular ylim del eje secundario para evitar cruce con banda
+                    try:
+                        band_min = float(np.min(losses - loss_std))
+                        sigma_max = float(np.max(loss_std))
+                        ax_ylim_min = ax.get_ylim()[0]
+                        ax2_scale = (band_min - ax_ylim_min) / sigma_max * 0.85
+                        if ax2_scale > 0:
+                            ax2.set_ylim(0, sigma_max / ax2_scale)
+                        else:
+                            ax2.set_ylim(0, sigma_max * 4.0)
+                    except Exception:
+                        ax2.set_ylim(0, float(np.max(loss_std)) * 2.5)
+                    # Ocultar ticks del eje secundario para evitar clutter
+                    ax2.set_yticks([])
                     ax2.grid(False)
                     # combinar leyendas
                     lines1, labels1 = ax.get_legend_handles_labels()
@@ -800,17 +837,22 @@ class ResultsExporter:
         try:
             if len(losses) > 0:
                 idx_min = int(np.argmin(losses))
-                ax.scatter(
-                    steps[idx_min],
-                    losses[idx_min],
+                step_range = steps[-1] - steps[0] if len(steps) > 1 else 1
+                # Si el mínimo está muy cerca del final, mover etiqueta a la izquierda
+                if (steps[-1] - steps[idx_min]) < step_range * 0.05:
+                    xytext_min = (-50, -20)  # arriba-izquierda
+                else:
+                    xytext_min = (8, -15)  # estándar
+
+                ax.annotate(
+                    f"Mín: {losses[idx_min]:.4f}",
+                    xy=(steps[idx_min], losses[idx_min]),
+                    xytext=xytext_min,
+                    textcoords="offset points",
+                    fontsize=8,
+                    arrowprops=dict(arrowstyle="->", color="darkred", lw=0.8),
                     color="darkred",
-                    s=80,
-                    zorder=6,
-                    marker="*",
-                    label=f"Mín: {losses[idx_min]:.4f}",
                 )
-                # actualizar leyenda para incluir mínimo si existe
-                ax.legend(fontsize=8)
         except Exception:
             pass
 
@@ -900,7 +942,7 @@ class ResultsExporter:
             ax.annotate(
                 f"{accuracies[-1]:.2f}%",
                 xy=(steps[-1], accuracies[-1]),
-                xytext=(8, 0),
+                xytext=(8, 10),
                 textcoords="offset points",
                 fontsize=8,
                 color=color_acc,
@@ -936,6 +978,9 @@ class ResultsExporter:
             acc_std_mean = float(np.mean(acc_std_arr)) if len(acc_std_arr) > 0 else 0.0
             acc_std_final = float(acc_std_arr[-1]) if len(acc_std_arr) > 0 else 0.0
             text_box = f"σ medio: {acc_std_mean:.4f}%\nσ final: {acc_std_final:.4f}%"
+            # Agregar nota si la banda es menor a 1px a esta escala
+            if acc_std_final < 1.0 and acc_std_final > 0:
+                text_box += "\n(Banda < 1px a esta escala)"
             ax.text(
                 0.02,
                 0.98,
@@ -966,18 +1011,33 @@ class ResultsExporter:
                     y_lower, color="gray", linestyle=":", linewidth=0.8, alpha=0.6
                 )
                 try:
-                    for y_val, label in [
-                        (y_upper, f"+1σ: {y_upper:.2f}%"),
-                        (y_lower, f"-1σ: {y_lower:.2f}%"),
-                    ]:
+                    # Calcular si las etiquetas están muy cercanas (< 3% del rango Y)
+                    y_range = ax.get_ylim()[1] - ax.get_ylim()[0]
+                    too_close = abs(y_upper - y_lower) < y_range * 0.03
+
+                    if too_close:
+                        # Si están muy cercas, usar offset horizontal
+                        offsets = [(-70, -10), (-70, 10)]  # -1σ arriba, +1σ abajo
+                    else:
+                        # Si no, usar offset normal
+                        offsets = [(-60, 4), (-60, 4)]
+
+                    # Posicionar anotaciones ±1σ
+                    for (y_val, label), (x_off, y_off) in zip(
+                        [
+                            (y_lower, f"-1σ: {y_lower:.2f}%"),
+                            (y_upper, f"+1σ: {y_upper:.2f}%"),
+                        ],
+                        offsets,
+                    ):
                         ax.annotate(
                             label,
                             xy=(steps[-1], y_val),
-                            xytext=(-60, 4),
+                            xytext=(x_off, y_off),
                             textcoords="offset points",
                             fontsize=7.5,
                             color="gray",
-                            va="bottom",
+                            va="center",
                         )
                 except Exception:
                     pass
@@ -993,9 +1053,22 @@ class ResultsExporter:
                         alpha=0.6,
                         label="σ (eje der.)",
                     )
-                    ax2.set_ylabel("σ", fontsize=9, color="gray")
+                    ax2.set_ylabel("σ Accuracy (%)", fontsize=9, color="gray")
                     ax2.tick_params(axis="y", labelcolor="gray", labelsize=8)
-                    ax2.set_ylim(0, float(np.max(acc_std)) * 2.5)
+                    # Calcular ylim del eje secundario para evitar cruce con banda
+                    try:
+                        band_min = float(np.min(accuracies - acc_std))
+                        sigma_max = float(np.max(acc_std))
+                        ax_ylim_min = ax.get_ylim()[0]
+                        ax2_scale = (band_min - ax_ylim_min) / sigma_max * 0.85
+                        if ax2_scale > 0:
+                            ax2.set_ylim(0, sigma_max / ax2_scale)
+                        else:
+                            ax2.set_ylim(0, sigma_max * 4.0)
+                    except Exception:
+                        ax2.set_ylim(0, float(np.max(acc_std)) * 2.5)
+                    # Ocultar ticks del eje secundario para evitar clutter
+                    ax2.set_yticks([])
                     ax2.grid(False)
                     lines1, labels1 = ax.get_legend_handles_labels()
                     lines2, labels2 = ax2.get_legend_handles_labels()
@@ -1015,16 +1088,22 @@ class ResultsExporter:
         try:
             if len(accuracies) > 0:
                 idx_max = int(np.argmax(accuracies))
-                ax.scatter(
-                    steps[idx_max],
-                    accuracies[idx_max],
+                step_range = steps[-1] - steps[0] if len(steps) > 1 else 1
+                # Si el máximo está muy cerca del final, mover etiqueta a la izquierda
+                if (steps[-1] - steps[idx_max]) < step_range * 0.05:
+                    xytext_max = (-50, 20)  # arriba-izquierda
+                else:
+                    xytext_max = (8, 15)  # estándar
+
+                ax.annotate(
+                    f"Máx: {accuracies[idx_max]:.2f}%",
+                    xy=(steps[idx_max], accuracies[idx_max]),
+                    xytext=xytext_max,
+                    textcoords="offset points",
+                    fontsize=8,
+                    arrowprops=dict(arrowstyle="->", color="darkgreen", lw=0.8),
                     color="darkgreen",
-                    s=80,
-                    zorder=6,
-                    marker="*",
-                    label=f"Máx: {accuracies[idx_max]:.4f}%",
                 )
-                ax.legend(fontsize=8)
         except Exception:
             pass
 

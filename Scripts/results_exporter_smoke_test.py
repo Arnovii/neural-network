@@ -75,9 +75,13 @@ def run_smoke_test(total_steps: int, export_dir: Path, seed: int) -> Path:
         )
 
         if step % 500 == 0:
-            exporter.record_worker_event(step, "connected", step // 500, f"127.0.0.{(step // 500) + 1}")
+            exporter.record_worker_event(
+                step, "connected", step // 500, f"127.0.0.{(step // 500) + 1}"
+            )
         if step % 750 == 0:
-            exporter.record_worker_event(step, "disconnected", step // 750, f"127.0.0.{(step // 750) + 1}")
+            exporter.record_worker_event(
+                step, "disconnected", step // 750, f"127.0.0.{(step // 750) + 1}"
+            )
 
     exporter.tcp_request_count = total_steps * 3
     exporter.nan_rejected_count = 0
@@ -129,14 +133,24 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description="Run a full-history smoke test for Utils/results_exporter.py."
     )
-    parser.add_argument("--steps", type=int, default=2000, help="Number of simulated steps (minimum 2000).")
+    parser.add_argument(
+        "--steps",
+        type=int,
+        default=2000,
+        help="Number of simulated steps (minimum 2000).",
+    )
     parser.add_argument(
         "--export-dir",
         type=Path,
         default=REPO_ROOT / "Exports" / "smoke_tests",
         help="Base export directory where the timestamped session folder will be created.",
     )
-    parser.add_argument("--seed", type=int, default=12345, help="Random seed for deterministic simulation.")
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=12345,
+        help="Random seed for deterministic simulation.",
+    )
     args = parser.parse_args()
 
     total_steps = max(args.steps, 2000)
