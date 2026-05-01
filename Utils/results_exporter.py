@@ -313,32 +313,44 @@ class ResultsExporter:
         """Escribe métricas en formato CSV."""
         metrics_file = self.session_dir / "metrics.csv"
 
+        # Exportar SIEMPRE historial completo cuando exista; fallback a ventana
+        # para compatibilidad con sesiones antiguas.
+        with self._lock:
+            if len(self._full_steps) > 0:
+                steps_hist = list(self._full_steps)
+                loss_hist = list(self._full_losses)
+                loss_std_hist = list(self._full_loss_std)
+                acc_hist = list(self._full_accuracies)
+                acc_std_hist = list(self._full_acc_std)
+                workers_hist = list(self._full_workers)
+                elapsed_hist = list(self._full_elapsed)
+                staleness_hist = list(self._full_staleness)
+                alpha_hist = list(self._full_alpha)
+            else:
+                steps_hist = list(self._metrics_steps)
+                loss_hist = list(self._metrics_loss)
+                loss_std_hist = list(self._metrics_loss_std)
+                acc_hist = list(self._metrics_accuracy)
+                acc_std_hist = list(self._metrics_acc_std)
+                workers_hist = list(self._metrics_workers)
+                elapsed_hist = list(self._metrics_elapsed)
+                staleness_hist = list(self._metrics_staleness)
+                alpha_hist = list(self._metrics_alpha)
+
         with open(metrics_file, "w", encoding="utf-8") as f:
             f.write(
                 "step,loss,loss_std,accuracy,acc_std,num_workers,elapsed_seconds,staleness,alpha\n"
             )
 
-            for (
-                step,
-                loss,
-                loss_std,
-                acc,
-                acc_std,
-                workers,
-                elapsed,
-                staleness,
-                alpha,
-            ) in zip(
-                self._metrics_steps,
-                self._metrics_loss,
-                self._metrics_loss_std,
-                self._metrics_accuracy,
-                self._metrics_acc_std,
-                self._metrics_workers,
-                self._metrics_elapsed,
-                self._metrics_staleness,
-                self._metrics_alpha,
-            ):
+            for i, step in enumerate(steps_hist):
+                loss = loss_hist[i] if i < len(loss_hist) else float("nan")
+                loss_std = loss_std_hist[i] if i < len(loss_std_hist) else 0.0
+                acc = acc_hist[i] if i < len(acc_hist) else float("nan")
+                acc_std = acc_std_hist[i] if i < len(acc_std_hist) else 0.0
+                workers = workers_hist[i] if i < len(workers_hist) else 0
+                elapsed = elapsed_hist[i] if i < len(elapsed_hist) else 0.0
+                staleness = staleness_hist[i] if i < len(staleness_hist) else 0
+                alpha = alpha_hist[i] if i < len(alpha_hist) else 1.0
                 f.write(
                     f"{step},{loss:.4f},{loss_std:.4f},{acc:.2f},{acc_std:.2f},"
                     f"{workers},{elapsed:.1f},{staleness},{alpha:.4f}\n"
@@ -375,17 +387,29 @@ class ResultsExporter:
 
     def _generate_plots(self) -> None:
         """Genera gráficas de resultados: combinada + individuales."""
-        if len(self._metrics_steps) == 0:
+        if len(self._full_steps) == 0 and len(self._metrics_steps) == 0:
             return
 
-        steps = np.array(list(self._metrics_steps))
-        losses = np.array(list(self._metrics_loss))
-        accuracies = np.array(list(self._metrics_accuracy))
-        workers_count = np.array(list(self._metrics_workers))
-        loss_std = np.array(list(self._metrics_loss_std))
-        acc_std = np.array(list(self._metrics_acc_std))
-        staleness = np.array(list(self._metrics_staleness))
-        alpha = np.array(list(self._metrics_alpha))
+        with self._lock:
+            if len(self._full_steps) > 0:
+                steps = np.array(list(self._full_steps))
+                losses = np.array(list(self._full_losses))
+                accuracies = np.array(list(self._full_accuracies))
+                workers_count = np.array(list(self._full_workers))
+                loss_std = np.array(list(self._full_loss_std))
+                acc_std = np.array(list(self._full_acc_std))
+                staleness = np.array(list(self._full_staleness))
+                alpha = np.array(list(self._full_alpha))
+            else:
+                steps = np.array(list(self._metrics_steps))
+                losses = np.array(list(self._metrics_loss))
+                accuracies = np.array(list(self._metrics_accuracy))
+                workers_count = np.array(list(self._metrics_workers))
+                loss_std = np.array(list(self._metrics_loss_std))
+                acc_std = np.array(list(self._metrics_acc_std))
+                staleness = np.array(list(self._metrics_staleness))
+                alpha = np.array(list(self._metrics_alpha))
+
         event_steps = [ev["step"] for ev in self._worker_events]
         event_types = [ev["event_type"] for ev in self._worker_events]
 
@@ -554,7 +578,7 @@ class ResultsExporter:
         # Nota sobre diferentes escalas Y
         fig.text(
             0.5,
-            0.98,
+            0.95,
             "Nota: Cada gráfica tiene su propia escala Y",
             ha="center",
             fontsize=12,
@@ -579,16 +603,39 @@ class ResultsExporter:
         fig, ax = plt.subplots(figsize=(10, 6.5))
 
         color_loss = COLORS["loss"]
+        x_margin = (steps[-1] - steps[0]) * 0.03 if len(steps) > 1 else 0.0
 
         ax.plot(steps, losses, "-o", color=color_loss, lw=2, ms=3, label="Train")
         ax.scatter(steps, losses, color=color_loss, s=30, zorder=5, label="Val")
+        if len(steps) > 0:
+            ax.scatter(
+                steps[-1],
+                losses[-1],
+                s=40,
+                color="white",
+                edgecolors=color_loss,
+                linewidths=1.5,
+                zorder=7,
+            )
+            ax.annotate(
+                f"{losses[-1]:.4f}",
+                xy=(steps[-1], losses[-1]),
+                xytext=(8, 0),
+                textcoords="offset points",
+                fontsize=8,
+                color=color_loss,
+                va="center",
+            )
         ax.set_title("Pérdida (ventana deslizante)")
         ax.set_xlabel("Steps")
         ax.set_ylabel("Loss")
         ax.grid(True, alpha=0.3)
         ax.legend(fontsize=8)
         ax.xaxis.set_major_locator(MaxNLocator(integer=True))
-        ax.set_xlim(*xlim)
+        if len(steps) > 0:
+            ax.set_xlim(float(steps[0]), float(steps[-1] + x_margin))
+        else:
+            ax.set_xlim(*xlim)
         ax.set_ylim(*ylim)
 
         plt.tight_layout()
@@ -606,12 +653,32 @@ class ResultsExporter:
     ) -> None:
         fig, ax = plt.subplots(figsize=(10, 6.5))
         color_loss = COLORS["loss"]
+        x_margin = (steps[-1] - steps[0]) * 0.03 if len(steps) > 1 else 0.0
 
         lower = losses - loss_std
         upper = losses + loss_std
 
         ax.plot(steps, losses, "-o", color=color_loss, lw=2, ms=3, label="Train")
         ax.fill_between(steps, lower, upper, color=color_loss, alpha=0.2, label="±1σ")
+        if len(steps) > 0:
+            ax.scatter(
+                steps[-1],
+                losses[-1],
+                s=40,
+                color="white",
+                edgecolors=color_loss,
+                linewidths=1.5,
+                zorder=7,
+            )
+            ax.annotate(
+                f"{losses[-1]:.4f}",
+                xy=(steps[-1], losses[-1]),
+                xytext=(8, 0),
+                textcoords="offset points",
+                fontsize=8,
+                color=color_loss,
+                va="center",
+            )
 
         ax.set_title(
             f"Pérdida con Banda de Confianza ±1σ (ventana de {self._config_metrics_window} pasos)"
@@ -763,16 +830,39 @@ class ResultsExporter:
         fig, ax = plt.subplots(figsize=(10, 6.5))
 
         color_acc = COLORS["accuracy"]
+        x_margin = (steps[-1] - steps[0]) * 0.03 if len(steps) > 1 else 0.0
 
         ax.plot(steps, accuracies, "-o", color=color_acc, lw=2, ms=3, label="Train")
         ax.scatter(steps, accuracies, color=color_acc, s=30, zorder=5, label="Val")
+        if len(steps) > 0:
+            ax.scatter(
+                steps[-1],
+                accuracies[-1],
+                s=40,
+                color="white",
+                edgecolors=color_acc,
+                linewidths=1.5,
+                zorder=7,
+            )
+            ax.annotate(
+                f"{accuracies[-1]:.2f}%",
+                xy=(steps[-1], accuracies[-1]),
+                xytext=(8, 0),
+                textcoords="offset points",
+                fontsize=8,
+                color=color_acc,
+                va="center",
+            )
         ax.set_title("Precisión (ventana deslizante)")
         ax.set_xlabel("Steps")
         ax.set_ylabel("Precisión (%)")
         ax.grid(True, alpha=0.3)
         ax.legend(fontsize=8)
         ax.xaxis.set_major_locator(MaxNLocator(integer=True))
-        ax.set_xlim(*xlim)
+        if len(steps) > 0:
+            ax.set_xlim(float(steps[0]), float(steps[-1] + x_margin))
+        else:
+            ax.set_xlim(*xlim)
         ax.set_ylim(*ylim)
 
         plt.tight_layout()
@@ -790,12 +880,32 @@ class ResultsExporter:
     ) -> None:
         fig, ax = plt.subplots(figsize=(10, 6.5))
         color_acc = COLORS["accuracy"]
+        x_margin = (steps[-1] - steps[0]) * 0.03 if len(steps) > 1 else 0.0
 
         lower = accuracies - acc_std
         upper = accuracies + acc_std
 
         ax.plot(steps, accuracies, "-o", color=color_acc, lw=2, ms=3, label="Train")
         ax.fill_between(steps, lower, upper, color=color_acc, alpha=0.2, label="±1σ")
+        if len(steps) > 0:
+            ax.scatter(
+                steps[-1],
+                accuracies[-1],
+                s=40,
+                color="white",
+                edgecolors=color_acc,
+                linewidths=1.5,
+                zorder=7,
+            )
+            ax.annotate(
+                f"{accuracies[-1]:.2f}%",
+                xy=(steps[-1], accuracies[-1]),
+                xytext=(8, 0),
+                textcoords="offset points",
+                fontsize=8,
+                color=color_acc,
+                va="center",
+            )
 
         ax.set_title(
             f"Precisión con Banda de Confianza ±1σ (ventana de {self._config_metrics_window} pasos)"
@@ -827,13 +937,13 @@ class ResultsExporter:
             acc_std_final = float(acc_std_arr[-1]) if len(acc_std_arr) > 0 else 0.0
             text_box = f"σ medio: {acc_std_mean:.4f}%\nσ final: {acc_std_final:.4f}%"
             ax.text(
-                0.98,
+                0.02,
                 0.98,
                 text_box,
                 transform=ax.transAxes,
                 fontsize=9,
                 verticalalignment="top",
-                horizontalalignment="right",
+                horizontalalignment="left",
                 bbox=dict(
                     boxstyle="round,pad=0.4",
                     facecolor="white",
@@ -856,26 +966,19 @@ class ResultsExporter:
                     y_lower, color="gray", linestyle=":", linewidth=0.8, alpha=0.6
                 )
                 try:
-                    ax.annotate(
-                        f"{y_upper:.2f}%",
-                        xy=(steps[-1], y_upper),
-                        xycoords="data",
-                        xytext=(6, 0),
-                        textcoords="offset points",
-                        va="center",
-                        fontsize=8,
-                        color="gray",
-                    )
-                    ax.annotate(
-                        f"{y_lower:.2f}%",
-                        xy=(steps[-1], y_lower),
-                        xycoords="data",
-                        xytext=(6, 0),
-                        textcoords="offset points",
-                        va="center",
-                        fontsize=8,
-                        color="gray",
-                    )
+                    for y_val, label in [
+                        (y_upper, f"+1σ: {y_upper:.2f}%"),
+                        (y_lower, f"-1σ: {y_lower:.2f}%"),
+                    ]:
+                        ax.annotate(
+                            label,
+                            xy=(steps[-1], y_val),
+                            xytext=(-60, 4),
+                            textcoords="offset points",
+                            fontsize=7.5,
+                            color="gray",
+                            va="bottom",
+                        )
                 except Exception:
                     pass
 
@@ -902,6 +1005,11 @@ class ResultsExporter:
 
         except Exception:
             pass
+
+        if len(steps) > 0:
+            ax.set_xlim(float(steps[0]), float(steps[-1] + x_margin))
+        else:
+            ax.set_xlim(*xlim)
 
         # Marcar máximo (precisión)
         try:
@@ -1035,20 +1143,41 @@ class ResultsExporter:
 
     def _write_metadata(self) -> None:
         """Escribe estadísticas finales en metadata.json."""
-        if len(self._metrics_loss) == 0:
+        if len(self._full_losses) == 0 and len(self._metrics_loss) == 0:
             metadata = {"status": "no_metrics_recorded"}
         else:
-            duration = self._metrics_elapsed[-1] if self._metrics_elapsed else 0.0
+            with self._lock:
+                if len(self._full_losses) > 0:
+                    loss_hist = np.array(list(self._full_losses))
+                    acc_hist = np.array(list(self._full_accuracies))
+                    workers_hist = np.array(list(self._full_workers))
+                    elapsed_hist = np.array(list(self._full_elapsed))
+                    staleness_hist = np.array(list(self._full_staleness))
+                    alpha_hist = np.array(list(self._full_alpha))
+                    loss_std_hist = np.array(list(self._full_loss_std))
+                    acc_std_hist = np.array(list(self._full_acc_std))
+                    steps_arr = np.array(list(self._full_steps))
+                else:
+                    loss_hist = np.array(list(self._metrics_loss))
+                    acc_hist = np.array(list(self._metrics_accuracy))
+                    workers_hist = np.array(list(self._metrics_workers))
+                    elapsed_hist = np.array(list(self._metrics_elapsed))
+                    staleness_hist = np.array(list(self._metrics_staleness))
+                    alpha_hist = np.array(list(self._metrics_alpha))
+                    loss_std_hist = np.array(list(self._metrics_loss_std))
+                    acc_std_hist = np.array(list(self._metrics_acc_std))
+                    steps_arr = np.array(list(self._metrics_steps))
+
+            duration = float(elapsed_hist[-1]) if len(elapsed_hist) > 0 else 0.0
             batch_size = self.config.get("batch_size", 0)
 
-            staleness_arr = np.array(list(self._metrics_staleness))
-            alpha_arr = np.array(list(self._metrics_alpha))
-            loss_std_arr = np.array(list(self._metrics_loss_std))
-            acc_std_arr = np.array(list(self._metrics_acc_std))
-            steps_arr = np.array(list(self._metrics_steps))
-            acc_arr = np.array(list(self._metrics_accuracy))
-            elapsed_arr = np.array(list(self._metrics_elapsed))
-            workers_arr = np.array(list(self._metrics_workers))
+            staleness_arr = staleness_hist
+            alpha_arr = alpha_hist
+            loss_std_arr = loss_std_hist
+            acc_std_arr = acc_std_hist
+            acc_arr = acc_hist
+            elapsed_arr = elapsed_hist
+            workers_arr = workers_hist
 
             staleness_analysis = {
                 "mean": float(np.mean(staleness_arr))
