@@ -643,6 +643,139 @@ class ResultsExporter:
         plt.savefig(output_path, dpi=300, pad_inches=0.4)
         plt.close()
 
+    def _safe_label_position(
+        self,
+        ax,
+        x_init: float,
+        y_init: float,
+        text: str,
+        side: str,
+        existing_boxes: list,
+        fontsize: float = 7.5,
+    ) -> Tuple[float, float]:
+        """Calcula posición segura para etiqueta resolviendo colisiones.
+
+        Args:
+            ax: Eje matplotlib.
+            x_init, y_init: Posición inicial en coordenadas de datos.
+            text: Texto de la etiqueta.
+            side: 'above' (preferir y >= y_ref) o 'below' (preferir y <= y_ref).
+            existing_boxes: Lista de bounding boxes ocupados [(x, y, w, h), ...].
+            fontsize: Tamaño de fuente para estimar bbox.
+
+        Returns:
+            Tuple[float, float]: (x_final, y_final) en coordenadas de datos.
+        """
+        xlim = ax.get_xlim()
+        ylim = ax.get_ylim()
+        x_range = xlim[1] - xlim[0]
+        y_range = ylim[1] - ylim[0]
+
+        # 1. Estimar bounding box en coordenadas de datos (conservador)
+        char_width_data = x_range * 0.012 * len(text)
+        char_height_data = y_range * 0.022
+        bbox = [x_init, y_init, char_width_data, char_height_data]
+
+        # 2. Verificar colisiones
+        def _has_collision(bx, by, bw, bh, boxes):
+            for ox, oy, ow, oh in boxes:
+                if not (bx + bw < ox or bx > ox + ow or by + bh < oy or by > oy + oh):
+                    return True
+            return False
+
+        def _is_inside_axes(bx, by, bw, bh):
+            pad_x = x_range * 0.01
+            pad_y = y_range * 0.01
+            return (
+                bx >= xlim[0] + pad_x
+                and bx + bw <= xlim[1] - pad_x
+                and by >= ylim[0] + pad_y
+                and by + bh <= ylim[1] - pad_y
+            )
+
+        # 3. Resolver colisiones
+        x, y = x_init, y_init
+        w, h = char_width_data, char_height_data
+        max_iter = 10
+        step_y = y_range * 0.015
+
+        # Paso A: Colisión con borde derecho
+        if x + w > xlim[1] - x_range * 0.01:
+            x = xlim[1] - w - x_range * 0.01
+
+        # Paso B: Colisión vertical (iterar)
+        for _ in range(max_iter):
+            collision = False
+
+            # Verificar bordes del eje
+            if not _is_inside_axes(x, y, w, h):
+                collision = True
+
+            # Verificar existing_boxes
+            if _has_collision(x, y, w, h, existing_boxes):
+                collision = True
+
+            if not collision:
+                break
+
+            # Resolver: mover en dirección preferida
+            if side == "above":
+                if y + h + step_y > ylim[1] - y_range * 0.01:
+                    # Llegó al borde superior, bajar desde y_init
+                    y = y_init - step_y * (_ + 1)
+                else:
+                    y += step_y
+            else:  # below
+                if y - step_y < ylim[0] + y_range * 0.01:
+                    # Llegó al borde inferior, subir desde y_init
+                    y = y_init + step_y * (_ + 1)
+                else:
+                    y -= step_y
+
+        # Paso C: Si aún hay colisión, mover X completamente a la izquierda
+        if _has_collision(x, y, w, h, existing_boxes) or not _is_inside_axes(x, y, w, h):
+            x_new = x_init - w * 1.5
+            y_new = y_init
+            if _is_inside_axes(x_new, y_new, w, h):
+                x, y = x_new, y_new
+
+        # Agregar bbox final a existing_boxes
+        existing_boxes.append((x, y, w, h))
+        return x, y
+
+    def _clamp_to_axes(
+        self,
+        ax,
+        x: float,
+        y: float,
+        width_data: float,
+        height_data: float,
+        padding: float = 0.01,
+    ) -> Tuple[float, float]:
+        """Fuerza que el bbox de una anotación quede dentro del eje.
+
+        Args:
+            ax: Eje matplotlib.
+            x, y: Posición actual en coordenadas de datos.
+            width_data, height_data: Dimensiones del bbox en coordenadas de datos.
+            padding: Padding relativo al rango del eje.
+
+        Returns:
+            Tuple[float, float]: (x, y) ajustado para quedar dentro del eje.
+        """
+        xlim = ax.get_xlim()
+        ylim = ax.get_ylim()
+        x_range = xlim[1] - xlim[0]
+        y_range = ylim[1] - ylim[0]
+        pad_x = x_range * padding
+        pad_y = y_range * padding
+
+        x = max(xlim[0] + pad_x, x)
+        x = min(xlim[1] - width_data - pad_x, x)
+        y = max(ylim[0] + pad_y, y)
+        y = min(ylim[1] - height_data - pad_y, y)
+        return x, y
+
     def _plot_band_loss(
         self,
         steps: np.ndarray,
@@ -714,15 +847,41 @@ class ResultsExporter:
             )
             loss_std_final = float(loss_std_arr[-1]) if len(loss_std_arr) > 0 else 0.0
             text_box = f"σ medio: {loss_std_mean:.4f} (adim.)\nσ final: {loss_std_final:.4f} (adim.)"
-            # decidir esquina: usar superior derecha por defecto
+
+            # Posicionar recuadro en cuadrante opuesto a la curva
+            try:
+                xlim_data = ax.get_xlim()
+                ylim_data = ax.get_ylim()
+                mid_x = (xlim_data[0] + xlim_data[1]) / 2
+                mid_y = (ylim_data[0] + ylim_data[1]) / 2
+                # Determinar cuadrante del punto final
+                in_right = steps[-1] > mid_x if len(steps) > 0 else True
+                in_top = losses[-1] > mid_y if len(losses) > 0 else True
+
+                if in_right and in_top:
+                    # Cuadrante superior derecho → recuadro en sup-izq
+                    text_x, text_y = 0.02, 0.98
+                    text_ha = "left"
+                elif not in_right and in_top:
+                    # Cuadrante superior izquierdo → recuadro en sup-der
+                    text_x, text_y = 0.98, 0.98
+                    text_ha = "right"
+                else:
+                    # Otros cuadrantes → recuadro en sup-der por defecto
+                    text_x, text_y = 0.98, 0.98
+                    text_ha = "right"
+            except Exception:
+                text_x, text_y = 0.98, 0.98
+                text_ha = "right"
+
             ax.text(
-                0.98,
-                0.98,
+                text_x,
+                text_y,
                 text_box,
                 transform=ax.transAxes,
                 fontsize=9,
                 verticalalignment="top",
-                horizontalalignment="right",
+                horizontalalignment=text_ha,
                 bbox=dict(
                     boxstyle="round,pad=0.4",
                     facecolor="white",
@@ -733,7 +892,10 @@ class ResultsExporter:
         except Exception:
             pass
 
-        # Líneas de referencia del rango final ±1σ y anotaciones
+        # Inicializar ANTES del try para que siempre esté definido
+        existing_boxes = []
+
+        # Líneas de referencia del rango final ±1σ y anotaciones adaptivas
         try:
             if len(loss_std) > 0 and not np.allclose(loss_std, 0.0):
                 y_upper = float(losses[-1] + loss_std[-1])
@@ -744,52 +906,63 @@ class ResultsExporter:
                 ax.axhline(
                     y_lower, color="gray", linestyle=":", linewidth=0.8, alpha=0.6
                 )
-                # Anotar valores al final (derecha)
-                try:
-                    # Calcular si las etiquetas están muy cercanas (< 3% del rango Y)
-                    y_range = ax.get_ylim()[1] - ax.get_ylim()[0]
-                    too_close = abs(y_upper - y_lower) < y_range * 0.03
 
-                    if too_close:
-                        # Si están muy cercas, usar offset horizontal
-                        ax.annotate(
-                            f"+1σ: {y_upper:.4f}",
-                            xy=(steps[-1], y_upper),
-                            xytext=(-70, 10),
-                            textcoords="offset points",
-                            fontsize=7.5,
-                            color="gray",
-                            va="center",
-                        )
-                        ax.annotate(
-                            f"-1σ: {y_lower:.4f}",
-                            xy=(steps[-1], y_lower),
-                            xytext=(-70, -14),
-                            textcoords="offset points",
-                            fontsize=7.5,
-                            color="gray",
-                            va="center",
-                        )
-                    else:
-                        # Si no, usar posicionamiento a la derecha
-                        ax.annotate(
-                            f"{y_upper:.4f}",
-                            xy=(steps[-1], y_upper),
-                            xytext=(6, 0),
-                            textcoords="offset points",
-                            fontsize=8,
-                            color="gray",
-                            va="center",
-                        )
-                        ax.annotate(
-                            f"{y_lower:.4f}",
-                            xy=(steps[-1], y_lower),
-                            xytext=(6, 0),
-                            textcoords="offset points",
-                            fontsize=8,
-                            color="gray",
-                            va="center",
-                        )
+                x_range_plot = ax.get_xlim()[1] - ax.get_xlim()[0]
+                y_range_plot = ax.get_ylim()[1] - ax.get_ylim()[0]
+                try:
+                    pw = x_range_plot * 0.012 * 8  # ~8 chars para el valor
+                    ph = y_range_plot * 0.022
+                    existing_boxes.append(
+                        (steps[-1] + x_range_plot * 0.005, losses[-1] - ph / 2, pw, ph)
+                    )
+                except Exception:
+                    pass
+
+                # Calcular posiciones con sistema anti-colisión
+                x_anchor = steps[-1] - x_margin * 0.5
+                y_offset_small = y_range_plot * 0.012
+
+                # Etiqueta +1σ (side='above')
+                try:
+                    x_plus, y_plus = self._safe_label_position(
+                        ax,
+                        x_anchor,
+                        y_upper + y_offset_small,
+                        f"+1σ: {y_upper:.4f}",
+                        "above",
+                        existing_boxes,
+                        fontsize=7.5,
+                    )
+                    ax.annotate(
+                        f"+1σ: {y_upper:.4f}",
+                        xy=(x_plus, y_plus),
+                        fontsize=7.5,
+                        color="gray",
+                        ha="left",
+                        va="bottom",
+                    )
+                except Exception:
+                    pass
+
+                # Etiqueta -1σ (side='below')
+                try:
+                    x_minus, y_minus = self._safe_label_position(
+                        ax,
+                        x_anchor,
+                        y_lower - y_offset_small,
+                        f"-1σ: {y_lower:.4f}",
+                        "below",
+                        existing_boxes,
+                        fontsize=7.5,
+                    )
+                    ax.annotate(
+                        f"-1σ: {y_lower:.4f}",
+                        xy=(x_minus, y_minus),
+                        fontsize=7.5,
+                        color="gray",
+                        ha="left",
+                        va="top",
+                    )
                 except Exception:
                     pass
 
@@ -833,25 +1006,40 @@ class ResultsExporter:
             # Experimento corto: omitir líneas secundarias sin fallar
             pass
 
-        # Marcar mínimo
+        # Marcar mínimo con sistema anti-colisión
         try:
             if len(losses) > 0:
                 idx_min = int(np.argmin(losses))
                 step_range = steps[-1] - steps[0] if len(steps) > 1 else 1
-                # Si el mínimo está muy cerca del final, mover etiqueta a la izquierda
+                x_range_plot = ax.get_xlim()[1] - ax.get_xlim()[0]
+                y_range_plot = ax.get_ylim()[1] - ax.get_ylim()[0]
+
+                # Si el mínimo está dentro del 5% del rango final de X
                 if (steps[-1] - steps[idx_min]) < step_range * 0.05:
-                    xytext_min = (-50, -20)  # arriba-izquierda
+                    x_init_min = steps[idx_min] - x_range_plot * 0.08
                 else:
-                    xytext_min = (8, -15)  # estándar
+                    x_init_min = steps[idx_min]
+
+                # side='below' para mínimo de loss
+                x_min, y_min = self._safe_label_position(
+                    ax,
+                    x_init_min,
+                    losses[idx_min] - y_range_plot * 0.03,
+                    f"Mín: {losses[idx_min]:.4f}",
+                    "below",
+                    existing_boxes,
+                    fontsize=8,
+                )
 
                 ax.annotate(
                     f"Mín: {losses[idx_min]:.4f}",
                     xy=(steps[idx_min], losses[idx_min]),
-                    xytext=xytext_min,
-                    textcoords="offset points",
+                    xytext=(x_min, y_min),
                     fontsize=8,
                     arrowprops=dict(arrowstyle="->", color="darkred", lw=0.8),
                     color="darkred",
+                    ha="left",
+                    va="top",
                 )
         except Exception:
             pass
@@ -981,14 +1169,37 @@ class ResultsExporter:
             # Agregar nota si la banda es menor a 1px a esta escala
             if acc_std_final < 1.0 and acc_std_final > 0:
                 text_box += "\n(Banda < 1px a esta escala)"
+
+            # Posicionar recuadro en cuadrante opuesto a la curva
+            try:
+                xlim_data = ax.get_xlim()
+                ylim_data = ax.get_ylim()
+                mid_x = (xlim_data[0] + xlim_data[1]) / 2
+                mid_y = (ylim_data[0] + ylim_data[1]) / 2
+                in_right = steps[-1] > mid_x if len(steps) > 0 else True
+                in_top = accuracies[-1] > mid_y if len(accuracies) > 0 else True
+
+                if in_right and in_top:
+                    text_x, text_y = 0.02, 0.98
+                    text_ha = "left"
+                elif not in_right and in_top:
+                    text_x, text_y = 0.98, 0.98
+                    text_ha = "right"
+                else:
+                    text_x, text_y = 0.98, 0.98
+                    text_ha = "right"
+            except Exception:
+                text_x, text_y = 0.98, 0.98
+                text_ha = "right"
+
             ax.text(
-                0.02,
-                0.98,
+                text_x,
+                text_y,
                 text_box,
                 transform=ax.transAxes,
                 fontsize=9,
                 verticalalignment="top",
-                horizontalalignment="left",
+                horizontalalignment=text_ha,
                 bbox=dict(
                     boxstyle="round,pad=0.4",
                     facecolor="white",
@@ -998,6 +1209,9 @@ class ResultsExporter:
             )
         except Exception:
             pass
+
+        # Inicializar ANTES del try para que siempre esté definido
+        existing_boxes_acc = []
 
         # Líneas ±1σ en el final y eje secundario para σ
         try:
@@ -1010,35 +1224,68 @@ class ResultsExporter:
                 ax.axhline(
                     y_lower, color="gray", linestyle=":", linewidth=0.8, alpha=0.6
                 )
+
+                x_range_plot_acc = ax.get_xlim()[1] - ax.get_xlim()[0]
+                y_range_plot_acc = ax.get_ylim()[1] - ax.get_ylim()[0]
                 try:
-                    # Calcular si las etiquetas están muy cercanas (< 3% del rango Y)
-                    y_range = ax.get_ylim()[1] - ax.get_ylim()[0]
-                    too_close = abs(y_upper - y_lower) < y_range * 0.03
-
-                    if too_close:
-                        # Si están muy cercas, usar offset horizontal
-                        offsets = [(-70, -10), (-70, 10)]  # -1σ arriba, +1σ abajo
-                    else:
-                        # Si no, usar offset normal
-                        offsets = [(-60, 4), (-60, 4)]
-
-                    # Posicionar anotaciones ±1σ
-                    for (y_val, label), (x_off, y_off) in zip(
-                        [
-                            (y_lower, f"-1σ: {y_lower:.2f}%"),
-                            (y_upper, f"+1σ: {y_upper:.2f}%"),
-                        ],
-                        offsets,
-                    ):
-                        ax.annotate(
-                            label,
-                            xy=(steps[-1], y_val),
-                            xytext=(x_off, y_off),
-                            textcoords="offset points",
-                            fontsize=7.5,
-                            color="gray",
-                            va="center",
+                    pw_acc = x_range_plot_acc * 0.012 * 10  # ~10 chars para el valor con %
+                    ph_acc = y_range_plot_acc * 0.022
+                    existing_boxes_acc.append(
+                        (
+                            steps[-1] + x_range_plot_acc * 0.005,
+                            accuracies[-1] - ph_acc / 2,
+                            pw_acc,
+                            ph_acc,
                         )
+                    )
+                except Exception:
+                    pass
+
+                # Calcular posiciones con sistema anti-colisión
+                x_anchor_acc = steps[-1] - x_margin * 0.5
+                y_offset_small_acc = y_range_plot_acc * 0.012
+
+                # Etiqueta +1σ (side='above')
+                try:
+                    x_plus_acc, y_plus_acc = self._safe_label_position(
+                        ax,
+                        x_anchor_acc,
+                        y_upper + y_offset_small_acc,
+                        f"+1σ: {y_upper:.2f}%",
+                        "above",
+                        existing_boxes_acc,
+                        fontsize=7.5,
+                    )
+                    ax.annotate(
+                        f"+1σ: {y_upper:.2f}%",
+                        xy=(x_plus_acc, y_plus_acc),
+                        fontsize=7.5,
+                        color="gray",
+                        ha="left",
+                        va="bottom",
+                    )
+                except Exception:
+                    pass
+
+                # Etiqueta -1σ (side='below')
+                try:
+                    x_minus_acc, y_minus_acc = self._safe_label_position(
+                        ax,
+                        x_anchor_acc,
+                        y_lower - y_offset_small_acc,
+                        f"-1σ: {y_lower:.2f}%",
+                        "below",
+                        existing_boxes_acc,
+                        fontsize=7.5,
+                    )
+                    ax.annotate(
+                        f"-1σ: {y_lower:.2f}%",
+                        xy=(x_minus_acc, y_minus_acc),
+                        fontsize=7.5,
+                        color="gray",
+                        ha="left",
+                        va="top",
+                    )
                 except Exception:
                     pass
 
@@ -1084,25 +1331,40 @@ class ResultsExporter:
         else:
             ax.set_xlim(*xlim)
 
-        # Marcar máximo (precisión)
+        # Marcar máximo con sistema anti-colisión
         try:
             if len(accuracies) > 0:
                 idx_max = int(np.argmax(accuracies))
                 step_range = steps[-1] - steps[0] if len(steps) > 1 else 1
-                # Si el máximo está muy cerca del final, mover etiqueta a la izquierda
+                x_range_plot_acc = ax.get_xlim()[1] - ax.get_xlim()[0]
+                y_range_plot_acc = ax.get_ylim()[1] - ax.get_ylim()[0]
+
+                # Si el máximo está dentro del 5% del rango final de X
                 if (steps[-1] - steps[idx_max]) < step_range * 0.05:
-                    xytext_max = (-50, 20)  # arriba-izquierda
+                    x_init_max = steps[idx_max] - x_range_plot_acc * 0.08
                 else:
-                    xytext_max = (8, 15)  # estándar
+                    x_init_max = steps[idx_max]
+
+                # side='above' para máximo de accuracy
+                x_max, y_max = self._safe_label_position(
+                    ax,
+                    x_init_max,
+                    accuracies[idx_max] + y_range_plot_acc * 0.03,
+                    f"Máx: {accuracies[idx_max]:.2f}%",
+                    "above",
+                    existing_boxes_acc,
+                    fontsize=8,
+                )
 
                 ax.annotate(
                     f"Máx: {accuracies[idx_max]:.2f}%",
                     xy=(steps[idx_max], accuracies[idx_max]),
-                    xytext=xytext_max,
-                    textcoords="offset points",
+                    xytext=(x_max, y_max),
                     fontsize=8,
                     arrowprops=dict(arrowstyle="->", color="darkgreen", lw=0.8),
                     color="darkgreen",
+                    ha="left",
+                    va="bottom",
                 )
         except Exception:
             pass
