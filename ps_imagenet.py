@@ -73,54 +73,56 @@ from Utils.constants import (
 def main() -> None:
     """Punto de entrada para el Parameter Server en modo terminal.
 
-    Orquesta el flujo completo del servidor PS asíncrono:
+    Orquesta el flujo completo del servidor PS asincrono:
 
-    1. **Parsing de argumentos CLI**: Lee parámetros de línea de comandos
+    1. **Parsing de argumentos CLI**: Lee parametros de linea de comandos
        (host, puerto, learning rates, arquitectura CNN, seed, etc.)
-    2. **Resolución de HF Token**: Prioridad: argumento CLI > variable HF_TOKEN
-    3. **Instanciación de modelos**:
+    2. **Resolucion de HF Token**: Prioridad: argumento CLI > variable HF_TOKEN
+    3. **Instanciacion de modelos**:
        - CNNExtractor (resnet18 preentrenado o simple CNN)
-       - MLPPyTorch (feature_dim → hidden1 → hidden2 → 1000 clases)
-    4. **Creación de ParameterServer**:
+       - MLPPyTorch (feature_dim -> hidden1 -> hidden2 -> 1000 clases)
+    4. **Creacion de ParameterServer**:
        - Establece callbacks para eventos (step, report, connected, disconnected)
-       - Configura hiperparámetros Async-SGD (lr, staleness_lambda, METRICS_WINDOW_DEFAULT)
+       - Configura hiperparametros Async-SGD (lr, staleness_lambda, METRICS_WINDOW_DEFAULT)
     5. **Apertura de servidor TCP**: ps.listen() inicia socket de escucha
-    6. **Inicio de entrenamiento**: Loop sin esperar número específico de workers
+    6. **Inicio de entrenamiento**: Loop sin esperar numero especifico de workers
     7. **Loop de entrenamiento**:
        - Ejecuta indefinidamente o hasta max_steps
-       - Registra métricas cada 50 steps (throughput en steps/sec)
+       - Registra metricas cada 50 steps (throughput en steps/sec)
        - Reporta visualmente cada --steps-per-report steps
-       - Acepta workers dinámicamente (conectar/desconectar en cualquier momento)
+       - Acepta workers dinamicamente (conectar/desconectar en cualquier momento)
     8. **Cleanup**: ps.stop() cierra conexiones y libera recursos
     9. **Salida**: Imprime resumen de entrenamiento (steps totales, loss final, acc final)
 
     Callbacks internos:
 
     - on_connected(): Incrementa contador de workers, registra en terminal
-    - on_disconnected(): Registra desconexión en terminal
-    - on_step(): Muestreo cada 50 steps, cálculo de throughput, chequeo de max_steps
+    - on_disconnected(): Registra desconexion en terminal
+    - on_step(): Muestreo cada 50 steps, calculo de throughput, chequeo de max_steps
     - on_report(): Resporte visual cada --steps-per-report steps
 
-    Returns:
-        None. El proceso termina al completar max_steps o con KeyboardInterrupt.
+    :returns: None. El proceso termina al completar max_steps o con KeyboardInterrupt.
+    :rtype: None
 
-    Raises:
-        KeyboardInterrupt: Si el usuario presiona Ctrl+C, detiene el entrenamiento
-                      gracefully y ejecuta cleanup.
-        RuntimeError: Si el ParameterServer encuentra un error irrecuperable.
+    :raises KeyboardInterrupt: Si el usuario presiona Ctrl+C, detiene el entrenamiento
+        gracefully y ejecuta cleanup.
+    :raises RuntimeError: Si el ParameterServer encuentra un error irrecuperable.
 
-    Note:
-        El número de workers es dinámico. Los workers se conectan y desconectan
-        libremente mientras el PS está ejecutándose.
+    .. note::
+        El numero de workers es dinamico. Los workers se conectan y desconectan
+        libremente mientras el PS esta ejecutandose.
 
-    Example:
-        # Ejecución básica con workers dinámicos
+    .. rubric:: Example
+
+    .. code-block:: bash
+
+        # Ejecucion basica con workers dinamicos
         python ps_imagenet.py --max-steps 50000
         # En otras terminales:
         python worker_imagenet.py &
         python worker_imagenet.py --device cuda:0 &
 
-        # Configuración personalizada
+        # Configuracion personalizada
         python ps_imagenet.py --lr 0.001 \\
             --staleness-lambda 0.05 \\
             --max-steps 100000 \\

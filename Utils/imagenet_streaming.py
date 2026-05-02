@@ -274,23 +274,23 @@ class ImageNetStream:
     def _open_dataset(self):
         """Abre y divide el dataset de entrenamiento desde HuggingFace Hub con lazy loading.
 
-        Carga dataset con streaming=True (sin caché local), aplica división por Worker
+        Carga dataset con streaming=True (sin cache local), aplica division por Worker
         (cada Worker obtiene muestras contiguas), y buffer de shuffle opcional para
-        aleatorización dentro de la división.
+        aleatorizacion dentro de la division.
 
-        División de Workers:
-            Con num_workers=4, worker_rank=2:
-                - Cada worker obtiene 1/4 del dataset completo, sin solapamiento
-                - Muestras asignadas por algoritmo de sharding contiguo de HF
-                - Buffers de shuffle independientes por worker (si shuffle_buffer > 0)
+        Division de Workers:
 
-        Returns:
-            datasets.IterableDataset: Iterador de dataset streaming,
-                                     dividido y aleatorizado.
+        Con num_workers=4, worker_rank=2:
 
-        Raises:
-            EnvironmentError: Si dataset requiere autenticación y falta el token.
-            ConnectionError: Si no es posible conectar con HuggingFace Hub.
+        - Cada worker obtiene 1/4 del dataset completo, sin solapamiento
+        - Muestras asignadas por algoritmo de sharding contiguo de HF
+        - Buffers de shuffle independientes por worker (si shuffle_buffer > 0)
+
+        :returns: Iterador de dataset streaming, dividido y aleatorizado.
+        :rtype: datasets.IterableDataset
+
+        :raises EnvironmentError: Si dataset requiere autenticacion y falta el token.
+        :raises ConnectionError: Si no es posible conectar con HuggingFace Hub.
         """
         # Importa librería de HuggingFace para acceder a datasets remotos
         import os
@@ -349,26 +349,27 @@ class ImageNetStream:
         return img if img.mode == "RGB" else img.convert("RGB")
 
     def _generate(self) -> Generator[Tuple[np.ndarray, np.ndarray], None, None]:
-        """
-        Generador infinito de batches de entrenamiento con reinicio automático.
+        """Generador infinito de batches de entrenamiento con reinicio automatico.
 
-        Implementa iteración infinita: abre dataset perezosamente, agrupa muestras,
-        maneja excepciones con reconexiones automáticas, reinicia automáticamente
-        cuando se agota. Actualiza estadísticas _batches y _samples.
-        Omite muestras con errores de decodificación.
+        Implementa iteracion infinita: abre dataset perezosamente, agrupa muestras,
+        maneja excepciones con reconexiones automaticas, reinicia automaticamente
+        cuando se agota. Actualiza estadisticas _batches y _samples.
+        Omite muestras con errores de decodificacion.
 
-        Loop del generador (con límite de reintentos = 5):
-          1. Abre dataset (perezoso, reutiliza si ya está abierto)
-          2. Itera muestras: extrae imagen/label, transforma, acumula
-          3. Cuando buffer alcanza batch_size: yielda batch, actualiza counters
-          4. Al agotarse dataset: limpia _dataset, reinicia (iteración infinita)
-          5. En excepción: espera 5s, reintentos limitados (máx 5 intentos)
+        Loop del generador (con limite de reintentos = 5):
 
-        :returns: Generador con stream infinito de batches (imágenes, labels)
+        1. Abre dataset (perezoso, reutiliza si ya esta abierto)
+        2. Itera muestras: extrae imagen/label, transforma, acumula
+        3. Cuando buffer alcanza batch_size: yielda batch, actualiza counters
+        4. Al agotarse dataset: limpia _dataset, reinicia (iteracion infinita)
+        5. En excepcion: espera 5s, reintentos limitados (max 5 intentos)
+
+        :yields: Tupla (imagenes, labels) donde imagenes tiene forma
+            (batch_size, C, H, W) y labels tiene forma (batch_size,).
         :rtype: Generator[Tuple[np.ndarray, np.ndarray], None, None]
 
-        :raises RuntimeError: Si se alcanzan 5 fallos de conexión consecutivos
-        :raises Exception: Propaga si _open_dataset() falla después de reintentos
+        :raises RuntimeError: Si se alcanzan 5 fallos de conexion consecutivos.
+        :raises Exception: Si _open_dataset() falla despues de reintentos.
         """
         buf_X: list = []
         buf_Y: list = []
@@ -511,6 +512,20 @@ class PrefetchBuffer:
     """
 
     def __init__(self, source: ImageNetStream, buffer_size: int = 4) -> None:
+        """Inicializa el buffer de prefetch con un stream de datos origen.
+
+        Crea una cola thread-safe de tamano maximo buffer_size y prepara
+        el hilo de prefetch que se iniciara con start().
+
+        :param source: Stream de datos ImageNetStream para hacer prefetch.
+        :type source: ImageNetStream
+
+        :param buffer_size: Numero maximo de batches en cola (default: 4).
+        :type buffer_size: int
+
+        :returns: None
+        :rtype: None
+        """
         self._source = source
         self._q: queue.Queue = queue.Queue(maxsize=buffer_size)
         self._stop = threading.Event()

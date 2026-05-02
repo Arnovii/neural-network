@@ -50,14 +50,17 @@ from Utils.constants import (
 def get_default_device() -> str:
     """Detecta dispositivo disponible con prioridad: CUDA > MPS > CPU.
 
-    Selecciona automáticamente el mejor dispositivo PyTorch disponible para cómputo.
-    Esto asegura que workers puedan ejecutarse en hardware heterogéneo sin configuración.
+    Selecciona automaticamente el mejor dispositivo PyTorch disponible para computo.
+    Esto asegura que workers puedan ejecutarse en hardware heterogeneo sin configuracion.
 
-    Returns:
-        str: Identificador del dispositivo ('cuda' para GPU NVIDIA,
-            'mps' para Apple Metal, 'cpu' como fallback).
+    :returns: Identificador del dispositivo ('cuda' para GPU NVIDIA,
+        'mps' para Apple Metal, 'cpu' como fallback).
+    :rtype: str
 
-    Example:
+    .. rubric:: Example
+
+    .. code-block:: python
+
         >>> device = get_default_device()
         >>> device in ('cuda', 'mps', 'cpu')
         True
@@ -70,31 +73,33 @@ def get_default_device() -> str:
 
 
 def main() -> None:
-    """Punto de entrada para el proceso worker asincrónico.
+    """Punto de entrada para el proceso worker asincronico.
 
-    Analiza argumentos de línea de comandos, muestra configuración, e inicializa
+    Analiza argumentos de linea de comandos, muestra configuracion, e inicializa
     una instancia WorkerNode para conectar con Parameter Server e iniciar
     entrenamiento distribuido de ImageNet-1k.
 
-    Returns:
-        None. El worker termina al recibir mensaje STOP del PS o por error.
+    :returns: None. El worker termina al recibir mensaje STOP del PS o por error.
+    :rtype: None
 
-    Raises:
-        ConnectionError: Si no puede conectar al Parameter Server.
-        RuntimeError: Si hay inconsistencias en el protocolo de comunicación.
+    :raises ConnectionError: Si no puede conectar al Parameter Server.
+    :raises RuntimeError: Si hay inconsistencias en el protocolo de comunicacion.
 
-    Note:
+    .. note::
         El rank, num_workers, dataset_name, batch_size, image_size, seed
         y hf_token se reciben del PS mediante mensaje CONFIG.
 
-    Example:
+    .. rubric:: Example
+
+    .. code-block:: bash
+
         # Worker conectando a PS local
         python worker_imagenet.py --server-host 127.0.0.1
 
-        # Worker con GPU específica
+        # Worker con GPU especifica
         python worker_imagenet.py --device cuda:0
 
-        # Worker en máquina remota
+        # Worker en maquina remota
         python worker_imagenet.py --server-host 192.168.1.100 \\
             --server-port 9999
     """

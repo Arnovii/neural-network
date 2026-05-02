@@ -810,39 +810,68 @@ class PSApp:
         self._srv_lbl.configure(bg=color)
 
     def _cmd_listen(self) -> None:
-        """
-        Carga CNN+MLP en hilo background e inicia servidor TCP.
+        """Carga CNN+MLP en hilo background e inicia servidor TCP.
 
         Proceso:
-        1. Lee y valida todos los parámetros de GUI (tipos: int, float, str)
+
+        1. Lee y valida todos los parametros de GUI (tipos: int, float, str)
         2. Cambia estado a LOADING ('Cargando...')
         3. Lanza hilo daemon con _init():
            - Instancia CNN desde arquitectura seleccionada (resnet18/simple)
            - Instancia MLP con hidden1/hidden2 seleccionados y feature_dim del CNN
-           - Instancia ParameterServer con parámetros Async-SGD (lr, lr_cnn, λ, windows)
+           - Instancia ParameterServer con parametros Async-SGD (lr, lr_cnn, lambda, windows)
            - Registra callbacks para eventos (step, report, worker_connected, worker_disconnected)
            - Llama ps.set_cnn(), ps.set_mlp(), ps.listen() para iniciar escucha TCP
-        4. Envía evento ps_ready a la cola si éxito, o init_error si falla
+        4. Envia evento ps_ready a la cola si exito, o init_error si falla
         5. Loop principal (_poll) recibe eventos y actualiza GUI en tiempo real
 
-        GUI no se congela durante descarga de ResNet-18 (~50MB) gracias a threading.
+        La GUI no se congela durante descarga de ResNet-18 (~50MB) gracias a threading.
 
-        Parámetros parseados:
-        - host: dirección IP (default 0.0.0.0)
-        - port: puerto TCP (default 9999)
-        - lr, lr_cnn: learning rates (float)
-        - lam: staleness lambda 0-1 (float)
-        - rep, win: steps per report, metrics window (int)
-        - h1, h2: hidden layer sizes (int)
-        - arch: CNN architecture "resnet18" o "simple" (str)
-        - bs, img_sz: batch size, image size (int)
-        - seed: reproducibility seed o None (int/None)
-        - hf_token: HuggingFace token o None (str/None)
+        :param host: Direccion IP (default 0.0.0.0).
+        :type host: str
+        :param port: Puerto TCP (default 9999).
+        :type port: int
+
+        :param lr: Learning rate MLP.
+        :type lr: float
+
+        :param lr_cnn: Learning rate CNN.
+        :type lr_cnn: float
+
+        :param lam: Staleness lambda 0-1.
+        :type lam: float
+
+        :param rep: Steps per report.
+        :type rep: int
+
+        :param win: Metrics window size.
+        :type win: int
+
+        :param h1: Hidden layer 1 size.
+        :type h1: int
+
+        :param h2: Hidden layer 2 size.
+        :type h2: int
+
+        :param arch: CNN architecture 'resnet18' o 'simple'.
+        :type arch: str
+
+        :param bs: Batch size.
+        :type bs: int
+
+        :param img_sz: Image size.
+        :type img_sz: int
+
+        :param seed: Reproducibility seed o None.
+        :type seed: int | None
+
+        :param hf_token: HuggingFace token o None.
+        :type hf_token: str | None
 
         :returns: None
         :rtype: None
 
-        :raises messagebox.showerror: Si parámetros inválidos (incompatible con tipos esperados)
+        :raises ValueError: Si parametros invalidos (incompatible con tipos esperados).
         """
         try:
             host = self._v_host.get().strip()
@@ -918,6 +947,14 @@ class PSApp:
         )
 
         def _init():
+            """Inicializa CNN, MLP y ParameterServer en hilo background.
+
+            Carga los modelos, configura el servidor con callbacks y
+            envia el resultado (exitoso o error) a la cola de eventos.
+
+            :returns: None
+            :rtype: None
+            """
             try:
                 cnn = CNNExtractor(
                     arch=arch,
@@ -1115,7 +1152,15 @@ class PSApp:
         ps = self._ps  # captura local para el hilo
 
         def _eval():
-            q.put(("log", f"[PS] Evaluando ({n_bat} batches de validación)..."))
+            """Ejecuta evaluacion en validacion en hilo background.
+
+            Llama a ps.evaluate() y envia resultados o errores a la cola
+            de eventos para actualizacion de la GUI.
+
+            :returns: None
+            :rtype: None
+            """
+            q.put(("log", f"[PS] Evaluando ({n_bat} batches de validacion)..."))
             try:
                 acc, loss = ps.evaluate(
                     dataset_name=dataset, max_batches=n_bat, hf_token=hf_token
@@ -1425,14 +1470,16 @@ class PSApp:
         )
 
     def _update_clock(self) -> None:
-        """
-        Actualiza el Clock cada segundo continuamente desde que el PS está listo.
+        """Actualiza el reloj cada segundo continuamente desde que el PS esta listo.
 
-        Muestra el tiempo transcurrido basado en el último elapsed recibido del PS,
-        más el delta de tiempo desde la última actualización del reloj.
+        Muestra el tiempo transcurrido basado en el ultimo elapsed recibido del PS,
+        mas el delta de tiempo desde la ultima actualizacion del reloj.
         Se ejecuta cada 1 segundo via root.after(), en LISTENING y TRAINING.
 
         Formato: HH:MM:SS (horas:minutos:segundos)
+
+        :returns: None
+        :rtype: None
         """
         try:
             if not self._clock_running:
@@ -1691,6 +1738,15 @@ def main() -> None:
     app = PSApp(root)
 
     def on_close():
+        """Handler de cierre de ventana GUI con confirmacion de entrenamiento.
+
+        Si el estado es TRAINING, solicita confirmacion al usuario.
+        Detiene el ParameterServer si existe, destruye la ventana
+        y fuerza la terminacion del proceso.
+
+        :returns: None
+        :rtype: None
+        """
         if app._state == app._S_TRAINING:
             if not messagebox.askyesno("Salir", "¿Detener el entrenamiento y salir?"):
                 return

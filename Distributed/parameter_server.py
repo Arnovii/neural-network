@@ -135,6 +135,11 @@ class RunningMetrics:
     """
 
     def __init__(self, window: int = 200) -> None:
+        """Inicializa el acumulador de metricas con ventana deslizante.
+
+        :param window: Tamaño de la ventana deslizante (ultimos N valores).
+        :type window: int
+        """
         self._lock = threading.Lock()
 
         # Deque es una lista eficiente de tamaño finito
@@ -179,7 +184,12 @@ class RunningMetrics:
             return self._total
 
     def snapshot(self) -> Tuple[float, float, float, float]:
-        """Devuelve (avg_loss, avg_acc, std_loss, std_acc) de la ventana actual."""
+        """Calcula estadisticas de la ventana deslizante actual.
+
+        :returns: Tupla (avg_loss, avg_acc, std_loss, std_acc) de la ventana actual.
+            Si la ventana esta vacia, retorna (0.0, 0.0, 0.0, 0.0).
+        :rtype: Tuple[float, float, float, float]
+        """
         with self._lock:
             if not self._losses:
                 return 0.0, 0.0, 0.0, 0.0
@@ -233,63 +243,86 @@ class ParameterServer:
         """
         Inicializa el Parameter Server para entrenamiento Async-SGD distribuido.
 
-        Crea el servidor de parámetros que coordina múltiples Workers sin barrera
-        global. Los Workers entrenan de forma asíncrona, y el PS actualiza el modelo
-        global inmediatamente al recibir gradientes. Aplica corrección de staleness
-        usando factor α(s) = 1/(1+λ·s) para atenuar gradientes antiguos.
+        Crea el servidor de parametros que coordina multiple Workers sin barrera
+        global. Los Workers entrenan de forma asincrona, y el PS actualiza el modelo
+        global inmediatamente al recibir gradientes. Aplica correccion de staleness
+        usando factor alpha(s) = 1/(1+lambda*s) para atenuar gradientes antiguos.
 
-        :param host: IP donde escucha el servidor (ej: '0.0.0.0' o '127.0.0.1')
+        :param host: IP donde escucha el servidor (ej: '0.0.0.0' o '127.0.0.1').
         :type host: str
 
-        :param port: Puerto TCP para conexión de Workers (ej: 9999)
+        :param port: Puerto TCP para conexion de Workers (ej: 9999).
         :type port: int
 
-        :param learning_rate: Tasa de aprendizaje para SGD (defecto: 0.001)
+        :param learning_rate: Tasa de aprendizaje para SGD (defecto: 0.001).
         :type learning_rate: float
 
-        :param staleness_lambda: Factor de corrección staleness λ en [0,1] (defecto: 0.1).
-                                  λ=0 sin corrección, λ=1 fuerte corrección
+        :param learning_rate_cnn: Tasa de aprendizaje para la CNN en modo E2E (defecto: 0.001).
+        :type learning_rate_cnn: float
+
+        :param staleness_lambda: Factor de correccion staleness lambda en [0,1] (defecto: 0.1).
+            lambda=0 sin correccion, lambda=1 fuerte correccion.
         :type staleness_lambda: float
 
-        :param steps_per_report: Pasos para agregar y reportar métricas (defecto: 500)
+        :param steps_per_report: Pasos para agregar y reportar metricas (defecto: 500).
         :type steps_per_report: int
 
-        :param metrics_window: Tamaño ventana deslizante para promedios (defecto: 200)
+        :param metrics_window: Tamano ventana deslizante para promedios (defecto: 200).
         :type metrics_window: int
 
-        :param batch_size: Imágenes por batch en entrenamiento (defecto: 64).
-                          Se distribuye a todos los Workers via CONFIG
+        :param batch_size: Imagenes por batch en entrenamiento (defecto: 64).
+            Se distribuye a todos los Workers via CONFIG.
         :type batch_size: int
 
-        :param image_size: Tamaño de crop final post-descarga (defecto: 224).
-                          Se distribuye a todos los Workers via CONFIG
+        :param image_size: Tamano de crop final post-descarga (defecto: 224).
+            Se distribuye a todos los Workers via CONFIG.
         :type image_size: int
+
+        :param dataset_name: Nombre del dataset HuggingFace (defecto: 'ILSVRC/imagenet-1k').
+        :type dataset_name: str
 
         :param seed: Semilla RNG para reproducibilidad (None = aleatorio, enviado en CONFIG).
         :type seed: int | None
 
-        :param export_dir: Directorio base para exportar resultados (defecto: ./Exports)
+        :param hf_token: Token de HuggingFace para acceso al dataset.
+        :type hf_token: str | None
+
+        :param export_dir: Directorio base para exportar resultados (defecto: './Exports').
         :type export_dir: str
 
+        :param hidden1: Tamano de la primera capa oculta del MLP (defecto: 1024).
+        :type hidden1: int
+
+        :param hidden2: Tamano de la segunda capa oculta del MLP (defecto: 512).
+        :type hidden2: int
+
         :param on_step: Callback tras cada step de gradiente.
-                       Firma: Callable[[int, float, float, float], None]
-                       Args: (step, loss, acc, staleness_factor)
+            Firma: Callable[[int, float, float, float, float], None].
+            Args: (step, loss, acc, staleness_factor, elapsed).
         :type on_step: Callable | None
 
-        :param on_report: Callback tras agregación de métricas.
-                         Firma: Callable[[int, float, float], None]
-                         Args: (step, avg_loss, avg_acc)
+        :param on_report: Callback tras agregacion de metricas.
+            Firma: Callable[[int, float, float, float], None].
+            Args: (step, avg_loss, avg_acc, elapsed).
         :type on_report: Callable | None
 
         :param on_worker_connected: Callback cuando Worker conecta.
-                                   Firma: Callable[[int, str], None]
-                                   Args: (worker_id, address)
+            Firma: Callable[[int, str], None].
+            Args: (worker_id, address).
         :type on_worker_connected: Callable | None
 
         :param on_worker_disconnected: Callback cuando Worker desconecta.
-                                      Firma: Callable[[int], None]
-                                      Args: (worker_id,)
+            Firma: Callable[[int], None].
+            Args: (worker_id,).
         :type on_worker_disconnected: Callable | None
+
+        :param on_start_sent: Callback cuando se envia START a un Worker.
+            Firma: Callable[[int], None].
+            Args: (worker_id,).
+        :type on_start_sent: Callable | None
+
+        :returns: None
+        :rtype: None
         """
         self.host = host
         self.port = port
@@ -371,12 +404,20 @@ class ParameterServer:
 
     @property
     def nan_rejected_count(self) -> int:
-        """Retorna el número de actualizaciones rechazadas por NaN."""
+        """Cantidad de actualizaciones rechazadas por contener valores NaN.
+
+        :returns: Numero de actualizaciones rechazadas.
+        :rtype: int
+        """
         return self._nan_rejected
 
     @property
     def tcp_request_count(self) -> int:
-        """Retorna el número total de requests TCP recibidos."""
+        """Cantidad total de requests TCP recibidos por el servidor.
+
+        :returns: Numero total de requests TCP.
+        :rtype: int
+        """
         return self._total_requests
 
     # ================================================================
@@ -463,7 +504,17 @@ class ParameterServer:
     # ================================================================
 
     def listen(self) -> None:
-        """Abre el socket TCP y comienza a aceptar Workers en background."""
+        """Abre el socket TCP y comienza a aceptar Workers en background.
+
+        Crea un socket TCP, lo vincula al host y puerto configurados,
+        e inicia un hilo daemon (_accept_loop) para aceptar conexiones entrantes.
+        Tambien inicializa el ResultsExporter para registrar metricas.
+
+        :returns: None
+        :rtype: None
+
+        :raises RuntimeError: Si el servidor ya esta escuchando.
+        """
         if self._server_sock is not None:
             raise RuntimeError("El servidor ya está escuchando.")
         self._shutdown.clear()
@@ -522,7 +573,14 @@ class ParameterServer:
         _log.ps(f"Escuchando en {self.host}:{self.port}")
 
     def stop(self) -> None:
-        """Envía STOP a todos los Workers y cierra el servidor."""
+        """Envia STOP a todos los Workers y cierra el servidor.
+
+        Senala el shutdown, desconecta todos los workers activos,
+        cierra el socket listener y espera a que el hilo de aceptacion termine.
+
+        :returns: None
+        :rtype: None
+        """
         _log.ps("Deteniendo servidor...")
         self._shutdown.set()  # Bandera global de apagado
         with self._workers_lock:
@@ -593,6 +651,15 @@ class ParameterServer:
     # ================================================================
 
     def _accept_loop(self) -> None:
+        """Bucle de aceptacion de conexiones entrantes (hilo dedicado).
+
+        Acepta conexiones TCP entrantes en un bucle hasta que se
+        senale el shutdown. Cada conexion se delega a un hilo dedicado
+        que ejecuta _handle_new_connection.
+
+        :returns: None
+        :rtype: None
+        """
         while not self._shutdown.is_set():
             if not self._server_sock:
                 break
@@ -611,26 +678,29 @@ class ParameterServer:
             ).start()
 
     def _handle_new_connection(self, conn: socket.socket, addr: tuple) -> None:
-        """Handshake completo para un Worker nuevorecien conectado.
+        """Handshake completo para un Worker recien conectado.
 
         Secuencia:
-            1. Recibir READY
-            2. Enviar WORKER_ID
-            3. Enviar CONFIG (batch_size, image_size, dataset, seed, rank, etc.)
-            4. Enviar CNN_WEIGHTS (siempre, nunca opcional)
-            5. Esperar CNN_ACK con verificación de arquitectura
-            6. Enviar START
-            7. Iniciar loop _serve_worker para atender mensajes
 
-        Args:
-            conn: Socket de conexión entrante desde el Worker.
-            addr: Tupla (IP, puerto) del cliente.
+        1. Recibir READY
+        2. Enviar WORKER_ID
+        3. Enviar CONFIG (batch_size, image_size, dataset, seed, rank, etc.)
+        4. Enviar CNN_WEIGHTS (siempre, nunca opcional)
+        5. Esperar CNN_ACK con verificacion de arquitectura
+        6. Enviar START
+        7. Iniciar loop _serve_worker para atender mensajes
 
-        Returns:
-            None. El método gestiona el handshake y lanza el thread de servicio.
+        :param conn: Socket de conexion entrante desde el Worker.
+        :type conn: socket.socket
 
-        Note:
-            Timeout implícito: si CNN+MLP no están listo en 120s, el Worker
+        :param addr: Tupla (IP, puerto) del cliente.
+        :type addr: tuple
+
+        :returns: None. El metodo gestiona el handshake y lanza el thread de servicio.
+        :rtype: None
+
+        .. note::
+            Timeout implicito: si CNN+MLP no estan listo en 120s, el Worker
             puede timeout waiting for weights.
         """
         # ----------------- 1. READY -----------------
@@ -995,6 +1065,29 @@ class ParameterServer:
             )
 
     def _record_history(self, step, loss, acc, n_workers, elapsed) -> None:
+        """Registra un punto de metrica en el historial completo de entrenamiento.
+
+        Almacena step, loss, accuracy, numero de workers y timestamp
+        en listas thread-safe para posterior exportacion.
+
+        :param step: Numero de paso actual.
+        :type step: int
+
+        :param loss: Valor de loss del paso.
+        :type loss: float
+
+        :param acc: Valor de accuracy del paso.
+        :type acc: float
+
+        :param n_workers: Numero de workers activos.
+        :type n_workers: int
+
+        :param elapsed: Tiempo transcurrido desde inicio.
+        :type elapsed: float
+
+        :returns: None
+        :rtype: None
+        """
         with self._history_lock:
             self._history["steps"].append(step)
             self._history["losses"].append(loss)

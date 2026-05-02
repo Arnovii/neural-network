@@ -145,6 +145,33 @@ class WorkerNode:
         prefetch_batches: int = PREFETCH_DEFAULT,
         accum_steps: int = WORKER_ACCUM_STEPS_DEFAULT,
     ) -> None:
+        """Inicializa un nodo Worker con configuracion de red y datos.
+
+        Los parametros dataset_name, batch_size, image_size, seed, hf_token,
+        worker_rank y num_workers se reciben del PS mediante mensaje CONFIG
+        durante la conexion inicial.
+
+        :param server_host: Direccion IP o nombre de host del Parameter Server.
+        :type server_host: str
+
+        :param server_port: Puerto TCP en el que escucha el Parameter Server.
+        :type server_port: int
+
+        :param device: Dispositivo PyTorch donde ejecutar ('cpu', 'cuda', 'cuda:0', 'mps').
+        :type device: str
+
+        :param shuffle_buffer: Numero de imagenes en el buffer de shuffle local.
+        :type shuffle_buffer: int
+
+        :param prefetch_batches: Numero de batches a pre-cargar en background.
+        :type prefetch_batches: int
+
+        :param accum_steps: Numero de batches a acumular antes de enviar UPDATES al PS.
+        :type accum_steps: int
+
+        :returns: None
+        :rtype: None
+        """
         # Configuración de red
         self.server_host = server_host
         self.server_port = server_port
@@ -204,17 +231,16 @@ class WorkerNode:
 
         Ejecuta la secuencia completa de inicio:
 
-        1. Conecta al Parameter Server y recibe configuración.
+        1. Conecta al Parameter Server y recibe configuracion.
         2. Inicializa el pipeline de streaming de ImageNet-1k.
         3. Realiza handshake con el PS para recibir estados iniciales.
-        4. Ejecuta el loop infinito de entrenamiento asincrónico.
+        4. Ejecuta el loop infinito de entrenamiento asincronico.
 
-        Returns:
-            None. El worker termina al recibir STOP del PS o por excepción.
+        :returns: None. El worker termina al recibir STOP del PS o por excepcion.
+        :rtype: None
 
-        Raises:
-            ConnectionError: Si falla conexión TCP con Parameter Server.
-            RuntimeError: Si hay inconsistencias en mensajes o estados.
+        :raises ConnectionError: Si falla conexion TCP con Parameter Server.
+        :raises RuntimeError: Si hay inconsistencias en mensajes o estados.
 
         Note:
             Garantiza liberación de recursos (socket, stream) en caso de excepción.
@@ -950,7 +976,14 @@ class WorkerNode:
     # ================================================================
 
     def _serialize_cnn(self) -> Dict[str, np.ndarray]:
-        """State_dict completo de la CNN (solo llamado en modo E2E)."""
+        """Serializa el state_dict completo de la CNN a arrays NumPy.
+
+        Solo llamado en modo E2E (simple CNN). Extrae todos los parametros
+        y buffers del modelo CNN y los convierte a NumPy para envio por red.
+
+        :returns: Diccionario mapeando nombres de parametros a arrays NumPy.
+        :rtype: Dict[str, np.ndarray]
+        """
         assert self._cnn is not None
         base = getattr(self._cnn._model, "model", self._cnn._model)
         return {
@@ -959,7 +992,14 @@ class WorkerNode:
         }
 
     def _serialize_mlp(self) -> Dict[str, np.ndarray]:
-        """State_dict completo del MLP incluyendo buffers de BN."""
+        """Serializa el state_dict completo del MLP a arrays NumPy.
+
+        Incluye tanto parametros como buffers de BatchNorm
+        (running_mean, running_var, num_batches_tracked).
+
+        :returns: Diccionario mapeando nombres de parametros a arrays NumPy.
+        :rtype: Dict[str, np.ndarray]
+        """
         assert self._mlp is not None
         return {
             name: tensor.detach().cpu().numpy().copy()

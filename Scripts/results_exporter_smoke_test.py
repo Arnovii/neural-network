@@ -16,6 +16,20 @@ from Utils.results_exporter import ResultsExporter  # noqa: E402
 
 
 def simulate_step(step: int, total_steps: int) -> dict[str, Any]:
+    """Simula un paso de entrenamiento con metricas realistas.
+
+    Genera valores de loss, accuracy, staleness y alpha que simulan
+    el comportamiento de un entrenamiento distribuido con convergencia.
+
+    :param step: Numero de paso actual (1-indexed).
+    :type step: int
+
+    :param total_steps: Numero total de pasos simulados.
+    :type total_steps: int
+
+    :returns: Diccionario con metricas simuladas del paso.
+    :rtype: dict[str, Any]
+    """
     progress = step / max(total_steps, 1)
     wave = math.sin(step / 37.0) * 0.08 + math.cos(step / 91.0) * 0.04
     trend = max(0.0, 2.7 - 1.9 * progress)
@@ -41,6 +55,24 @@ def simulate_step(step: int, total_steps: int) -> dict[str, Any]:
 
 
 def run_smoke_test(total_steps: int, export_dir: Path, seed: int) -> Path:
+    """Ejecuta un smoke test completo del ResultsExporter.
+
+    Simula ``total_steps`` de entrenamiento, genera todas las graficas
+    y verifica que los archivos de exportacion se creen correctamente.
+
+    :param total_steps: Numero de pasos simulados (minimo 2000).
+    :type total_steps: int
+
+    :param export_dir: Directorio base para exportar resultados.
+    :type export_dir: Path
+
+    :param seed: Semilla aleatoria para reproducibilidad.
+    :type seed: int
+
+    :returns: Path al directorio de sesion creado.
+    :rtype: Path
+    :raises RuntimeError: Si faltan archivos de exportacion o las metricas son incorrectas.
+    """
     random.seed(seed)
 
     exporter = ResultsExporter(
@@ -130,6 +162,14 @@ def run_smoke_test(total_steps: int, export_dir: Path, seed: int) -> Path:
 
 
 def main() -> int:
+    """Punto de entrada CLI para ejecutar el smoke test.
+
+    Parsea argumentos de linea de comandos y delega en
+    ``run_smoke_test`` con los parametros especificados.
+
+    :returns: Codigo de salida (0 para exito).
+    :rtype: int
+    """
     parser = argparse.ArgumentParser(
         description="Run a full-history smoke test for Utils/results_exporter.py."
     )

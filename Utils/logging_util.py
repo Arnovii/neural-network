@@ -52,19 +52,28 @@ class FormattedLogger:
         self._log_handlers: List[Callable[[str], None]] = []
 
     def add_log_handler(self, handler: Callable[[str], None]) -> None:
-        """
-        Registra un handler para recibir copias de todos los logs.
+        """Registra un handler para recibir copias de todos los logs.
 
-        El handler se llamará después de cada log() con el texto completo formateado.
+        El handler se llamara despues de cada log() con el texto completo formateado.
 
-        :param handler: Función Callable[[str], None] que recibe el texto de log
+        :param handler: Funcion Callable[[str], None] que recibe el texto de log.
         :type handler: Callable[[str], None]
+
+        :returns: None
+        :rtype: None
         """
         if handler not in self._log_handlers:
             self._log_handlers.append(handler)
 
     def remove_log_handler(self, handler: Callable[[str], None]) -> None:
-        """Elimina un handler de log registrado."""
+        """Elimina un handler de log registrado previamente.
+
+        :param handler: Funcion handler a eliminar, debe haber sido registrada antes.
+        :type handler: Callable[[str], None]
+
+        :returns: None
+        :rtype: None
+        """
         if handler in self._log_handlers:
             self._log_handlers.remove(handler)
 
@@ -241,16 +250,19 @@ class FormattedLogger:
 
 
 def get_logger(use_colors: bool = False) -> FormattedLogger:
-    """Función de fábrica para instanciar un FormattedLogger.
+    """Funcion de fabrica para instanciar un FormattedLogger.
 
-    Args:
-        use_colors: Si se deben habilitar códigos de color ANSI.
-                    Default: False (útil para logs a archivo).
+    :param use_colors: Si se deben habilitar codigos de color ANSI.
+        Default: False (util para logs a archivo).
+    :type use_colors: bool
 
-    Returns:
-        FormattedLogger: Nueva instancia configurada.
+    :returns: Nueva instancia de FormattedLogger configurada.
+    :rtype: FormattedLogger
 
-    Example:
+    .. rubric:: Example
+
+    .. code-block:: python
+
         >>> logger = get_logger(use_colors=True)
         >>> logger.ps("Servidor iniciado")  # Con colores
         [PS] Servidor iniciado

@@ -69,8 +69,11 @@ class MLPPyTorch(nn.Module):
                        Distribuida por PS a todos los Workers via CONFIG.
         :type hidden2: int
 
-        :param n_classes: Número de clases (defecto: 1000 para ImageNet)
+        :param n_classes: Numero de clases (defecto: 1000 para ImageNet).
         :type n_classes: int
+
+        :returns: None
+        :rtype: None
         """
         super().__init__()
         self.fc1 = nn.Linear(
@@ -85,12 +88,15 @@ class MLPPyTorch(nn.Module):
         self._init_weights()
 
     def _init_weights(self) -> None:
-        """
-        Xavier uniform initialization para capas, compatible con BatchNorm1d.
+        """Inicializa los pesos del MLP con Xavier uniform.
 
-        Xavier produce activaciones con varianza más predecible (~1) compatible
-        con BatchNorm. En contraste con Kaiming, evita normas grandes que producen
-        updates pequeños en Async-SGD distribuido.
+        Xavier uniform initialization para capas lineales, compatible
+        con BatchNorm1d. Produce activaciones con varianza predecible (~1).
+        En contraste con Kaiming, evita normas grandes que producen
+        updates pequenos en Async-SGD distribuido.
+
+        :returns: None
+        :rtype: None
         """
         # Itera sobre las 3 capas lineales del modelo
         for layer in (self.fc1, self.fc2, self.fc3):

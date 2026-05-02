@@ -68,26 +68,30 @@ class MsgType(str, Enum):
 
 
 def send_message(sock: socket.socket, msg_type: MsgType, payload: Any) -> None:
-    """Serializa y envía un mensaje completo por TCP.
+    """Serializa y envia un mensaje completo por TCP.
 
     El formato del mensaje es:
-        - 4 bytes (big-endian): longitud del cuerpo
-        - pickle(cuerpo): tipo + payload
 
-    Args:
-        sock: Socket TCP conectado (debe estar activo).
-        msg_type: Tipo de mensaje del enum MsgType.
-                 Ejemplos: MsgType.PARAMS, MsgType.UPDATES, MsgType.STOP.
-        payload: Contenido del mensaje. Típicamente dict con datos numéricos.
+    - 4 bytes (big-endian): longitud del cuerpo
+    - pickle(cuerpo): tipo + payload
 
-    Returns:
-        None. El mensaje se envía completamente por el socket.
+    :param sock: Socket TCP conectado (debe estar activo).
+    :type sock: socket.socket
 
-    Raises:
-        ConnectionError: Si el socket se cierra antes de enviar todo el mensaje.
+    :param msg_type: Tipo de mensaje del enum MsgType.
+        Ejemplos: MsgType.PARAMS, MsgType.UPDATES, MsgType.STOP.
+    :type msg_type: MsgType
 
-    Note:
-        Usa pickle.HIGHEST_PROTOCOL para máxima eficiencia de serialización.
+    :param payload: Contenido del mensaje. Tipicamente dict con datos numericos.
+    :type payload: Any
+
+    :returns: None. El mensaje se envia completamente por el socket.
+    :rtype: None
+
+    :raises ConnectionError: Si el socket se cierra antes de enviar todo el mensaje.
+
+    .. note::
+        Usa pickle.HIGHEST_PROTOCOL para maxima eficiencia de serializacion.
     """
     body = pickle.dumps(
         {"type": msg_type, "payload": payload},
@@ -105,23 +109,23 @@ def send_message(sock: socket.socket, msg_type: MsgType, payload: Any) -> None:
 def receive_message(sock: socket.socket) -> Dict[str, Any]:
     """Lee exactamente un mensaje completo desde socket TCP (bloqueante).
 
-    Decodificación:
-        1. Lee 4 bytes big-endian para obtener longitud
-        2. Lee exactamente 'longitud' bytes con _recv_exact (maneja recv parciales)
-        3. Deserializa con pickle.loads
+    Decodificacion:
 
-    Args:
-        sock: Socket TCP conectado en modo bloqueante.
+    1. Lee 4 bytes big-endian para obtener longitud
+    2. Lee exactamente 'longitud' bytes con _recv_exact (maneja recv parciales)
+    3. Deserializa con pickle.loads
 
-    Returns:
-        Dict: Diccionario con campos "type" (MsgType) y "payload" (datos).
+    :param sock: Socket TCP conectado en modo bloqueante.
+    :type sock: socket.socket
 
-    Raises:
-        ConnectionError: Si el socket se cierra antes de recibir mensaje completo.
-        pickle.UnpicklingError: Si los datos no son un pickle válido.
+    :returns: Diccionario con campos "type" (MsgType) y "payload" (datos).
+    :rtype: Dict[str, Any]
 
-    Note:
-        Thread-safe para múltiples sockets (cada Worker tiene el suyo).
+    :raises ConnectionError: Si el socket se cierra antes de recibir mensaje completo.
+    :raises pickle.UnpicklingError: Si los datos no son un pickle valido.
+
+    .. note::
+        Thread-safe para multiple sockets (cada Worker tiene el suyo).
     """
     length = struct.unpack(">I", _recv_exact(sock, 4))[0]
     return pickle.loads(_recv_exact(sock, length))  # noqa: S301 (trusted internal protocol)
@@ -130,18 +134,19 @@ def receive_message(sock: socket.socket) -> Dict[str, Any]:
 def _recv_exact(sock: socket.socket, n: int) -> bytes:
     """Recibe exactamente n bytes del socket (maneja recv() parciales).
 
-    Útil porque socket.recv() puede devolver menos bytes que n,
-    especialmente en redes lentas. Esta función acumula hasta tener n bytes.
+    Util porque socket.recv() puede devolver menos bytes que n,
+    especialmente en redes lentas. Esta funcion acumula hasta tener n bytes.
 
-    Args:
-        sock: Socket TCP conectado.
-        n: Número exacto de bytes a recibir.
+    :param sock: Socket TCP conectado.
+    :type sock: socket.socket
 
-    Returns:
-        bytes: Exactamente n bytes recibidos del socket.
+    :param n: Numero exacto de bytes a recibir.
+    :type n: int
 
-    Raises:
-        ConnectionError: Si el socket se cierra antes de recibir n bytes.
+    :returns: Exactamente n bytes recibidos del socket.
+    :rtype: bytes
+
+    :raises ConnectionError: Si el socket se cierra antes de recibir n bytes.
     """
     buf = b""
     while len(buf) < n:  # Sigue leyendo hasta tener n bytes

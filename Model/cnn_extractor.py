@@ -155,34 +155,35 @@ class _BasicBlock(nn.Module):
         nn.init.zeros_(self.bn2.weight)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Pase forward a través del bloque residual.
+        """Pase forward a traves del bloque residual.
 
-        Aplica: Conv→BN→ReLU→Conv→BN + shortcut→ReLU.
+        Aplica: Conv->BN->ReLU->Conv->BN + shortcut->ReLU.
 
         :param x:
             Tensor de entrada de forma (B, in_ch, H, W) donde:
-            - B es tamaño de batch
-            - in_ch es número de canales de entrada (debe coincidir con __init__)
-            - H, W son altura y ancho espaciales
-        :type x:
-            torch.Tensor
+            - B es tamano de batch
+            - in_ch es numero de canales de entrada (debe coincidir con __init__)
+            - H, W son altura y ancho espaciales.
+        :type x: torch.Tensor
 
         :returns:
             Tensor de salida de forma (B, out_ch, H', W') donde:
             - H' = H si stride=1, H' = H//2 si stride=2
             - W' = W si stride=1, W' = W//2 si stride=2
-            - out_ch es número de canales de salida (del __init__)
-        :rtype:
-            torch.Tensor
+            - out_ch es numero de canales de salida (del __init__).
+        :rtype: torch.Tensor
 
-        :example:
-            .. code-block:: python
+        :raises RuntimeError: Si las dimensiones de entrada no son compatibles
+            con las capas del bloque.
 
-                block = _BasicBlock(64, 64, stride=1)
-                x = torch.randn(4, 64, 56, 56)
-                y = block(x)
-                assert y.shape == (4, 64, 56, 56)
+        .. rubric:: Example
+
+        .. code-block:: python
+
+            block = _BasicBlock(64, 64, stride=1)
+            x = torch.randn(4, 64, 56, 56)
+            y = block(x)
+            assert y.shape == (4, 64, 56, 56)
         """
         out = F.relu(self.bn1(self.conv1(x)), inplace=True)
         out = self.bn2(self.conv2(out))
@@ -462,74 +463,54 @@ class _ResNet18FromScratch(nn.Module):
 
 
 class CNNExtractor:
-    """
-    Envuelve una CNN PyTorch y expone interfaz para el sistema distribuido Async-SGD.
+    """Envuelve una CNN PyTorch y expone interfaz para el sistema distribuido Async-SGD.
 
-    Esta clase encapsula TWO ARQUITECTURAS distintas con COMPORTAMIENTO FIJO:
+    Esta clase encapsula dos arquitecturas distintas con comportamiento fijo:
 
     **ResNet-18 con pesos preentrenados (arch='resnet18')**:
-        - Carga IMAGENET1K_V1 weights automáticamente
-        - requires_grad=False: CNN CONGELADA, NO recibe gradientes
-        - Funciona como extractor de características fijo
-        - Ideal para: MLP-only training donde CNN es pretrained feature extractor
+
+    - Carga IMAGENET1K_V1 weights automaticamente
+    - requires_grad=False: CNN CONGELADA, NO recibe gradientes
+    - Funciona como extractor de caracteristicas fijo
+    - Ideal para: MLP-only training donde CNN es pretrained feature extractor
 
     **SIMPLE CNN (arch='simple')**:
-        - Sin pesos preentrenados: inicialización desde cero
-        - requires_grad=True: CNN ENTRENABLE, participa en backprop
-        - Modo E2E: CNN + MLP se entrenan juntas
-        - Arquitectura canónica ResNet-18 (sin Dropout/proyección extra)
-        - Ideal para: Async-SGD distribuido sin dependencia de pesos preentrenados
+
+    - Sin pesos preentrenados: inicializacion desde cero
+    - requires_grad=True: CNN ENTRENABLE, participa en backprop
+    - Modo E2E: CNN + MLP se entrenan juntas
+    - Arquitectura canonica ResNet-18 (sin Dropout/proyeccion extra)
+    - Ideal para: Async-SGD distribuido sin dependencia de pesos preentrenados
 
     **Comportamiento compartido**:
-        - Ambas producen 512-dim feature vectors (FEATURE_DIM)
-        - Se construyen en eval() para inferencia determinista de BatchNorm
-        - Soportan serialización/deserialización para comunicación TCP distribuida
-        - requires_grad NO cambia después de seleccionar arquitectura
 
-    :param arch:
-        Arquitectura a seleccionar. Opciones: 'resnet18' (preentrenada),
-        'simple' (SIMPLE CNN o ResNet-18 from scratch). Default: 'resnet18'.
-    :type arch:
-        str
+    - Ambas producen 512-dim feature vectors (FEATURE_DIM)
+    - Se construyen en eval() para inferencia determinista de BatchNorm
+    - Soportan serializacion/deserializacion para comunicacion TCP distribuida
+    - requires_grad NO cambia despues de seleccionar arquitectura
 
-    :param device:
-        Dispositivo PyTorch donde colocar la CNN. Opciones: 'cpu', 'cuda',
-        'cuda:0', 'mps'. Default: 'cpu'. Se auto-detecta si se usa CUDA/MPS.
-    :type device:
-        str
+    .. rubric:: Example
 
-    :param seed:
-        Semilla RNG para reproducibilidad. Solo afecta a arch='simple'.
-        Default: None (sin semilla, aleatorio).
-    :type seed:
-        int | None
+    Crear extractor ResNet-18 preentrenado (MLP-only):
 
-    :raises ValueError:
-        Si arch no está en ('simple', 'resnet18').
-    :raises RuntimeError:
-        Si device no es válido o no está disponible.
+    .. code-block:: python
 
-    :example:
-        Crear extractor ResNet-18 preentrenado (MLP-only):
+        extractor = CNNExtractor(arch='resnet18', device='cuda')
+        x = torch.randn(8, 3, 224, 224)
+        features = extractor._model(x)  # (8, 512)
 
-        .. code-block:: python
+    Crear extractor SIMPLE CNN (E2E):
 
-            extractor = CNNExtractor(arch='resnet18', device='cuda')
-            x = torch.randn(8, 3, 224, 224)
-            features = extractor._model(x)  # (8, 512)
+    .. code-block:: python
 
-        Crear extractor SIMPLE CNN (E2E):
+        extractor = CNNExtractor(arch='simple', device='cuda', seed=42)
+        x = torch.randn(8, 3, 224, 224)
+        features = extractor._model(x)  # (8, 512), entrenable
 
-        .. code-block:: python
-
-            extractor = CNNExtractor(arch='simple', device='cuda', seed=42)
-            x = torch.randn(8, 3, 224, 224)
-            features = extractor._model(x)  # (8, 512), entrenable
-
-    :note:
+    .. note::
         - Para distribuido: serializar con _get_weights_bytes(), transportar TCP,
           deserializar con load_weights_from_bytes().
-        - requires_grad se establece EN __init__ y NO cambia después.
+        - requires_grad se establece en __init__ y NO cambia despues.
         - En WorkerNode._train_batch: modelo se pone train() antes forward.
     """
 
@@ -544,46 +525,52 @@ class CNNExtractor:
         """Inicializa extractor CNN con arquitectura y dispositivo especificados.
 
         Flujo:
-            1. Valida que arch esté en ('simple', 'resnet18')
-            2. Detecta y crea dispositivo PyTorch
-            3. Fija semilla RNG si seed != None
-            4. Construye arquitectura con _build(arch, trainable)
-            5. Establece requires_grad según arquitectura
-            6. Inicializa en eval() para inferencia determinista
+
+        1. Valida que arch este en ('simple', 'resnet18')
+        2. Detecta y crea dispositivo PyTorch
+        3. Fija semilla RNG si seed != None
+        4. Construye arquitectura con _build(arch, trainable)
+        5. Establece requires_grad segun arquitectura
+        6. Inicializa en eval() para inferencia determinista
 
         Estado post-__init__:
-            - Modelo PyTorch completo en self._model
-            - requires_grad establecido permanentemente (NO cambia después)
-            - Listo para forward pass o serialización
 
-        Args:
-            arch: Arquitectura. Opciones válidas: 'resnet18' (preentrenada, congelada),
-                  'simple' (SIMPLE CNN, entrenable). Default: 'resnet18'.
-            device: Dispositivo PyTorch. Opciones: 'cpu', 'cuda' (auto GPU0),
-                   'cuda:N' (GPU N), 'mps' (Apple Metal). Default: 'cpu'.
-            seed: Semilla RNG para reproducibilidad. Si None, no fija nada (aleatorio).
-                  Solo afecta a arch='simple' (SIMPLE CNN).
-                  No afecta a arch='resnet18' (pesos prefijos de ImageNet).
+        - Modelo PyTorch completo en self._model
+        - requires_grad establecido permanentemente (NO cambia despues)
+        - Listo para forward pass o serializacion
 
-        Returns:
-            None. Inicializa self._model, self.arch, self.device, self.seed.
+        :param arch: Arquitectura. Opciones validas: 'resnet18' (preentrenada, congelada),
+            'simple' (SIMPLE CNN, entrenable). Default: 'resnet18'.
+        :type arch: str
 
-        Raises:
-            ValueError: Si arch no está en ARCHITECTURES = ('simple', 'resnet18').
-                        Mensaje: "arch debe ser ('simple', 'resnet18'), recibido: {arch!r}"
-            RuntimeError: Si device no es válido (ej: 'cuda' pero GPU no disponible).
-                        PyTorch levanta RuntimeError automáticamente.
+        :param device: Dispositivo PyTorch. Opciones: 'cpu', 'cuda' (auto GPU0),
+            'cuda:N' (GPU N), 'mps' (Apple Metal). Default: 'cpu'.
+        :type device: str
 
-        Example:
+        :param seed: Semilla RNG para reproducibilidad. Si None, no fija nada (aleatorio).
+            Solo afecta a arch='simple' (SIMPLE CNN).
+            No afecta a arch='resnet18' (pesos prefijos de ImageNet).
+        :type seed: int | None
+
+        :returns: None. Inicializa self._model, self.arch, self.device, self.seed.
+        :rtype: None
+
+        :raises ValueError: Si arch no esta en ARCHITECTURES = ('simple', 'resnet18').
+        :raises RuntimeError: Si device no es valido (ej: 'cuda' pero GPU no disponible).
+
+        .. rubric:: Example
+
+        .. code-block:: python
+
             # ResNet-18 preentrenado (congelado)
             cnn = CNNExtractor(arch='resnet18', device='cuda')
             # Reentrenable desde cero
             cnn = CNNExtractor(arch='simple', device='cpu', seed=42)
 
-        Note:
+        .. note::
             - requires_grad se establece UNA SOLA VEZ en __init__ y NO cambia
-            - model.train() / model.eval() controla BatchNorm pero NO affecta requires_grad
-            - Para cambiar requires_grad después: usa p.requires_grad_(False) manualmente
+            - model.train() / model.eval() controla BatchNorm pero NO afecta requires_grad
+            - Para cambiar requires_grad despues: usa p.requires_grad_(False) manualmente
             - Las correcciones distribuidas NO modifican requires_grad
         """
         if arch not in self.ARCHITECTURES:

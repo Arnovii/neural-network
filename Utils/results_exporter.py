@@ -83,8 +83,16 @@ class ResultsExporter:
         Inicializa el ResultsExporter.
 
         :param config: Diccionario de configuración del experimento.
+        :type config: Dict[str, Any]
+
         :param export_dir: Directorio base para exportar los resultados.
+        :type export_dir: str
+
         :param metrics_window: Tamaño de la ventana para buffers de métricas.
+        :type metrics_window: int
+
+        :returns: None
+        :rtype: None
         """
         # Configuración
         self.config = config
@@ -152,26 +160,42 @@ class ResultsExporter:
         Llamado típicamente desde callback on_step del PS.
         Thread-safe, no bloquea el entrenamiento.
 
-        Args:
-            step: Número del step de training (global).
-            loss: Valor de loss del batch actual.
-            accuracy: Valor de accuracy (0-1) del batch actual.
-            num_workers: Número de workers conectados actualmente.
-            elapsed: Tiempo acumulado en segundos desde inicio.
-            loss_std: Desviación estándar del loss en la ventana.
-            acc_std: Desviación estándar de accuracy en la ventana.
-            staleness: Valor de staleness del update.
-            alpha: Factor de corrección alpha = 1/(1+λ·s).
+        :param step: Número del step de training (global).
+        :type step: int
 
-        Returns:
-            None. Actualiza el estado interno thread-safe.
+        :param loss: Valor de loss del batch actual.
+        :type loss: float
 
-        Note:
-            Los datos se almacenan en dos lugares:
-            - Deques con window fijo (para promedios recientes)
-            - Listas sin límite (para historial completo)
+        :param accuracy: Valor de accuracy (0-1) del batch actual.
+        :type accuracy: float
 
-        Example:
+        :param num_workers: Número de workers conectados actualmente.
+        :type num_workers: int
+
+        :param elapsed: Tiempo acumulado en segundos desde inicio.
+        :type elapsed: float
+
+        :param loss_std: Desviación estándar del loss en la ventana.
+        :type loss_std: float
+
+        :param acc_std: Desviación estándar de accuracy en la ventana.
+        :type acc_std: float
+
+        :param staleness: Valor de staleness del update.
+        :type staleness: int
+
+        :param alpha: Factor de corrección alpha = 1/(1+λ·s).
+        :type alpha: float
+
+        :returns: None. Actualiza el estado interno thread-safe.
+        :rtype: None
+
+        Los datos se almacenan en dos lugares:
+        - Deques con window fijo (para promedios recientes)
+        - Listas sin límite (para historial completo)
+
+        Ejemplo::
+
             # Llamado desde PS on_step callback
             exporter.record_metric(
                 step=1000,
@@ -246,6 +270,10 @@ class ResultsExporter:
         Thread-safe, no bloquea.
 
         :param text: Texto de log (sin newline, se añade automáticamente)
+        :type text: str
+
+        :returns: None
+        :rtype: None
         """
         with self._lock:
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
@@ -265,9 +293,19 @@ class ResultsExporter:
         Thread-safe.
 
         :param step: Step actual del entrenamiento
+        :type step: int
+
         :param event_type: "connected" o "disconnected"
+        :type event_type: str
+
         :param worker_id: ID del worker
+        :type worker_id: int
+
         :param worker_addr: Dirección IP del worker
+        :type worker_addr: str
+
+        :returns: None
+        :rtype: None
         """
         with self._lock:
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
@@ -329,13 +367,24 @@ class ResultsExporter:
     # ========== OPERACIONES PRIVADAS ==========
 
     def _write_config(self) -> None:
-        """Escribe configuración en formato JSON."""
+        """Escribe configuración en formato JSON.
+
+        :returns: None
+        :rtype: None
+        """
         config_file = self.session_dir / "config.json"
         with open(config_file, "w", encoding="utf-8") as f:
             json.dump(self.config, f, indent=2, ensure_ascii=False)
 
     def _write_metrics(self) -> None:
-        """Escribe métricas en formato CSV."""
+        """Escribe métricas en formato CSV.
+
+        Exporta el historial completo si está disponible, con fallback
+        a la ventana deslizante para compatibilidad con sesiones antiguas.
+
+        :returns: None
+        :rtype: None
+        """
         metrics_file = self.session_dir / "metrics.csv"
 
         # Exportar SIEMPRE historial completo cuando exista; fallback a ventana
@@ -382,7 +431,13 @@ class ResultsExporter:
                 )
 
     def _write_logs(self) -> None:
-        """Escribe todos los logs en un archivo de texto."""
+        """Escribe todos los logs en un archivo de texto.
+
+        Incluye encabezado con timestamp de sesión y marca de fin de logs.
+
+        :returns: None
+        :rtype: None
+        """
         logs_file = self.session_dir / "ps_logs.txt"
 
         with open(logs_file, "w", encoding="utf-8") as f:
@@ -400,7 +455,14 @@ class ResultsExporter:
             f.write("=" * 80 + "\n")
 
     def _write_worker_events(self) -> None:
-        """Escribe eventos de workers en CSV."""
+        """Escribe eventos de workers en CSV.
+
+        Los eventos incluyen timestamp, step, tipo de evento,
+        ID del worker y dirección IP.
+
+        :returns: None
+        :rtype: None
+        """
         events_file = self.session_dir / "worker_events.csv"
         with open(events_file, "w", encoding="utf-8") as f:
             f.write("timestamp,step,event_type,worker_id,worker_addr\n")
@@ -411,7 +473,20 @@ class ResultsExporter:
                 )
 
     def _generate_plots(self) -> None:
-        """Genera gráficas de resultados: combinada + individuales."""
+        """Genera gráficas de resultados: combinada + individuales.
+
+        Genera múltiples visualizaciones incluyendo:
+        - Gráfica de 3 paneles (loss, accuracy, workers)
+        - Gráficas individuales con bandas de confianza ±1σ
+        - Gráficas de staleness y desviación estándar
+        - Soporte para marcadores de eventos de workers
+
+        Cada gráfica se genera en un bloque try/except independiente
+        para evitar que un error en una gráfica detenga las demás.
+
+        :returns: None
+        :rtype: None
+        """
         if len(self._full_steps) == 0 and len(self._metrics_steps) == 0:
             return
 
@@ -500,6 +575,17 @@ class ResultsExporter:
     def _compute_line_limits(
         self, steps: np.ndarray, values: np.ndarray
     ) -> Tuple[Tuple[float, float], Tuple[float, float]]:
+        """Calcula limites de ejes para graficas de linea con margen de 5%.
+
+        :param steps: Array de pasos de entrenamiento.
+        :type steps: np.ndarray
+
+        :param values: Array de valores (loss o similar).
+        :type values: np.ndarray
+
+        :returns: Tupla (xlim, ylim) con limites calculados.
+        :rtype: Tuple[Tuple[float, float], Tuple[float, float]]
+        """
         if len(steps) == 0:
             return (0.0, 1.0), (0.0, 1.0)
 
@@ -518,6 +604,17 @@ class ResultsExporter:
     def _compute_accuracy_limits(
         self, steps: np.ndarray, values: np.ndarray
     ) -> Tuple[Tuple[float, float], Tuple[float, float]]:
+        """Calcula limites de ejes para grafica de precision con Y fijo [0, 100].
+
+        :param steps: Array de pasos de entrenamiento.
+        :type steps: np.ndarray
+
+        :param values: Array de valores de precision.
+        :type values: np.ndarray
+
+        :returns: Tupla (xlim, ylim) con limites calculados.
+        :rtype: Tuple[Tuple[float, float], Tuple[float, float]]
+        """
         if len(steps) == 0:
             return (0.0, 1.0), (0.0, 100.0)
         return (float(steps[0] - 1), float(steps[-1] + 1)), (0.0, 100.0)
@@ -528,6 +625,20 @@ class ResultsExporter:
         event_steps: List[int],
         event_types: List[str],
     ) -> None:
+        """Agrega marcadores verticales de conexion/desconexion de workers.
+
+        :param axes: Lista de ejes matplotlib donde agregar los marcadores.
+        :type axes: Union[List[matplotlib.axes.Axes], Tuple[matplotlib.axes.Axes, ...]]
+
+        :param event_steps: Lista de pasos donde ocurrieron los eventos.
+        :type event_steps: List[int]
+
+        :param event_types: Lista de tipos de evento ("connected" o "disconnected").
+        :type event_types: List[str]
+
+        :returns: None
+        :rtype: None
+        """
         if not event_steps:
             return
 
@@ -554,7 +665,23 @@ class ResultsExporter:
         accuracies: np.ndarray,
         workers_count: np.ndarray,
     ) -> None:
-        """Genera gráfica con 3 paneles horizontales: loss, accuracy, workers."""
+        """Genera gráfica con 3 paneles horizontales: loss, accuracy, workers.
+
+        :param steps: Array de pasos de entrenamiento.
+        :type steps: np.ndarray
+
+        :param losses: Array de valores de pérdida.
+        :type losses: np.ndarray
+
+        :param accuracies: Array de valores de precisión.
+        :type accuracies: np.ndarray
+
+        :param workers_count: Array de cantidad de workers activos.
+        :type workers_count: np.ndarray
+
+        :returns: None
+        :rtype: None
+        """
         fig = plt.figure(figsize=(20, 5.5), dpi=95)
         gs = GridSpec(1, 3, figure=fig, wspace=0.35)
 
@@ -622,7 +749,23 @@ class ResultsExporter:
         xlim: Tuple[float, float],
         ylim: Tuple[float, float],
     ) -> None:
-        """Genera gráfica individual de Loss (estilo idéntico a la GUI)."""
+        """Genera gráfica individual de Loss (estilo idéntico a la GUI).
+
+        :param steps: Array de pasos de entrenamiento.
+        :type steps: np.ndarray
+
+        :param losses: Array de valores de pérdida.
+        :type losses: np.ndarray
+
+        :param xlim: Tupla (xmin, xmax) para límites del eje X.
+        :type xlim: Tuple[float, float]
+
+        :param ylim: Tupla (ymin, ymax) para límites del eje Y.
+        :type ylim: Tuple[float, float]
+
+        :returns: None
+        :rtype: None
+        """
         fig, ax = plt.subplots(figsize=(10, 6.5))
 
         color_loss = COLORS["loss"]
@@ -667,6 +810,26 @@ class ResultsExporter:
 
     @staticmethod
     def _has_collision(bx, by, bw, bh, boxes):
+        """Verifica si un bounding box colisiona con alguno de una lista.
+
+        :param bx: Posicion X del bounding box.
+        :type bx: float
+
+        :param by: Posicion Y del bounding box.
+        :type by: float
+
+        :param bw: Ancho del bounding box.
+        :type bw: float
+
+        :param bh: Alto del bounding box.
+        :type bh: float
+
+        :param boxes: Lista de bounding boxes existentes [(x, y, w, h), ...].
+        :type boxes: List[Tuple[float, float, float, float]]
+
+        :returns: True si hay colision, False en caso contrario.
+        :rtype: bool
+        """
         for ox, oy, ow, oh in boxes:
             if not (bx + bw < ox or bx > ox + ow or by + bh < oy or by > oy + oh):
                 return True
@@ -674,6 +837,35 @@ class ResultsExporter:
 
     @staticmethod
     def _is_inside_axes(bx, by, bw, bh, xlim, ylim, x_range, y_range):
+        """Verifica si un bounding box esta completamente dentro de los ejes.
+
+        :param bx: Posicion X del bounding box.
+        :type bx: float
+
+        :param by: Posicion Y del bounding box.
+        :type by: float
+
+        :param bw: Ancho del bounding box.
+        :type bw: float
+
+        :param bh: Alto del bounding box.
+        :type bh: float
+
+        :param xlim: Tupla (xmin, xmax) de limites del eje X.
+        :type xlim: Tuple[float, float]
+
+        :param ylim: Tupla (ymin, ymax) de limites del eje Y.
+        :type ylim: Tuple[float, float]
+
+        :param x_range: Rango del eje X (xmax - xmin).
+        :type x_range: float
+
+        :param y_range: Rango del eje Y (ymax - ymin).
+        :type y_range: float
+
+        :returns: True si el bounding box esta dentro de los ejes.
+        :rtype: bool
+        """
         pad_x = x_range * 0.01
         pad_y = y_range * 0.01
         return (
@@ -695,16 +887,28 @@ class ResultsExporter:
     ) -> Tuple[float, float]:
         """Calcula posición segura para etiqueta resolviendo colisiones.
 
-        Args:
-            ax: Eje matplotlib.
-            x_init, y_init: Posición inicial en coordenadas de datos.
-            text: Texto de la etiqueta.
-            side: 'above' (preferir y >= y_ref) o 'below' (preferir y <= y_ref).
-            existing_boxes: Lista de bounding boxes ocupados [(x, y, w, h), ...].
-            fontsize: Tamaño de fuente para estimar bbox.
+        :param ax: Eje matplotlib.
 
-        Returns:
-            Tuple[float, float]: (x_final, y_final) en coordenadas de datos.
+        :param x_init: Posición inicial X en coordenadas de datos.
+        :type x_init: float
+
+        :param y_init: Posición inicial Y en coordenadas de datos.
+        :type y_init: float
+
+        :param text: Texto de la etiqueta.
+        :type text: str
+
+        :param side: 'above' (preferir y >= y_ref) o 'below' (preferir y <= y_ref).
+        :type side: str
+
+        :param existing_boxes: Lista de bounding boxes ocupados [(x, y, w, h), ...].
+        :type existing_boxes: list
+
+        :param fontsize: Tamaño de fuente para estimar bbox.
+        :type fontsize: float
+
+        :returns: (x_final, y_final) en coordenadas de datos.
+        :rtype: Tuple[float, float]
         """
         xlim = ax.get_xlim()
         ylim = ax.get_ylim()
@@ -778,14 +982,24 @@ class ResultsExporter:
     ) -> Tuple[float, float]:
         """Fuerza que el bbox de una anotación quede dentro del eje.
 
-        Args:
-            ax: Eje matplotlib.
-            x, y: Posición actual en coordenadas de datos.
-            width_data, height_data: Dimensiones del bbox en coordenadas de datos.
-            padding: Padding relativo al rango del eje.
+        :param ax: Eje matplotlib.
+        :param x: Posición actual X en coordenadas de datos.
+        :type x: float
 
-        Returns:
-            Tuple[float, float]: (x, y) ajustado para quedar dentro del eje.
+        :param y: Posición actual Y en coordenadas de datos.
+        :type y: float
+
+        :param width_data: Ancho del bbox en coordenadas de datos.
+        :type width_data: float
+
+        :param height_data: Alto del bbox en coordenadas de datos.
+        :type height_data: float
+
+        :param padding: Padding relativo al rango del eje.
+        :type padding: float
+
+        :returns: (x, y) ajustado para quedar dentro del eje.
+        :rtype: Tuple[float, float]
         """
         xlim = ax.get_xlim()
         ylim = ax.get_ylim()
@@ -808,6 +1022,30 @@ class ResultsExporter:
         xlim: Tuple[float, float],
         ylim: Tuple[float, float],
     ) -> None:
+        """Genera gráfica de pérdida con banda de confianza ±1σ.
+
+        Incluye línea de tendencia, banda sombreada de desviación estándar,
+        anotaciones de ±1σ en el punto final, eje secundario para σ,
+        marcador de máximo histórico y recuadro de estadísticas.
+
+        :param steps: Array de pasos de entrenamiento.
+        :type steps: np.ndarray
+
+        :param losses: Array de valores de pérdida.
+        :type losses: np.ndarray
+
+        :param loss_std: Array de desviaciones estándar de pérdida.
+        :type loss_std: np.ndarray
+
+        :param xlim: Tupla (xmin, xmax) para límites del eje X.
+        :type xlim: Tuple[float, float]
+
+        :param ylim: Tupla (ymin, ymax) para límites del eje Y.
+        :type ylim: Tuple[float, float]
+
+        :returns: None
+        :rtype: None
+        """
         fig, ax = plt.subplots(figsize=(10, 6.5))
         color_loss = COLORS["loss"]
         x_margin = (steps[-1] - steps[0]) * 0.03 if len(steps) > 1 else 0.0
@@ -1080,7 +1318,23 @@ class ResultsExporter:
         xlim: Tuple[float, float],
         ylim: Tuple[float, float],
     ) -> None:
-        """Genera gráfica individual de Accuracy (estilo idéntico a la GUI)."""
+        """Genera gráfica individual de Accuracy (estilo idéntico a la GUI).
+
+        :param steps: Array de pasos de entrenamiento.
+        :type steps: np.ndarray
+
+        :param accuracies: Array de valores de precisión.
+        :type accuracies: np.ndarray
+
+        :param xlim: Tupla (xmin, xmax) para límites del eje X.
+        :type xlim: Tuple[float, float]
+
+        :param ylim: Tupla (ymin, ymax) para límites del eje Y.
+        :type ylim: Tuple[float, float]
+
+        :returns: None
+        :rtype: None
+        """
         fig, ax = plt.subplots(figsize=(10, 6.5))
 
         color_acc = COLORS["accuracy"]
@@ -1131,6 +1385,30 @@ class ResultsExporter:
         xlim: Tuple[float, float],
         ylim: Tuple[float, float],
     ) -> None:
+        """Genera grafica de precision con banda de confianza ±1σ.
+
+        Incluye linea de tendencia, banda sombreada de desviacion estandar,
+        anotaciones de ±1σ en el punto final, eje secundario para σ,
+        marcador de maximo historico y recuadro de estadisticas.
+
+        :param steps: Array de pasos de entrenamiento.
+        :type steps: np.ndarray
+
+        :param accuracies: Array de valores de precision.
+        :type accuracies: np.ndarray
+
+        :param acc_std: Array de desviaciones estandar de precision.
+        :type acc_std: np.ndarray
+
+        :param xlim: Tupla (xmin, xmax) para limites del eje X.
+        :type xlim: Tuple[float, float]
+
+        :param ylim: Tupla (ymin, ymax) para limites del eje Y.
+        :type ylim: Tuple[float, float]
+
+        :returns: None
+        :rtype: None
+        """
         fig, ax = plt.subplots(figsize=(10, 6.5))
         color_acc = COLORS["accuracy"]
         x_margin = (steps[-1] - steps[0]) * 0.03 if len(steps) > 1 else 0.0
@@ -1402,7 +1680,17 @@ class ResultsExporter:
     def _plot_individual_workers(
         self, steps: np.ndarray, workers_count: np.ndarray
     ) -> None:
-        """Genera gráfica individual de Workers (estilo idéntico a la GUI)."""
+        """Genera gráfica individual de Workers (estilo idéntico a la GUI).
+
+        :param steps: Array de pasos de entrenamiento.
+        :type steps: np.ndarray
+
+        :param workers_count: Array de conteo de workers activos por step.
+        :type workers_count: np.ndarray
+
+        :returns: None
+        :rtype: None
+        """
         fig, ax = plt.subplots(figsize=(10, 6.5))
 
         color_workers = COLORS["workers"]
@@ -1431,6 +1719,29 @@ class ResultsExporter:
         event_steps: List[int],
         event_types: List[str],
     ) -> None:
+        """Genera grafica de staleness y factor de correccion alpha.
+
+        Dos paneles verticales: staleness (versiones de retraso) y
+        factor alpha = 1/(1+λ·s) con linea de referencia en 1.0.
+
+        :param steps: Array de pasos de entrenamiento.
+        :type steps: np.ndarray
+
+        :param staleness: Array de valores de staleness.
+        :type staleness: np.ndarray
+
+        :param alpha: Array de factores de correccion alpha.
+        :type alpha: np.ndarray
+
+        :param event_steps: Lista de pasos de eventos de workers.
+        :type event_steps: List[int]
+
+        :param event_types: Lista de tipos de eventos.
+        :type event_types: List[str]
+
+        :returns: None
+        :rtype: None
+        """
         fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 7.5), sharex=True)
 
         ax1.plot(steps, staleness, color=COLORS["info"], lw=2, label="Staleness")
@@ -1472,6 +1783,29 @@ class ResultsExporter:
         event_steps: List[int],
         event_types: List[str],
     ) -> None:
+        """Genera grafica de desviaciones estandar de loss y precision.
+
+        Dos paneles verticales: σ Loss y σ Accuracy con marcadores
+        de eventos de workers.
+
+        :param steps: Array de pasos de entrenamiento.
+        :type steps: np.ndarray
+
+        :param loss_std: Array de desviaciones estandar de loss.
+        :type loss_std: np.ndarray
+
+        :param acc_std: Array de desviaciones estandar de precision.
+        :type acc_std: np.ndarray
+
+        :param event_steps: Lista de pasos de eventos de workers.
+        :type event_steps: List[int]
+
+        :param event_types: Lista de tipos de eventos.
+        :type event_types: List[str]
+
+        :returns: None
+        :rtype: None
+        """
         fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 7.5), sharex=True)
 
         ax1.plot(steps, loss_std, color=COLORS["loss"], lw=2, label="σ Loss")
@@ -1508,7 +1842,11 @@ class ResultsExporter:
         plt.close()
 
     def _write_metadata(self) -> None:
-        """Escribe estadísticas finales en metadata.json."""
+        """Escribe estadísticas finales en metadata.json.
+
+        :returns: None
+        :rtype: None
+        """
         if len(self._full_losses) == 0 and len(self._metrics_loss) == 0:
             metadata = {"status": "no_metrics_recorded"}
         else:
@@ -1682,7 +2020,11 @@ class ResultsExporter:
             json.dump(metadata, f, indent=2, ensure_ascii=False)
 
     def __repr__(self) -> str:
-        """Representación string del exporter."""
+        """Representación string del exporter.
+
+        :returns: Cadena de representación del objeto ResultsExporter.
+        :rtype: str
+        """
         return (
             f"ResultsExporter(timestamp={self.timestamp}, "
             f"metrics={self._total_metrics}, "

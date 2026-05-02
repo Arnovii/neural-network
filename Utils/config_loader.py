@@ -5,13 +5,16 @@ from typing import Optional
 
 
 def load_dotenv(env_path: str | Path = ".env") -> None:
-    """
-    Carga variables de entorno desde archivo .env si existe.
+    """Carga variables de entorno desde archivo .env si existe.
 
-    :param env_path: Ruta al archivo .env (default: .env en directorio actual)
+    :param env_path: Ruta al archivo .env (default: .env en directorio actual).
     :type env_path: str | Path
 
-    :note: No lanza errores si el archivo no existe.
+    :returns: None
+    :rtype: None
+
+    .. note::
+        No lanza errores si el archivo no existe.
     """
     from dotenv import load_dotenv  # pyright: ignore[reportMissingImports]
 
