@@ -39,10 +39,8 @@ CARACTERÍSTICAS DE ESCALAS:
 
 from __future__ import annotations
 
-import os
 import json
 import threading
-import time
 from datetime import datetime
 from pathlib import Path
 from collections import deque
@@ -188,27 +186,54 @@ class ResultsExporter:
             )
         """
         with self._lock:
-            self._metrics_steps.append(step)
-            self._metrics_loss.append(loss)
-            self._metrics_accuracy.append(accuracy)
-            self._metrics_workers.append(num_workers)
-            self._metrics_elapsed.append(elapsed)
-            self._metrics_loss_std.append(loss_std)
-            self._metrics_acc_std.append(acc_std)
-            self._metrics_staleness.append(staleness)
-            self._metrics_alpha.append(alpha)
+            # Cache references for faster access in hot path
+            ms, ml, ma, mw, me = (
+                self._metrics_steps,
+                self._metrics_loss,
+                self._metrics_accuracy,
+                self._metrics_workers,
+                self._metrics_elapsed,
+            )
+            ms_std, ma_std, ms_st, ma_al = (
+                self._metrics_loss_std,
+                self._metrics_acc_std,
+                self._metrics_staleness,
+                self._metrics_alpha,
+            )
+            ms.append(step)
+            ml.append(loss)
+            ma.append(accuracy)
+            mw.append(num_workers)
+            me.append(elapsed)
+            ms_std.append(loss_std)
+            ma_std.append(acc_std)
+            ms_st.append(staleness)
+            ma_al.append(alpha)
             self._total_metrics += 1
             # También acumular en los historiales completos (sin límite)
             try:
-                self._full_steps.append(step)
-                self._full_losses.append(loss)
-                self._full_accuracies.append(accuracy)
-                self._full_workers.append(num_workers)
-                self._full_elapsed.append(elapsed)
-                self._full_loss_std.append(loss_std)
-                self._full_acc_std.append(acc_std)
-                self._full_staleness.append(staleness)
-                self._full_alpha.append(alpha)
+                fs, fl, fa, fw, fe = (
+                    self._full_steps,
+                    self._full_losses,
+                    self._full_accuracies,
+                    self._full_workers,
+                    self._full_elapsed,
+                )
+                fs_std, fa_std, fs_st, fa_al = (
+                    self._full_loss_std,
+                    self._full_acc_std,
+                    self._full_staleness,
+                    self._full_alpha,
+                )
+                fs.append(step)
+                fl.append(loss)
+                fa.append(accuracy)
+                fw.append(num_workers)
+                fe.append(elapsed)
+                fs_std.append(loss_std)
+                fa_std.append(acc_std)
+                fs_st.append(staleness)
+                fa_al.append(alpha)
             except Exception:
                 # Seguridad: nunca propagar errores de escritura de historial
                 pass
@@ -392,23 +417,23 @@ class ResultsExporter:
 
         with self._lock:
             if len(self._full_steps) > 0:
-                steps = np.array(list(self._full_steps))
-                losses = np.array(list(self._full_losses))
-                accuracies = np.array(list(self._full_accuracies))
-                workers_count = np.array(list(self._full_workers))
-                loss_std = np.array(list(self._full_loss_std))
-                acc_std = np.array(list(self._full_acc_std))
-                staleness = np.array(list(self._full_staleness))
-                alpha = np.array(list(self._full_alpha))
+                steps = np.fromiter(self._full_steps, dtype=np.int64)
+                losses = np.fromiter(self._full_losses, dtype=np.float64)
+                accuracies = np.fromiter(self._full_accuracies, dtype=np.float64)
+                workers_count = np.fromiter(self._full_workers, dtype=np.int64)
+                loss_std = np.fromiter(self._full_loss_std, dtype=np.float64)
+                acc_std = np.fromiter(self._full_acc_std, dtype=np.float64)
+                staleness = np.fromiter(self._full_staleness, dtype=np.int64)
+                alpha = np.fromiter(self._full_alpha, dtype=np.float64)
             else:
-                steps = np.array(list(self._metrics_steps))
-                losses = np.array(list(self._metrics_loss))
-                accuracies = np.array(list(self._metrics_accuracy))
-                workers_count = np.array(list(self._metrics_workers))
-                loss_std = np.array(list(self._metrics_loss_std))
-                acc_std = np.array(list(self._metrics_acc_std))
-                staleness = np.array(list(self._metrics_staleness))
-                alpha = np.array(list(self._metrics_alpha))
+                steps = np.fromiter(self._metrics_steps, dtype=np.int64)
+                losses = np.fromiter(self._metrics_loss, dtype=np.float64)
+                accuracies = np.fromiter(self._metrics_accuracy, dtype=np.float64)
+                workers_count = np.fromiter(self._metrics_workers, dtype=np.int64)
+                loss_std = np.fromiter(self._metrics_loss_std, dtype=np.float64)
+                acc_std = np.fromiter(self._metrics_acc_std, dtype=np.float64)
+                staleness = np.fromiter(self._metrics_staleness, dtype=np.int64)
+                alpha = np.fromiter(self._metrics_alpha, dtype=np.float64)
 
         event_steps = [ev["step"] for ev in self._worker_events]
         event_types = [ev["event_type"] for ev in self._worker_events]
@@ -539,7 +564,6 @@ class ResultsExporter:
 
         ax1 = fig.add_subplot(gs[0])
         ax1.plot(steps, losses, "-o", color=color_loss, lw=2, ms=3, label="Train")
-        ax1.scatter(steps, losses, color=color_loss, s=30, zorder=5, label="Val")
         ax1.set_title("Pérdida (ventana deslizante)")
         ax1.set_xlabel("Steps")
         ax1.set_ylabel("Loss (nats)")
@@ -552,7 +576,6 @@ class ResultsExporter:
 
         ax2 = fig.add_subplot(gs[1])
         ax2.plot(steps, accuracies, "-o", color=color_acc, lw=2, ms=3, label="Train")
-        ax2.scatter(steps, accuracies, color=color_acc, s=30, zorder=5, label="Val")
         ax2.set_title("Precisión (ventana deslizante)")
         ax2.set_xlabel("Steps")
         ax2.set_ylabel("Precisión (%)")
@@ -606,7 +629,6 @@ class ResultsExporter:
         x_margin = (steps[-1] - steps[0]) * 0.03 if len(steps) > 1 else 0.0
 
         ax.plot(steps, losses, "-o", color=color_loss, lw=2, ms=3, label="Train")
-        ax.scatter(steps, losses, color=color_loss, s=30, zorder=5, label="Val")
         if len(steps) > 0:
             ax.scatter(
                 steps[-1],
@@ -643,6 +665,24 @@ class ResultsExporter:
         plt.savefig(output_path, dpi=300, pad_inches=0.4)
         plt.close()
 
+    @staticmethod
+    def _has_collision(bx, by, bw, bh, boxes):
+        for ox, oy, ow, oh in boxes:
+            if not (bx + bw < ox or bx > ox + ow or by + bh < oy or by > oy + oh):
+                return True
+        return False
+
+    @staticmethod
+    def _is_inside_axes(bx, by, bw, bh, xlim, ylim, x_range, y_range):
+        pad_x = x_range * 0.01
+        pad_y = y_range * 0.01
+        return (
+            bx >= xlim[0] + pad_x
+            and bx + bw <= xlim[1] - pad_x
+            and by >= ylim[0] + pad_y
+            and by + bh <= ylim[1] - pad_y
+        )
+
     def _safe_label_position(
         self,
         ax,
@@ -674,26 +714,8 @@ class ResultsExporter:
         # 1. Estimar bounding box en coordenadas de datos (conservador)
         char_width_data = x_range * 0.012 * len(text)
         char_height_data = y_range * 0.022
-        bbox = [x_init, y_init, char_width_data, char_height_data]
 
-        # 2. Verificar colisiones
-        def _has_collision(bx, by, bw, bh, boxes):
-            for ox, oy, ow, oh in boxes:
-                if not (bx + bw < ox or bx > ox + ow or by + bh < oy or by > oy + oh):
-                    return True
-            return False
-
-        def _is_inside_axes(bx, by, bw, bh):
-            pad_x = x_range * 0.01
-            pad_y = y_range * 0.01
-            return (
-                bx >= xlim[0] + pad_x
-                and bx + bw <= xlim[1] - pad_x
-                and by >= ylim[0] + pad_y
-                and by + bh <= ylim[1] - pad_y
-            )
-
-        # 3. Resolver colisiones
+        # 2. Resolver colisiones
         x, y = x_init, y_init
         w, h = char_width_data, char_height_data
         max_iter = 10
@@ -708,11 +730,11 @@ class ResultsExporter:
             collision = False
 
             # Verificar bordes del eje
-            if not _is_inside_axes(x, y, w, h):
+            if not self._is_inside_axes(x, y, w, h, xlim, ylim, x_range, y_range):
                 collision = True
 
             # Verificar existing_boxes
-            if _has_collision(x, y, w, h, existing_boxes):
+            if self._has_collision(x, y, w, h, existing_boxes):
                 collision = True
 
             if not collision:
@@ -733,10 +755,12 @@ class ResultsExporter:
                     y -= step_y
 
         # Paso C: Si aún hay colisión, mover X completamente a la izquierda
-        if _has_collision(x, y, w, h, existing_boxes) or not _is_inside_axes(x, y, w, h):
+        if self._has_collision(x, y, w, h, existing_boxes) or not self._is_inside_axes(
+            x, y, w, h, xlim, ylim, x_range, y_range
+        ):
             x_new = x_init - w * 1.5
             y_new = y_init
-            if _is_inside_axes(x_new, y_new, w, h):
+            if self._is_inside_axes(x_new, y_new, w, h, xlim, ylim, x_range, y_range):
                 x, y = x_new, y_new
 
         # Agregar bbox final a existing_boxes
@@ -1063,7 +1087,6 @@ class ResultsExporter:
         x_margin = (steps[-1] - steps[0]) * 0.03 if len(steps) > 1 else 0.0
 
         ax.plot(steps, accuracies, "-o", color=color_acc, lw=2, ms=3, label="Train")
-        ax.scatter(steps, accuracies, color=color_acc, s=30, zorder=5, label="Val")
         if len(steps) > 0:
             ax.scatter(
                 steps[-1],
@@ -1228,7 +1251,9 @@ class ResultsExporter:
                 x_range_plot_acc = ax.get_xlim()[1] - ax.get_xlim()[0]
                 y_range_plot_acc = ax.get_ylim()[1] - ax.get_ylim()[0]
                 try:
-                    pw_acc = x_range_plot_acc * 0.012 * 10  # ~10 chars para el valor con %
+                    pw_acc = (
+                        x_range_plot_acc * 0.012 * 10
+                    )  # ~10 chars para el valor con %
                     ph_acc = y_range_plot_acc * 0.022
                     existing_boxes_acc.append(
                         (
@@ -1489,7 +1514,6 @@ class ResultsExporter:
         else:
             with self._lock:
                 if len(self._full_losses) > 0:
-                    loss_hist = np.array(list(self._full_losses))
                     acc_hist = np.array(list(self._full_accuracies))
                     workers_hist = np.array(list(self._full_workers))
                     elapsed_hist = np.array(list(self._full_elapsed))
@@ -1499,7 +1523,6 @@ class ResultsExporter:
                     acc_std_hist = np.array(list(self._full_acc_std))
                     steps_arr = np.array(list(self._full_steps))
                 else:
-                    loss_hist = np.array(list(self._metrics_loss))
                     acc_hist = np.array(list(self._metrics_accuracy))
                     workers_hist = np.array(list(self._metrics_workers))
                     elapsed_hist = np.array(list(self._metrics_elapsed))

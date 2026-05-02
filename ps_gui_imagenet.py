@@ -496,9 +496,7 @@ class PSApp:
         # ── Evaluación ──
         self._section(frm, "Evaluación")
         self._v_val_batches = tk.IntVar(value=VAL_BATCHES_DEFAULT)
-        ent_vb = self._entry(
-            frm, "Batches de validación:", self._v_val_batches, width=8
-        )
+        self._entry(frm, "Batches de validación:", self._v_val_batches, width=8)
         self._btn_eval = ttk.Button(
             frm, text="Evaluar en validación ahora", command=self._cmd_evaluate
         )

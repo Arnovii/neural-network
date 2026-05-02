@@ -12,7 +12,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from Utils.results_exporter import ResultsExporter
+from Utils.results_exporter import ResultsExporter  # noqa: E402
 
 
 def simulate_step(step: int, total_steps: int) -> dict[str, Any]:

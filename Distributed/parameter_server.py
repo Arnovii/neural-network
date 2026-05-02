@@ -533,7 +533,7 @@ class ParameterServer:
             try:
                 self._server_sock.close()
             except Exception:
-                pass
+                pass  # noqa: S110 (cleanup code, socket may already be closed)
             self._server_sock = None
         if self._accept_thread:
             self._accept_thread.join(timeout=3)
@@ -720,7 +720,10 @@ class ParameterServer:
             time.sleep(poll)  # Espera poll segundos
             waited += poll
 
-        assert self._cnn is not None
+        if self._cnn is None:
+            raise RuntimeError(
+                "El modelo de CNN no se ha cargado antes de enviar los pesos"
+            )
 
         # ----------------- 3. Enviar CNN_WEIGHTS (siempre) -----------------
         try:
@@ -923,19 +926,16 @@ class ParameterServer:
             alpha = 1.0 / (1.0 + self.staleness_lambda * staleness)
 
             if mlp_weights:
-                for key in self._mlp_state:
-                    if key in self._no_avg_mlp_keys:
+                for key in mlp_weights:
+                    if key in self._no_avg_mlp_keys or key not in self._mlp_state:
                         continue  # running_mean/var y num_batches_tracked: no promediar
-                    if key in mlp_weights:
-                        self._mlp_state[key] += alpha * (
-                            mlp_weights[key] - self._mlp_state[key]
-                        )
+                    self._mlp_state[key] += alpha * (
+                        mlp_weights[key] - self._mlp_state[key]
+                    )
 
             if cnn_weights:
-                for key in self._cnn_state:
-                    if key in self._no_avg_keys:
-                        continue
-                    if key not in cnn_weights:
+                for key in cnn_weights:
+                    if key in self._no_avg_keys or key not in self._cnn_state:
                         continue
                     arr = self._cnn_state[key]  # float32 ya en el tipo correcto
                     inc = cnn_weights[key]
@@ -1153,7 +1153,7 @@ class ParameterServer:
                 send_message(sock, MsgType.STOP, None)
                 sock.close()
             except Exception:
-                pass
+                pass  # noqa: S110 (cleanup code, worker may be disconnected)
 
     def _remove_worker(self, wid: int) -> None:
         """
@@ -1179,7 +1179,7 @@ class ParameterServer:
             try:
                 sock.close()
             except Exception:
-                pass
+                pass  # noqa: S110 (cleanup code, socket may already be closed)
         if self._results_exporter is not None:
             self._results_exporter.record_worker_event(
                 step=self.current_version,

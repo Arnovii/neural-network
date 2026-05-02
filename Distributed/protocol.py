@@ -124,7 +124,7 @@ def receive_message(sock: socket.socket) -> Dict[str, Any]:
         Thread-safe para múltiples sockets (cada Worker tiene el suyo).
     """
     length = struct.unpack(">I", _recv_exact(sock, 4))[0]
-    return pickle.loads(_recv_exact(sock, length))
+    return pickle.loads(_recv_exact(sock, length))  # noqa: S301 (trusted internal protocol)
 
 
 def _recv_exact(sock: socket.socket, n: int) -> bytes:

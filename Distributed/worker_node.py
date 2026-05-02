@@ -776,10 +776,16 @@ class WorkerNode:
         assert self._cnn is not None
         assert self._mlp is not None
 
-        X = torch.from_numpy(X_np).to(self.device)
-        # OPTIMIZACIÓN: Y_np ya es int64 desde imagenet_streaming.py
-        # (np.array(buf_Y, dtype=np.int64)) → from_numpy sin astype
-        Y = torch.from_numpy(Y_np).to(self.device)
+        # OPTIMIZACIÓN: from_numpy ya crea tensor en CPU.
+        # Solo mover a GPU si es necesario, evitando copia innecesaria.
+        if self.device.type == "cpu":
+            X = torch.from_numpy(X_np)
+            Y = torch.from_numpy(Y_np)
+        else:
+            X = torch.from_numpy(X_np).to(self.device)
+            # OPTIMIZACIÓN: Y_np ya es int64 desde imagenet_streaming.py
+            # (np.array(buf_Y, dtype=np.int64)) → from_numpy sin astype
+            Y = torch.from_numpy(Y_np).to(self.device)
 
         if self._freeze_cnn:
             # ── Modo resnet18: CNN fija ──

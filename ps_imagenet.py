@@ -368,7 +368,7 @@ def main() -> None:
 
     # ── Abrir servidor ──
     ps.listen()
-    print(f"Servidor escuchando. Esperando workers...\n")
+    print("Servidor escuchando. Esperando workers...\n")
 
     try:
         # Esperar un poco para que se conecte al menos 1 worker, pero no es bloqueante
@@ -377,7 +377,7 @@ def main() -> None:
         ps.stop()
         return
 
-    print(f"✓ Entrenamiento asíncrono activo.")
+    print("✓ Entrenamiento asíncrono activo.")
     print("  (Ctrl+C para detener)\n")
 
     try:

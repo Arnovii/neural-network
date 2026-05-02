@@ -417,9 +417,9 @@ class ImageNetStream:
                         X = np.stack(buf_X[: self.batch_size])
                         Y = np.array(buf_Y[: self.batch_size], dtype=np.int64)
 
-                        # Elimina lo ya usado
-                        buf_X = buf_X[self.batch_size :]
-                        buf_Y = buf_Y[self.batch_size :]
+                        # Elimina lo ya usado (in-place)
+                        del buf_X[: self.batch_size]
+                        del buf_Y[: self.batch_size]
 
                         # Actualizamos estadísticas
                         self._batches += 1
@@ -750,9 +750,9 @@ class ValidationStream:
                     np.array(buf_Y[: self.batch_size], dtype=np.int64),
                 )
 
-                # Se limpia el buffer
-                buf_X = buf_X[self.batch_size :]
-                buf_Y = buf_Y[self.batch_size :]
+                # Se limpia el buffer (in-place)
+                del buf_X[: self.batch_size]
+                del buf_Y[: self.batch_size]
                 done += 1
 
         if buf_X:

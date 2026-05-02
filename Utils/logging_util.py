@@ -121,7 +121,7 @@ class FormattedLogger:
         if metric:
             parts.append(f"| {metric}")
         full_msg = " ".join(parts)
-        print(full_msg, flush=True)
+        print(full_msg)  # Let Python manage buffering for better I/O performance
 
         # Notifica a handlers registrados
         for handler in self._log_handlers:
