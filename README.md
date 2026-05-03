@@ -45,7 +45,7 @@ El repositorio incluye documentación exhaustiva en el subdirectorio `./Docs/`:
 | `08_Hiperparametros_y_Config.md` | Learning rate, staleness λ, batch size, impacto en convergencia |
 | `09_Streaming.md` | Pipeline HuggingFace, sharding per-Worker, PrefetchBuffer async, I/O optimization |
 | `10_Guion_Defensa_Academica_Completo.md` | Guión de presentación para defensa académica |
-| `11_Exportacion_Resultados.md` | Sistema de exportación: 9 archivos, gráficas, CSV, logs, análisis |
+| `11_Exportacion_Resultados.md` | Sistema de exportación: 13 archivos, gráficas avanzadas, CSV, logs |
 
 ---
 
@@ -78,7 +78,7 @@ El repositorio incluye documentación exhaustiva en el subdirectorio `./Docs/`:
   - Logs estructurados
 
 ✅ **Exportación automática de resultados**:
-  - 9 archivos por experimento: config, metrics.csv, logs, metadata, + 5 gráficas PNG
+  - 13 archivos por experimento: config, metrics.csv, logs, metadata, + 5 gráficas PNG
   - Gráficas con escalas dinámicas y estilos profesionales
   - Directorio personalizable vía `--export-dir`
   - Timestamps únicos para cada experimento
@@ -964,16 +964,20 @@ El sistema genera reportes automáticos al finalizar el entrenamiento (via `Ctrl
 ### Estructura de Exportación
 
 ```
-./Exports/20260421_193015_550/
-├── config.json              # Parámetros del experimento (JSON)
-├── metrics.csv              # Series de tiempo: step, loss, acc, num_workers
-├── ps_logs.txt              # Logs completos del Parameter Server
-├── metadata.json            # Estadísticas finales (min/max loss, accuracy, etc.)
-├── plot_3panels.png         # Combinación: Loss | Accuracy | Workers (283 KB)
-├── plot_loss.png            # Gráfica individual de Loss
-├── plot_accuracy.png        # Gráfica individual de Accuracy
-├── plot_workers.png         # Gráfica individual de Workers activos
-└── plot_comparison.png      # Comparación Loss vs Accuracy (ejes duales)
+./Exports/[timestamp]/
+├── config.json           # Configuracion del experimento
+├── metrics.csv           # Series de tiempo (step, loss, acc, workers, stds, staleness)
+├── worker_events.csv     # Historial de conexiones/desconexiones de Workers
+├── ps_logs.txt           # Logs completos del Parameter Server
+├── metadata.json         # Estadisticas finales (min/max loss, acc, etc.)
+├── plot_3panels.png      # 3 graficas horizontales (Loss | Accuracy | Workers)
+├── plot_loss.png         # Grafica individual de Loss
+├── plot_accuracy.png     # Grafica individual de Accuracy
+├── plot_workers.png      # Grafica individual de Workers activos
+├── plot_band_loss.png    # Loss con banda de confianza +/- 1 sigma
+├── plot_band_acc.png     # Accuracy con banda de confianza +/- 1 sigma
+├── plot_staleness.png    # Staleness y factor de correccion alpha
+└── plot_std.png          # Desviaciones estandar de Loss y Accuracy
 ```
 
 ### Uso
@@ -985,14 +989,14 @@ python ps_imagenet.py \
   --max-steps 10000
 ```
 
-Resultado: `./mi_experimento_1/[timestamp]/` contendrá los 9 archivos.
+Resultado: `./mi_experimento_1/[timestamp]/` contendrá los 13 archivos.
 
 #### Directorio por defecto:
 ```bash
 python ps_imagenet.py --max-steps 10000
 ```
 
-Resultado: `./Exports/[timestamp]/` contendrá los 9 archivos.
+Resultado: `./Exports/[timestamp]/` contendrá los 13 archivos.
 
 ### Contenido de Archivos
 
@@ -1005,7 +1009,7 @@ Resultado: `./Exports/[timestamp]/` contendrá los 9 archivos.
   "batch_size": 64,
   "image_size": 224,
   "seed": 42,
-  "cnn_arch": "resnet18",
+  "cnn_arch": "simple",
   "description": "Distributed Async-SGD on ImageNet-1k"
 }
 ```
@@ -1034,15 +1038,17 @@ step,loss,accuracy,num_workers
 
 ### Visualización de Gráficas
 
-Las 5 gráficas PNG se generan con:
-- **plot_3panels.png**: Vista consolidada para reportes académicos
-  - Panel 1: Loss con escala automática (±10% margen)
-  - Panel 2: Accuracy con escala dinámica (±20% margen, líneas de referencia)
-  - Panel 3: Workers activos con escala automática
-- **plot_*.png individuales**: Zoom en cada métrica para análisis detallado
-- **plot_comparison.png**: Ejes duales Y para comparación directa Loss vs Accuracy
+Las 8 gráficas PNG se generan con:
+- **plot_3panels.png**: Vista consolidada para reportes academicos
+  - Panel 1: Loss con escala automatica (+-10% margen)
+  - Panel 2: Accuracy con escala dinamica (+-20% margen, lineas de referencia)
+  - Panel 3: Workers activos con escala automatica
+- **plot_loss.png / plot_accuracy.png / plot_workers.png**: Zoom en cada metrica para analisis detallado
+- **plot_band_loss.png / plot_band_acc.png**: Bandas de confianza +-1 sigma con posicionamiento adaptativo de etiquetas, marcadores de maximo/minimo y recuadro de estadisticas
+- **plot_staleness.png**: Panel doble con staleness (versiones de retraso) y factor alpha = 1/(1+lambda*s)
+- **plot_std.png**: Panel doble con desviaciones estandar de Loss y Accuracy, marcadores de eventos de Workers
 
-Todas con resolución 300 DPI, estilos profesionales y anotaciones claras.
+Todas con resolucion 300 DPI, estilos profesionales y anotaciones claras.
 
 ---
 
@@ -1075,6 +1081,6 @@ Para preguntas sobre el sistema, consultar documentación en [`./Docs/`](./Docs/
 
 ---
 
-**Última actualización**: Abril 2026  
-**Versión del código**: 0.1.0
+**Última actualización**: Mayo 2026
+**Versión del código**: 0.2.0
 

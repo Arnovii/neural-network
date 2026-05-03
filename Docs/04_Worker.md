@@ -241,7 +241,7 @@ def _training_loop(self) -> None:
 ```python
 # En Distributed/worker_node.py
 _IMAGENET_CLASSES   = 1000
-_GRAD_CLIP_MAX_NORM = 1.0     # Umbral de gradient clipping
+_GRAD_CLIP_MAX_NORM = 10.0     # Umbral de gradient clipping
 _LABEL_SMOOTHING    = 0.1     # Nuevo: Suavizado de etiquetas
 _WEIGHT_DECAY       = 1e-4    # Nuevo: L2 regularización
 ```

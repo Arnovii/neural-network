@@ -20,21 +20,32 @@ PROTECCIÓN DE ARCHIVOS:
   - Al finalize(): archivos escritos y renombrados (atómicamente)
   - Usuario no puede acceder a archivos parcialmente generados
 
-ESTRUCTURA DE SALIDA:
+ESTRUCTURA DE SALIDA (13 archivos):
   ./Exports/[unique_timestamp]/
     ├── config.json           # Configuración del experimento
-    ├── metrics.csv           # Series de tiempo: step, loss, acc, workers
+    ├── metrics.csv           # Series de tiempo: step, loss, acc, workers, stds, staleness, alpha
+    ├── worker_events.csv     # Historial de conexiones/desconexiones de Workers
     ├── ps_logs.txt           # Todos los logs del PS
+    ├── metadata.json         # Estadísticas finales (min/max loss, acc, etc.)
     ├── plot_3panels.png      # 3 gráficas horizontales (loss/acc/workers)
     ├── plot_loss.png         # Gráfica individual de Loss
     ├── plot_accuracy.png     # Gráfica individual de Accuracy
     ├── plot_workers.png      # Gráfica individual de Workers
-    └── metadata.json         # Estadísticas finales (min/max loss, acc, etc.)
+    ├── plot_band_loss.png    # Loss con banda de confianza ±1σ
+    ├── plot_band_acc.png     # Accuracy con banda de confianza ±1σ
+    ├── plot_staleness.png    # Staleness + factor de corrección α
+    └── plot_std.png          # Desviaciones estándar de Loss y Accuracy
 
 CARACTERÍSTICAS DE ESCALAS:
   - Loss/Workers: Escala automática con margen superior 10%
   - Accuracy: Escala con margen superior dinámico (20% del máximo)
   - Líneas guía: Opacidad reducida (alpha=0.15) excepto en Accuracy (alpha=0.4)
+
+GRAFICAS AVANZADAS:
+  - Bandas de confianza ±1σ con posicionamiento adaptativo de etiquetas
+  - Marcadores de máximo/mínimo histórico con detección de colisiones
+  - Recuadro de estadísticas en el punto final
+  - Eje secundario para σ en band plots
 """
 
 from __future__ import annotations
@@ -328,8 +339,9 @@ class ResultsExporter:
         2. Escribir config.json
         3. Escribir metrics.csv
         4. Escribir ps_logs.txt
-        5. Generar gráficas (plot_3panels.png, plot_comparison.png)
-        6. Escribir metadata.json
+         5. Generar gráficas (8 PNG: 3panels, loss, accuracy, workers, band_loss, band_acc, staleness, std)
+         6. Escribir worker_events.csv
+         7. Escribir metadata.json
 
         Garantía: Al finalizar, la carpeta contiene todos los archivos
         y el usuario puede acceder sin riesgo.

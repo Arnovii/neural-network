@@ -1,7 +1,7 @@
 # Guión de Defensa Académica: Sistema Distribuido de Entrenamiento E2E para ImageNet-1k
 
 **Documento de Presentación para Exposición Oral**  
-Versión Final | Abril 2026  
+Versión Final | Mayo 2026  
 Basado en análisis del código fuente completo (sin especulaciones)
 
 ---
@@ -182,7 +182,7 @@ Parámetros globales CNN + MLP
 
 El usuario lanza el PS desde línea de comandos o GUI. El script de entrada (`ps_imagenet.py` o `ps_gui_imagenet.py`) hace lo siguiente:
 
-1. **Parsear argumentos de configuración**: learning_rate (0.001 por defecto), staleness_lambda (0.1 por defecto), batch_size, image_size, arquitectura CNN, etc.
+1. **Parsear argumentos de configuración**: learning_rate (0.01 por defecto), staleness_lambda (0.1 por defecto), batch_size, image_size, arquitectura CNN, etc.
 
 2. **Crear instancia PS**: Se instancia un objeto ParameterServer con esos parámetros. Inicialmente, el PS no tiene CNNni MLP asignados.
 

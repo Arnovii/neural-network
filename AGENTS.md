@@ -25,7 +25,7 @@ Sistema de entrenamiento distribuido asíncrono con arquitectura Parameter Serve
 ## Usage
 
 ```bash
-# PS con GUI (recomendado, no tiene export-dir integrado aún)
+# PS con GUI (recomendado)
 python ps_gui_imagenet.py --hf-token "hf_..."
 
 # Worker (conecta al PS automáticamente)
@@ -97,23 +97,28 @@ READY → WORKER_ID → CONFIG → CNN_WEIGHTS → CNN_ACK → START
 | `MLPPyTorch` | `Model/mlp_pytorch.py` | 2-layer MLP classifier |
 | `ImageNetStream` | `Utils/imagenet_streaming.py` | HuggingFace streaming |
 | `PrefetchBuffer` | `Utils/imagenet_streaming.py` | Async prefetch |
-| `ResultsExporter` | `Utils/results_exporter.py` | Exporta métricas/plots |
+| `ResultsExporter` | `Utils/results_exporter.py` | Exporta métricas/plots (13 archivos) |
 | `FormattedLogger` | `Utils/logging_util.py` | Colored logging |
 
 ## Plot Generation (ResultsExporter)
 Sistema completamente desacoplado de exportación de resultados que genera:
 
-### 9 Archivos por Experimento
+### 13 Archivos por Experimento
 ```
 ./Exports/[timestamp]/
 ├── config.json           # Configuración del experimento
-├── metrics.csv           # Series de tiempo (step, loss, acc, workers)
+├── metrics.csv           # Series de tiempo (step, loss, acc, workers, stds, staleness)
+├── worker_events.csv     # Historial de conexiones/desconexiones de Workers
 ├── ps_logs.txt           # Todos los logs del Parameter Server
 ├── metadata.json         # Estadísticas finales
 ├── plot_3panels.png      # 3 gráficas (Loss | Accuracy | Workers) - 283 KB
 ├── plot_loss.png         # Gráfica individual de Loss
 ├── plot_accuracy.png     # Gráfica individual de Accuracy  
-└── plot_workers.png      # Gráfica individual de Workers
+├── plot_workers.png      # Gráfica individual de Workers
+├── plot_band_loss.png    # Loss con banda de confianza ±1σ
+├── plot_band_acc.png     # Accuracy con banda de confianza ±1σ
+├── plot_staleness.png    # Staleness y factor de corrección α
+└── plot_std.png          # Desviaciones estándar de Loss y Accuracy
 ```
 
 ### Estilos de Visualización
@@ -149,20 +154,25 @@ Este repo NO tiene configurado:
 2. **Separate LRs**: lr (MLP) + lr_cnn (E2E) — CNN necesita LR más bajo
 3. **Label smoothing**: 0.1 — reduce overconfidence
 4. **Weight decay**: 1e-4 (E2E) — regularización L2
-5. **Gradient clipping**: max_norm=1.0 — estabilidad en E2E
+5. **Gradient clipping**: max_norm=10.0 — estabilidad en E2E
 6. **Sharding**: strided index — Workers cubren dataset sin overlap
 
 ## Exports Structure
 ```
 ./Exports/[timestamp]/
-├── config.json
-├── metrics.csv
-├── ps_logs.txt
-├── plot_3panels.png
-├── plot_loss.png
-├── plot_accuracy.png
-├── plot_workers.png
-└── metadata.json
+├── config.json           # Configuración del experimento
+├── metrics.csv           # Series de tiempo (step, loss, acc, workers, stds, staleness, alpha)
+├── worker_events.csv     # Historial de conexiones/desconexiones de Workers
+├── ps_logs.txt           # Todos los logs del Parameter Server
+├── metadata.json         # Estadísticas finales
+├── plot_3panels.png      # 3 gráficas (Loss | Accuracy | Workers)
+├── plot_loss.png         # Gráfica individual de Loss
+├── plot_accuracy.png     # Gráfica individual de Accuracy
+├── plot_workers.png      # Gráfica individual de Workers
+├── plot_band_loss.png    # Loss con banda de confianza ±1σ
+├── plot_band_acc.png     # Accuracy con banda de confianza ±1σ
+├── plot_staleness.png    # Staleness y factor de corrección α
+└── plot_std.png          # Desviaciones estándar de Loss y Accuracy
 ```
 
 ## Common Issues
@@ -179,14 +189,15 @@ Este repo NO tiene configurado:
 | `Distributed/parameter_server.py` | 1-100 | Design notes, async-SGD, staleness |
 | `Distributed/worker_node.py` | 1-66 | Training modes, E2E vs MLP-only |
 | `Model/cnn_extractor.py` | 1-51 | Architecture docs (ResNet-18 vs Simple) |
-| `Utils/results_exporter.py` | 1-100 | Export system design, 9-file output |
-| `Utils/results_exporter.py` | 279-370 | Plot generation (_generate_plots + 5 methods) |
+| `Utils/results_exporter.py` | 1-100 | Export system design, 13-file output |
+| `Utils/results_exporter.py` | 279-370 | Plot generation (_generate_plots + 9 methods) |
 
 ## ResultsExporter Class (Utils/results_exporter.py)
 - **Thread-safe**: record_metric() y record_log() con locks
 - **Async finalize()**: Escritura no-bloqueante al finalizar
-- **5 Plot methods**: _plot_3panels(), _plot_individual_loss/accuracy/workers(), _plot_comparison()
+- **9 Plot methods**: _plot_3panels(), _plot_individual_loss/accuracy/workers(), _plot_band_loss/accuracy(), _plot_staleness(), _plot_std()
 - **Dynamic scaling**: Loss ±10%, Accuracy ±20%, Workers ±15%
+- **Adaptive labels**: Collision detection for ±1σ, min/max markers in band plots
 - **No dependencies**: Completamente desacoplado de ParameterServer
 - **Integration**: Registrado via logging_util.add_log_handler() en PS.listen()
 

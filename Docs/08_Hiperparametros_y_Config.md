@@ -132,15 +132,15 @@ if current_step % steps_per_report == 0:
 
 ### Metrics Window (Ventana Deslizante)
 
-**Default**: 200  
+**Default**: 50 (METRICS_WINDOW_DEFAULT)  
 **Rango**: (10, 5000)  
 **Efecto**: Tamaño de la ventana deslizante para calcular promedios de loss/accuracy
 
 ```python
 # Implementación (en parameter_server.py)
 class RunningMetrics:
-    def __init__(self, window=200):
-        self._losses = deque(maxlen=window)  # Últimos 200 valores
+    def __init__(self, window=50):
+        self._losses = deque(maxlen=window)  # Últimos 50 valores
         self._accs = deque(maxlen=window)
     
     def update(self, loss, acc):
@@ -148,7 +148,7 @@ class RunningMetrics:
         self._accs.append(acc)
     
     def snapshot(self):
-        avg_loss = mean(self._losses)  # Promedio de los últimos 200
+        avg_loss = mean(self._losses)  # Promedio de los últimos 50
         avg_acc = mean(self._accs)
         return avg_loss, avg_acc
 ```
@@ -159,7 +159,7 @@ class RunningMetrics:
 |---|---|---|---|---|
 | 10 | Bajo (ruidoso) | Muy rpdo (0.1s) | Casi inmediato | DEBUG |
 | 50 | Medio (bueno) | Responsivo (5s) | Minutos | ✅ **RECOMENDADO** |
-| 200 | Alto (suave) | Lento (20s) | Varios min | PRODUCCIÓN |
+| 200 | Alto (suave) | Lento (20s) | Varios min | PRODUCCIÓN (default es 50, 200 para promedios más suaves) |
 | 500 | MuyAlto | Muy lento (50s) | 5-10 min | LARGA DURACIÓN |
 
 **Relación con Steps Per Report**:
@@ -183,14 +183,14 @@ ventana=200, steps_per_report=500:
   - ✓ Debugging y experimentación  
   - ✗ Ruidoso (accuracy fluctúa)
 
-- **Alta ventana (200-500)**:
+- **Alta ventana (200-500)** (default es 50):
   - ✓ Muy suavizado
   - ✓ Tendencia clara
   - ✗ Demora ~200-500 steps antes de cambios visibles (~5-10 minutos)
 
 **Recomendación operacional**:
-- **50** para experimentación rápida (ves resultados cada minuto)
-- **200** para entrenamiento largo estable (tendencia clara)
+- **50** (default METRICS_WINDOW_DEFAULT) para experimentación rápida (ves resultados cada minuto)
+- **200** para entrenamiento largo estable (tendencia clara, promedios más suaves)
 
 **Nota**: Esta ventana SOLO afecta el promedio mostrado. No afecta el entrenamiento real.
 
@@ -310,7 +310,7 @@ python ps_imagenet.py \
   --cnn-arch resnet18 \
   --steps-per-report 500 \
   --max-steps 50000 \
-  --metrics-window 200 \
+  --metrics-window 50 \
   --hf-token "hf_..."
 ```
 
@@ -490,7 +490,7 @@ from Utils.constants import DEFAULT_BATCH_SIZE, IMAGE_SIZE, COLORS
 | COLORS | dict | Paleta principal de colores (estado, métricas y UI) |
 | DEFAULT_BATCH_SIZE | 64 | Imágenes por batch en cada Worker |
 | DEFAULT_HOST | "0.0.0.0" | Host de escucha del PS por defecto |
-| DEFAULT_LR | 0.001 | Learning rate MLP |
+| DEFAULT_LR | 0.01 | Learning rate MLP |
 | DEFAULT_LR_CNN | 0.001 | Learning rate CNN (E2E) |
 | DEFAULT_PORT | 9999 | Puerto TCP del PS por defecto |
 | DEFAULT_SEED | None | Semilla por defecto (None = aleatorio) |

@@ -107,19 +107,19 @@ HF_TOKEN=hf_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 
 ## Componentes Principales
 
-| Componente | Rol | Ubicación |
-|---|---|---|
-| **Parameter Server (PS)** | Almacena y actualiza parámetros MLP globales | `Distributed/parameter_server.py` |
-| **Worker** | Entrena MLP localmente y envía parámetros actualizados | `Distributed/worker_node.py` |
-| **CNN Extractor** | ResNet-18 preentrenada (congelada) O SIMPLE CNN (entrenable E2E) | `Model/cnn_extractor.py` |
-| **MLP Classifier** | Clasificador con 2-3 capas entrenables | `Model/mlp_pytorch.py` |
-| **Streaming Pipeline** | Descarga y prepara batches desde HuggingFace | `Utils/imagenet_streaming.py` |
-| **Config Loader** | Carga .env y funciones de configuración | `Utils/config_loader.py` |
-| **Constants** | Constantes globales del proyecto | `Utils/constants.py` |
-| **Results Exporter** | Exporta métricas, logs y gráficas al finalizar | `Utils/results_exporter.py` |
-| **GUI** | Interfaz gráfica para control y monitoreo | `ps_gui_imagenet.py` |
-| **Terminal PS** | Point of entry para PS sin GUI | `ps_imagenet.py` |
-| **Terminal Worker** | Point of entry para Workers | `worker_imagenet.py` |
+| Component | File | Responsibility |
+|-----------|------|----------------|
+| **Parameter Server (PS)** | `Distributed/parameter_server.py` | Almacena y actualiza parámetros MLP globales |
+| **Worker** | `Distributed/worker_node.py` | Entrena MLP localmente y envía parámetros actualizados |
+| **CNN Extractor** | `Model/cnn_extractor.py` | ResNet-18 preentrenada (congelada) O SIMPLE CNN (entrenable E2E) |
+| **MLP Classifier** | `Model/mlp_pytorch.py` | Clasificador con 2-3 capas entrenables |
+| **Streaming Pipeline** | `Utils/imagenet_streaming.py` | Descarga y prepara batches desde HuggingFace |
+| **Config Loader** | `Utils/config_loader.py` | Carga .env y funciones de configuración |
+| **Constants** | `Utils/constants.py` | Constantes globales del proyecto |
+| `ResultsExporter` | `Utils/results_exporter.py` | Exportación desacoplada: 13 archivos (config, metrics, logs, 8 gráficas PNG, metadata) |
+| **GUI** | `ps_gui_imagenet.py` | Interfaz gráfica para control y monitoreo |
+| **Terminal PS** | `ps_imagenet.py` | Point of entry para PS sin GUI |
+| **Terminal Worker** | `worker_imagenet.py` | Point of entry para Workers |
 
 ## Flujo Conceptual
 
@@ -130,25 +130,25 @@ HF_TOKEN=hf_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 └──────────┬──────────┘
            │ (streaming)
     ┌──────▼──────────┐
-    │ Worker 0        │          ┌──────────────────────────────┐
-    │ CNN+MLP train   │          │ Parameter Server             │
-    │ (E2E)           │──┐       │ • CNN state (promediada)     │
-    │ Sync+Train+Send │  │ ─────►│ • MLP state (promediada)     │
-    └─────────────────┘  │       │ • version                    │
-                         │       │ • staleness correction       │
-    ┌─────────────────┐  │ ◄─────│                              │
-    │ Worker 1        │──┤ PARAMS                               │
-    │ CNN+MLP train   │  │ +UPDATES                             │
-    │ (E2E)           │  │       └──────────────────────────────┘
+    │ Worker 0        │              ┌──────────────────────────────┐
+    │ CNN+MLP train   │              │ Parameter Server             │
+    │ (E2E)           │──┐           │ • CNN state (promediada)     │
+    │ Sync+Train+Send │  │ ─────────►│ • MLP state (promediada)     │
+    └─────────────────┘  │           │ • version                    │
+                         │           │ • staleness correction       │
+    ┌─────────────────┐  │ ◄─────────│                              │
+    │ Worker 1        │──┤ PARAMS    │                              │
+    │ CNN+MLP train   │  │ +UPDATES  │                              │
+    │ (E2E)           │  │           └──────────────────────────────┘
     │ Sync+Train+Send │  │
     └─────────────────┘  │
                          │
     ┌─────────────────┐  │
-    │ Worker N        │──┤
-    │ CNN+MLP train   │  │
-    │ (E2E)           │  │
-    │ Sync+Train+Send │  │
-    └─────────────────┘  │
+    │ Worker N        │──┘
+    │ CNN+MLP train   │  
+    │ (E2E)           │  
+    │ Sync+Train+Send │  
+    └─────────────────┘  
 ```
 
 ## Alcance Actual
@@ -201,8 +201,8 @@ HF_TOKEN=hf_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 
 ## Versión y Estado
 
-**Versión**: 1.0 (Producción beta)  
-**Última actualización**: Abril 2026  
+**Versión**: 0.2.0 (Desarrollo activo)  
+**Última actualización**: Mayo 2026  
 **Estado**: Funcional y testeado con 1+ Workers
 
 ## Archivo de Entrada
@@ -214,13 +214,43 @@ HF_TOKEN=hf_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 ## Requisitos
 
 ```
-torch>=2.0.0
-torchvision>=0.15.0
-datasets>=2.10.0
-numpy>=1.24.0
-matplotlib>=3.6.0
-pillow>=9.0.0
+Python >= 3.13.5
+torch == 2.10.0
+torchvision == 0.25.0
+matplotlib == 3.10.8
+datasets == 4.8.4
+numpy == 2.4.2
+psutil == 7.2.2
+python-dotenv == 1.2.2
 ```
+
+## Sistema de Exportación de Resultados
+
+El `ResultsExporter` genera automáticamente **13 archivos por experimento**:
+
+### Archivos Generados
+```
+./Exports/[timestamp]/
+├── config.json           # Configuración del experimento
+├── metrics.csv           # Series de tiempo (step, loss, acc, workers, staleness, std_dev)
+├── ps_logs.txt           # Todos los logs del Parameter Server
+├── metadata.json         # Estadísticas finales
+├── plot_3panels.png      # 3 gráficas (Loss | Accuracy | Workers)
+├── plot_loss.png         # Gráfica individual de Loss
+├── plot_accuracy.png     # Gráfica individual de Accuracy
+├── plot_workers.png      # Gráfica individual de Workers
+├── plot_staleness.png    # Gráfica de staleness promedio por step
+├── plot_std_dev.png      # Gráfica de desviaciones estándar
+├── plot_loss_band.png    # Gráfica de Loss con banda de confianza ±1σ
+├── plot_accuracy_band.png # Gráfica de Accuracy con banda de confianza ±1σ
+└── plot_workers_band.png # Gráfica de Workers con banda de confianza ±1σ
+```
+
+### Características de las Gráficas
+- **Bandas de confianza ±1σ**: Áreas sombreadas alrededor de las métricas principales
+- **Posicionamiento adaptativo de etiquetas**: Evolución temporal de métricas y desviaciones
+- **Gráficas de staleness**: Visualización de la antigüedad de parámetros por Worker
+- **Gráficas de desviaciones estándar**: Monitoreo de la varianza entre Workers
 
 ## Estructura de Directorios
 
@@ -258,5 +288,9 @@ neural-network/
     ├── 06_Comunicacion.md
     ├── 07_GUI_y_Monitoreo.md
     ├── 08_Hiperparametros_y_Config.md
-    └── 09_Streaming.md
+    ├── 09_Streaming.md
+    ├── 10_Guion_Defensa_Academica_Completo.md
+    ├── 11_Exportacion_Resultados.md
+    ├── 12_Configuracion_Entorno.md
+    └── 13_Especificaciones_Entorno_y_Stack_Tecnologico.md
 ```

@@ -394,8 +394,8 @@ En este proyecto: **Nunca se adquieren múltiples locks simultáneamente**.
 
 ```python
 class RunningMetrics:
-    def __init__(self, window=200):
-        self.window = window  # Últimas 200 métricas
+    def __init__(self, window=50):
+        self.window = window  # Últimas 50 métricas
         self._losses = deque(maxlen=window)
         self._accuracies = deque(maxlen=window)
         self._staleness = deque(maxlen=window)
@@ -773,6 +773,27 @@ python ps_imagenet.py \
     --export-dir ./mis_resultados \
     --hf-token "hf_..."
 ```
+
+### Opciones de Línea de Comandos (ps_imagenet.py)
+
+| Parámetro | Default | Descripción |
+|----------|---------|-------------|
+| `--host` | `0.0.0.0` | Host de escucha del PS |
+| `--port` | `9999` | Puerto TCP del PS |
+| `--lr` | `0.01` | Learning rate MLP |
+| `--staleness-lambda` | `0.1` | Factor de corrección de staleness |
+| `--hidden1` | `1024` | Neuronas capa oculta 1 del MLP |
+| `--hidden2` | `512` | Neuronas capa oculta 2 del MLP |
+| `--batch-size` | `64` | Imágenes por batch |
+| `--image-size` | `224` | Resolución de imágenes |
+| `--dataset` | `ILSVRC/imagenet-1k` | Dataset HuggingFace |
+| `--cnn-arch` | `resnet18` | Arquitectura CNN (`resnet18` o `simple`) |
+| `--seed` | `None` | Semilla RNG (None = aleatorio) |
+| `--steps-per-report` | `500` | Steps entre reportes |
+| `--max-steps` | `0` (sin límite) | Límite de steps de entrenamiento |
+| `--metrics-window` | `50` | Tamaño de ventana deslizante de métricas |
+| `--hf-token` | `None` | Token de HuggingFace |
+| `--export-dir` | `./Exports` | Directorio de exportación de resultados |
 
 ---
 

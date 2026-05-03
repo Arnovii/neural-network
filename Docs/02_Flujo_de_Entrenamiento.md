@@ -422,7 +422,7 @@ t=200  W0 [compute]               W1 recv PARAMS (v=1)    W2 REQUEST_PARAMS (v=3
 
 | Problema | Causa | Solución |
 |---|---|---|
-| **Loss constante** | MLP no entrena | Verificar learning rate (default 0.001) |
+| **Loss constante** | MLP no entrena | Verificar learning rate (default 0.01) |
 | **Loss NaN/Inf** | Gradientes explotan | Reducir LR, revisar inicialización |
 | **Memory error** | Buffer prefetch demasiado grande | Reducir `--prefetch` |
 | **Worker desconecta** | Timeout en recv | Aumentar timeout, revisar red |

@@ -32,7 +32,7 @@ La interfaz gráfica es el **front-end de control y monitoreo** del sistema dist
 │  * Dataset              │  │ 0  │ 127.0.0.1    │ Activo    │          │
 │    ├─ ILSVRC/...        │  │ 1  │ 192.168.1.2  │ Activo    │          │
 │                         │  └───────────────────────────────┘          │
-│  * CNN Extractor        │  Status: [◆ TRAINING | ◆ LISTENING | ...]  │
+│  * CNN Extractor        │  Status: [◆ TRAINING | ◆ LISTENING | ...]   │
 │    ├─ ResNet-18         │                                             │
 │    ├─ Simple            │  Métricas en Tiempo Real:                   │
 │                         │  ├─ Step: 1,234                             │
@@ -41,10 +41,10 @@ La interfaz gráfica es el **front-end de control y monitoreo** del sistema dist
 │    ├─ h2: 512           │  ├─ Staleness: 2                            │
 │                         │                                             │
 │  * Async SGD            │  [GRÁFICAS]                                 │
-│    ├─ LR: 0.001         │  ┌──────────┬──────────┬──────────┐         │
+│    ├─ LR: 0.01          │  ┌──────────┬──────────┬──────────┐         │
 │    ├─ λ: 0.1            │  │ Loss     │ Accuracy │ Workers  │         │
-│    ├─ steps/report: 500 │  │ [plot]   │ [plot]   │ [plot]   │         │
-│    ├─ window: 200       │  └──────────┴──────────┴──────────┘         │
+│    ├─ steps/report: 10  │  │ [plot]   │ [plot]   │ [plot]   │         │
+│    ├─ window: 50        │  └──────────┴──────────┴──────────┘         │
 │                         │                                             │
 │  * Evaluación           │  [LOG]                                      │
 │    ├─ Batches: 50       │  [W0] Conectado | rank=0/1                  │
@@ -162,10 +162,10 @@ La interfaz gráfica es el **front-end de control y monitoreo** del sistema dist
 - ` h2` (int): default 512
 
 **Async SGD**:
-- `LR` (float): default 0.001, range (0.00001, 1.0)
+- `LR` (float): default 0.01, range (0.00001, 1.0)
 - `λ (Staleness)` (float): default 0.1,range (0.0, 1.0)
 - `Steps/Reporte` (int): default 500
-- `Ventana Métricas` (int): default 200
+- `Ventana Métricas` (int): default 50 (METRICS_WINDOW_DEFAULT)
 - `Límite Steps` (int, opcional): default vacío (sin límite)
 
 **Evaluación**:
@@ -248,7 +248,7 @@ Acc: 14.06%  ← En la etiqueta encima del gráfico de precisión
 **Implementación** (en parameter_server.py):
 ```python
 class RunningMetrics:
-    def __init__(self, window=200):
+    def __init__(self, window=50):
         self._accs = collections.deque(maxlen=window)
     
     def update(self, loss, acc):

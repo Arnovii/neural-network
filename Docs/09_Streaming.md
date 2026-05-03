@@ -136,7 +136,7 @@ class ImageNetStream:
         batch_size=64,           # Imágenes por batch
         num_workers=1,           # Número de Workers totales
         rank=0,                  # ID del Worker actual (0..num_workers-1)
-        shuffle_buffer=5000,     # Tamaño de buffer shuffle
+        shuffle_buffer=1000,     # Tamaño de buffer shuffle (SHUFFLE_BUFFER_DEFAULT)
         image_size=224,          # Resolución de salida
         hf_token=None,           # Token de HuggingFace
         dataset_name='ILSVRC/imagenet-1k'  # Dataset ID

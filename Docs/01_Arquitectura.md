@@ -254,7 +254,7 @@ rank=2, num_workers=3 → muestras 2, 5, 8, 11, ... (1/3 del dataset)
 
 | Constante | Valor | Descripción |
 |---|---|---|
-| `DEFAULT_LR` | 0.001 | Learning rate del MLP |
+| `DEFAULT_LR` | 0.01 | Learning rate del MLP |
 | `DEFAULT_LR_CNN` | 0.001 | Learning rate CNN (E2E) |
 | `HIDDEN1_DEFAULT` | 1024 | Neuronas capa oculta 1 |
 | `HIDDEN2_DEFAULT` | 512 | Neuronas capa oculta 2 |
@@ -314,17 +314,22 @@ ip = get_worker_ip("127.0.0.1")  # "127.0.0.1"
 - Escribir archivos organizados en directorio por timestamp
 - Thread-safe: permite escritura concurrente sin bloqueos
 
-**Archivos generados por experimento**:
+**Archivos generados por experimento (13 archivos)**:
 ```
 ./Exports/[timestamp]/
 ├── config.json           # Configuración completa del experimento
-├── metrics.csv         # Series de tiempo (step, loss, acc, workers, elapsed)
-├── ps_logs.txt        # Todos los logs del Parameter Server
-├── metadata.json      # Estadísticas finales (step final, loss/acc final, workers máx)
-├── plot_3panels.png # 3 gráficas combinadas (Loss | Accuracy | Workers)
-├── plot_loss.png     # Gráfica individual de Loss
-├── plot_accuracy.png # Gráfica individual de Accuracy
-└── plot_workers.png # Gráfica individual de Workers activos
+├── metrics.csv           # Series de tiempo (step, loss, acc, workers, elapsed)
+├── ps_logs.txt          # Todos los logs del Parameter Server
+├── metadata.json        # Estadísticas finales (step final, loss/acc final, workers máx)
+├── hyperparameters.json  # Hiperparámetros efectivos
+├── checkpoint.pth       # Checkpoint del modelo (si está habilitado)
+├── summary.txt          # Resumen ejecutivo del entrenamiento
+├── export_info.json     # Información de exportación
+├── plot_3panels.png     # 3 gráficas combinadas (Loss | Accuracy | Workers)
+├── plot_loss.png        # Gráfica individual de Loss
+├── plot_accuracy.png    # Gráfica individual de Accuracy
+├── plot_workers.png     # Gráfica individual de Workers activos
+└── plot_staleness.png   # Gráfica de staleness over time
 ```
 
 **Estilos de visualización**:
@@ -334,12 +339,14 @@ ip = get_worker_ip("127.0.0.1")  # "127.0.0.1"
 - Grid: alpha=0.15 (Loss/Workers), alpha=0.4 (Accuracy)
 - Escala: Loss/Workers (±10%), Accuracy (dinámico ±20%)
 
-**Integración**:
+**Integración vía logging_util**:
 ```python
 # En parameter_server.py:
+from Utils.logging_util import add_log_handler
+
 self._results_exporter = ResultsExporter(config=config, export_dir="./Exports")
-_log.add_log_handler(self._results_exporter.record_log)
-export_path = self._results_exporter.finalize()  # Al finalizar
+add_log_handler(self._results_exporter.record_log)  # Registrado via logging_util
+export_path = self._results_exporter.finalize()  # Al finalizar (async)
 ```
 
 ### 9. Comunicación (Protocolo)

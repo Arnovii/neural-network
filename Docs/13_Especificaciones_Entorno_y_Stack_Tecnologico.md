@@ -133,7 +133,7 @@ Esto significa que la GUI no depende de un framework externo pesado: el proyecto
 
 #### `mplcursors` 0.7
 
-Está declarado en el proyecto como dependencia de visualización interactiva, aunque no aparece como import directo en el código analizado del workspace. Conviene tratarlo como dependencia declarada del stack de visualización, no como una pieza central del runtime.
+Está declarado en el proyecto como dependencia de visualización interactiva para características de GUI. Aunque no aparece como import directo en el código analizado del workspace, habilita interactividad en las gráficas de matplotlib dentro de la interfaz gráfica del PS. Conviene tratarlo como dependencia declarada del stack de visualización, no como una pieza central del runtime.
 
 ### 5. Capa de configuración y entorno
 
@@ -165,10 +165,11 @@ Está declarado en la configuración del proyecto, aunque no apareció como impo
 - `Model/cnn_extractor.py`: encapsula la extracción de características visuales.
 - `Model/mlp_pytorch.py`: implementa el clasificador MLP.
 - `Utils/imagenet_streaming.py`: crea el pipeline de streaming, augmentación y sharding.
-- `Utils/results_exporter.py`: exporta métricas, logs y gráficas del experimento.
-- `Utils/logging_util.py`: centraliza el logging formateado del sistema.
+- `Utils/results_exporter.py`: exporta métricas, logs y gráficas del experimento (13 archivos).
+- `Utils/logging_util.py`: centraliza el logging formateado del sistema e integra ResultsExporter vía `add_log_handler()`.
 - `Utils/config_loader.py`: resuelve tokens y variables del entorno.
 - `Utils/constants.py`: concentra los valores por defecto y constantes compartidas.
+- `Scripts/results_exporter_smoke_test.py`: script de validación para ResultsExporter.
 
 ### Servicios externos
 

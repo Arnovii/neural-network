@@ -61,19 +61,23 @@ result_dir = exporter.finalize()
 ### Directorio por Sesión
 
 ```
-./Exports/20260421_193015_550/
-├── config.json           # ← Configuración del experimento
-├── metrics.csv           # ← Series de tiempo
-├── ps_logs.txt           # ← Logs del Parameter Server
-├── metadata.json         # ← Estadísticas finales
-├── plot_3panels.png      # ← Combinación: Loss | Accuracy | Workers
-├── plot_loss.png         # ← Gráfica individual Loss
-├── plot_accuracy.png     # ← Gráfica individual Accuracy
-├── plot_workers.png      # ← Gráfica individual Workers
-└── plot_comparison.png   # ← Comparación Loss vs Accuracy (ejes duales)
+./Exports/[timestamp]/
+├── config.json           # Configuración del experimento
+├── metrics.csv           # Series de tiempo (step, loss, acc, workers, stds, staleness, alpha)
+├── worker_events.csv     # Historial de conexiones/desconexiones de Workers
+├── ps_logs.txt           # Logs completos del Parameter Server
+├── metadata.json         # Estadísticas finales (min/max loss, acc, etc.)
+├── plot_3panels.png      # 3 gráficas horizontales (Loss | Accuracy | Workers)
+├── plot_loss.png         # Gráfica individual de Loss
+├── plot_accuracy.png     # Gráfica individual de Accuracy
+├── plot_workers.png      # Gráfica individual de Workers activos
+├── plot_band_loss.png    # Loss con banda de confianza ±1σ y posicionamiento adaptativo
+├── plot_band_acc.png     # Accuracy con banda de confianza ±1σ y posicionamiento adaptativo
+├── plot_staleness.png    # Staleness + factor de corrección α = 1/(1+λ·s)
+└── plot_std.png          # Desviaciones estándar de Loss y Accuracy
 ```
 
-**Total**: 9 archivos por experimento
+**Total**: 13 archivos por experimento
 
 ---
 
@@ -127,12 +131,10 @@ result_dir = exporter.finalize()
 
 **Formato**:
 ```
-step,loss,accuracy,num_workers,elapsed_seconds
-1,7.0706,0.0000,1,0.0
-2,7.0633,0.0000,1,2.5
-3,7.0375,0.0052,1,5.1
-4,7.0262,0.0039,1,7.8
-5,7.0419,0.0031,1,10.2
+step,loss,accuracy,num_workers,loss_std,acc_std,staleness,alpha,elapsed_seconds
+1,7.0706,0.0000,1,0.0000,0.0000,0,1.0,0.0
+2,7.0633,0.0000,1,0.0050,0.0010,1,0.909,2.5
+3,7.0375,0.0052,1,0.0100,0.0020,2,0.833,5.1
 ...
 ```
 
@@ -141,6 +143,10 @@ step,loss,accuracy,num_workers,elapsed_seconds
 - `loss`: Pérdida en ventana deslizante
 - `accuracy`: Precisión en porcentaje (0-100)
 - `num_workers`: Workers conectados
+- `loss_std`: Desviación estándar de loss entre workers
+- `acc_std`: Desviación estándar de accuracy entre workers
+- `staleness`: Versión de retraso (diferencia de versiones)
+- `alpha`: Factor de corrección α = 1/(1+λ·s)
 - `elapsed_seconds`: Tiempo desde primer step (segundos)
 
 **Uso típico**:
@@ -162,7 +168,26 @@ plt.title('Training Loss')
 plt.savefig('custom_loss.png', dpi=150)
 ```
 
-### 3. ps_logs.txt
+### 3. worker_events.csv
+
+**Propósito**: Registra eventos de conexión y desconexión de Workers con marcas de tiempo.
+
+**Formato**:
+```
+timestamp,event,worker_id,details
+2026-04-21 19:30:25.563,CONNECT,0,127.0.0.1:50603
+2026-04-21 20:15:42.123,DISCONNECT,0,Timeout
+2026-04-21 20:16:01.456,CONNECT,1,192.168.1.105:51234
+...
+```
+
+**Campos**:
+- `timestamp`: Marca de tiempo del evento (ISO 8601)
+- `event`: Tipo de evento (CONNECT, DISCONNECT)
+- `worker_id`: ID del Worker afectado
+- `details`: Información adicional (IP:puerto, razón de desconexión, etc.)
+
+### 4. ps_logs.txt
 
 **Propósito**: Historial completo de eventos del Parameter Server.
 
@@ -187,7 +212,7 @@ END OF LOGS
 ================================================================================
 ```
 
-### 4. metadata.json
+### 5. metadata.json
 
 **Propósito**: Estadísticas agregadas para resumen rápido.
 
@@ -221,7 +246,7 @@ END OF LOGS
 
 **Nota**: `duration_seconds` mide el tiempo desde que se recibió el primer step hasta que se detuvo el entrenamiento.
 
-### 5-9. plot_*.png
+### 6-13. plot_*.png
 
 **Propósito**: Visualizaciones para reportes académicos/profesionales.
 
@@ -265,22 +290,21 @@ Combinación de 3 gráficas en un solo archivo:
 
 Gráficas individuales para zoom en cada métrica.
 
-#### plot_comparison.png
+#### plot_band_loss.png
 
-Ejes Y duales (twinx) para comparación Loss vs Accuracy:
+Gráfica de loss con banda de confianza ±1σ, línea de tendencia, anotaciones de ±1σ en el punto final, eje secundario para σ, marcador de máximo histórico y recuadro de estadísticas.
 
-```
-┌──────────────────────────────────────────┐
-│ Loss vs Accuracy                         │
-│ ┌──────────────────────────────────────┐ │
-│ │ 7.08 ●         0.006 ■               │ │
-│ │      ●●●●    ●  ■ ■  ■               │ │
-│ │ 7.02          ●●■■■■■■■■■■           │ │
-│ │ Loss (red)    Accuracy (green)       │ │
-│ └──────────────────────────────────────┘ │
-│ Training Step                            │
-└──────────────────────────────────────────┘
-```
+#### plot_band_acc.png
+
+Gráfica de precisión con banda de confianza ±1σ, posicionamiento adaptativo de etiquetas para evitar colisiones, marcadores de máximo/mínimo.
+
+#### plot_staleness.png
+
+Dos paneles verticales mostrando staleness (versiones de retraso) y factor alpha = 1/(1+λ·s).
+
+#### plot_std.png
+
+Dos paneles verticales mostrando desviaciones estándar de loss y precisión.
 
 ---
 
@@ -294,7 +318,7 @@ python ps_imagenet.py \
   --max-steps 10000
 ```
 
-**Resultado**: `./resultados_exp1/[timestamp]/` con 9 archivos.
+**Resultado**: `./resultados_exp1/[timestamp]/` con 13 archivos.
 
 ### En Distributed/parameter_server.py
 
@@ -412,10 +436,14 @@ for name, metrics in results.items():
 - **Desventaja**: Escalas rígidas pueden cortar datos si hay picos inesperados
 - **Solución**: Revisar datos en metrics.csv si sospecha anomalías
 
+### Posicionamiento Adaptativo de Etiquetas
+
+Las gráficas de banda (`plot_band_loss.png`, `plot_band_acc.png`) utilizan un sistema de detección de colisiones para posicionar automáticamente las etiquetas (±1σ, marcadores de máximo/mínimo) dentro de los límites de los ejes, evitando superposiciones con los datos o fuera del área visible.
+
 ### Sin Compresión
 
 - Archivos PNG sin compresión JPEG (PNG es lossless)
-- 5 PNGs ≈ 850 KB totales por experimento
+- 8 PNGs ≈ 1.3 MB totales por experimento
 - **Solución**: Scripts de post-processing para comprimir
 
 ---

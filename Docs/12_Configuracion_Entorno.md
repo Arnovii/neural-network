@@ -126,7 +126,7 @@ Worker host: 192.168.1.100  (usar como --server-host en workers)
 |----------|----------|------------|
 | `--host` | `0.0.0.0` | Host del PS |
 | `--port` | `9999` | Puerto TCP |
-| `--lr` | `0.001` | Learning rate MLP |
+| `--lr` | `0.01` | Learning rate MLP |
 | `--lr-cnn` | `0.001` | Learning rate CNN (E2E) |
 | `--staleness-lambda` | `0.1` | Factor de corrección staleness |
 | `--hidden1` | `1024` | neuronas capa oculta 1 |
@@ -156,7 +156,7 @@ Worker host: 192.168.1.100  (usar como --server-host en workers)
 ```python
 from Utils.constants import (
     # Rede
-    DEFAULT_LR = 0.001,
+    DEFAULT_LR = 0.01,
     DEFAULT_LR_CNN = 0.001,
     HIDDEN1_DEFAULT = 1024,
     HIDDEN2_DEFAULT = 512,
