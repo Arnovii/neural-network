@@ -99,7 +99,7 @@ def get_worker_ip(host: str) -> str:
         >>> get_worker_ip("127.0.0.1")
         '127.0.0.1'
     """
-    if host == "0.0.0.0":
+    if host == "0.0.0.0":  # noqa: S104 (detection logic, not binding)
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
                 s.connect(("8.8.8.8", 80))

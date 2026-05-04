@@ -320,9 +320,7 @@ class PSApp:
         cv.pack(side="left", fill="both", expand=True)
         sb.pack(side="right", fill="y")
 
-        ttk.Label(frm, text="PS — ImageNet-1k", font=("Helvetica", 13, "bold")).pack(
-            pady=6
-        )
+        ttk.Label(frm, text="PS — ImageNet-1k", font=("Helvetica", 13, "bold")).pack(pady=6)
 
         # ── Conexión ──
         self._section(frm, "Conexión TCP")
@@ -330,9 +328,7 @@ class PSApp:
         self._v_port = tk.IntVar(value=DEFAULT_PORT)
         ent_host = self._entry(frm, "Host:", self._v_host)
         ent_port = self._entry(frm, "Puerto:", self._v_port, width=10)
-        ToolTip(
-            ent_host, "IP donde escuchará el servidor (0.0.0.0 = todas las interfaces)"
-        )
+        ToolTip(ent_host, "IP donde escuchará el servidor (0.0.0.0 = todas las interfaces)")
         ToolTip(ent_port, "Puerto TCP para comunicación con Workers")
 
         # ── Dataset ──
@@ -344,9 +340,7 @@ class PSApp:
         ent_token = ttk.Entry(frm, textvariable=self._v_hf_token, width=30, show="*")
         ent_token.pack(fill=tk.X, pady=2)
         self._config_widgets.append(ent_token)
-        ToolTip(
-            ent_dataset, "Dataset HF Hub (ej: ILSVRC/imagenet-1k, timm/imagenet-1k-wds)"
-        )
+        ToolTip(ent_dataset, "Dataset HF Hub (ej: ILSVRC/imagenet-1k, timm/imagenet-1k-wds)")
         ToolTip(ent_token, "Token de acceso HF para datasets privados.")
         ttk.Label(
             frm,
@@ -462,9 +456,7 @@ class PSApp:
         ent_lambda = self._entry(frm, "Staleness λ (0–1):", self._v_lambda, width=12)
         ent_report = self._entry(frm, "Steps por reporte:", self._v_report, width=12)
         ent_window = self._entry(frm, "Ventana métricas:", self._v_window, width=12)
-        ent_max_steps = self._entry(
-            frm, "Límite steps (vacío=∞):", self._v_max_steps, width=12
-        )
+        ent_max_steps = self._entry(frm, "Límite steps (vacío=∞):", self._v_max_steps, width=12)
         ToolTip(
             ent_lambda,
             "Factor corrección staleness α(s)=1/(1+λ·s). λ=0: sin corrección, λ=1: fuerte.",
@@ -505,15 +497,9 @@ class PSApp:
 
         # ── Botones ──
         ttk.Separator(frm, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=(18, 8))
-        self._btn_listen = ttk.Button(
-            frm, text="Encender servidor", command=self._cmd_listen
-        )
-        self._btn_shutdown = ttk.Button(
-            frm, text="■  Detener todo", command=self._cmd_shutdown
-        )
-        self._btn_clear = ttk.Button(
-            frm, text="Limpiar gráficas", command=self._clear_plots
-        )
+        self._btn_listen = ttk.Button(frm, text="Encender servidor", command=self._cmd_listen)
+        self._btn_shutdown = ttk.Button(frm, text="■  Detener todo", command=self._cmd_shutdown)
+        self._btn_clear = ttk.Button(frm, text="Limpiar gráficas", command=self._clear_plots)
         for btn in (
             self._btn_listen,
             self._btn_shutdown,
@@ -549,9 +535,7 @@ class PSApp:
         wf.grid(row=0, column=0, sticky="ew", pady=(0, 6))
 
         cols = ("ID", "Dirección", "Estado")
-        self._tree = ttk.Treeview(
-            wf, columns=cols, show="headings", height=4, selectmode="none"
-        )
+        self._tree = ttk.Treeview(wf, columns=cols, show="headings", height=4, selectmode="none")
         for col, w in zip(cols, (60, 200, 120)):
             self._tree.heading(col, text=col)
             self._tree.column(col, width=w, anchor="center")
@@ -586,9 +570,7 @@ class PSApp:
             self._m_stale,
             self._m_clock,
         ):
-            ttk.Label(m_row, textvariable=v, font=("Courier", 9)).pack(
-                side=tk.LEFT, padx=10
-            )
+            ttk.Label(m_row, textvariable=v, font=("Courier", 9)).pack(side=tk.LEFT, padx=10)
 
         # ── Gráficas ──
         pf = ttk.Frame(right)
@@ -642,14 +624,10 @@ class PSApp:
         :returns: None
         :rtype: None
         """
-        ttk.Label(parent, text=text, font=("Helvetica", 10, "bold")).pack(
-            anchor=tk.W, pady=(14, 0)
-        )
+        ttk.Label(parent, text=text, font=("Helvetica", 10, "bold")).pack(anchor=tk.W, pady=(14, 0))
         ttk.Separator(parent, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=2)
 
-    def _entry(
-        self, parent: ttk.Frame, label: str, var: tk.Variable, width: int = 22
-    ) -> ttk.Entry:
+    def _entry(self, parent: ttk.Frame, label: str, var: tk.Variable, width: int = 22) -> ttk.Entry:
         """
         Crea un par etiqueta+entrada de texto para ingreso de parámetros.
 
@@ -760,7 +738,7 @@ class PSApp:
         for widget in self._config_widgets:
             try:
                 widget.configure(state=state)
-            except Exception:
+            except Exception:  # noqa: S110 (some widgets don't have state attribute)
                 # Algunos widgets no tienen state (e.g., Labels)
                 pass
 
@@ -787,17 +765,11 @@ class PSApp:
         :rtype: None
         """
         s = self._state
-        self._btn_listen.configure(
-            state=tk.NORMAL if s == self._S_OFFLINE else tk.DISABLED
-        )
+        self._btn_listen.configure(state=tk.NORMAL if s == self._S_OFFLINE else tk.DISABLED)
         self._btn_shutdown.configure(
-            state=tk.NORMAL
-            if s not in (self._S_OFFLINE, self._S_LOADING)
-            else tk.DISABLED
+            state=tk.NORMAL if s not in (self._S_OFFLINE, self._S_LOADING) else tk.DISABLED
         )
-        self._btn_eval.configure(
-            state=tk.NORMAL if s == self._S_TRAINING else tk.DISABLED
-        )
+        self._btn_eval.configure(state=tk.NORMAL if s == self._S_TRAINING else tk.DISABLED)
 
         cfg = {
             self._S_OFFLINE: ("OFFLINE", "#607D8B"),
@@ -906,9 +878,7 @@ class PSApp:
             messagebox.showerror("Token inválido", "Token debe empezar con 'hf_'")
             return
         if len(hf_token) < 20:
-            messagebox.showerror(
-                "Token inválido", "Token muy corto (mínimo 20 caracteres)"
-            )
+            messagebox.showerror("Token inválido", "Token muy corto (mínimo 20 caracteres)")
             return
 
         # Max steps: vacío → 0 (sin límite), o entero > 0
@@ -938,9 +908,7 @@ class PSApp:
         self._refresh_buttons()
         self._set_config_enabled(False)
         mode_str = "freeze" if arch == "resnet18" else "E2E"
-        self._status.set(
-            f"Cargando {arch} ({mode_str})... (puede tardar en la primera vez)"
-        )
+        self._status.set(f"Cargando {arch} ({mode_str})... (puede tardar en la primera vez)")
         self._log(
             f"[PS] Cargando CNN {arch} ({mode_str}) + MLP {h1}→{h2}→1000 | "
             f"lr_mlp={lr} lr_cnn={lr_cnn} | batch={bs} img={img_sz} seed={seed}"
@@ -986,9 +954,7 @@ class PSApp:
                     on_report=lambda step, loss, acc, elapsed: q.put(
                         ("report", (step, loss, acc, elapsed))
                     ),
-                    on_worker_connected=lambda wid, addr: q.put(
-                        ("connected", (wid, addr))
-                    ),
+                    on_worker_connected=lambda wid, addr: q.put(("connected", (wid, addr))),
                     on_worker_disconnected=lambda wid: q.put(("disconnected", (wid,))),
                     on_start_sent=lambda wid: q.put(("start_sent", (wid,))),
                 )
@@ -1162,9 +1128,7 @@ class PSApp:
             """
             q.put(("log", f"[PS] Evaluando ({n_bat} batches de validacion)..."))
             try:
-                acc, loss = ps.evaluate(
-                    dataset_name=dataset, max_batches=n_bat, hf_token=hf_token
-                )
+                acc, loss = ps.evaluate(dataset_name=dataset, max_batches=n_bat, hf_token=hf_token)
                 step = ps.current_version
                 q.put(("val_result", (step, loss, acc)))
             except Exception as e:
@@ -1226,9 +1190,7 @@ class PSApp:
                     self._last_clock_update = (
                         time.perf_counter()
                     )  # Timestamp actual para calcular delta
-                    self._clock_running = (
-                        False  # Clock no inicia hasta primer worker conectado
-                    )
+                    self._clock_running = False  # Clock no inicia hasta primer worker conectado
                     self._state = self._S_LISTENING
                     self._refresh_buttons()
                     # NO programar update del reloj aún — esperamos primer on_step()
@@ -1239,9 +1201,7 @@ class PSApp:
                         f"feature_dim={fdim} | MLP {fdim}→{h1}→{h2}→1000 | lr_mlp={lr} | lr_cnn={lr_cnn} | "
                         f"batch={bs} | img={img_sz} | seed={seed}"
                     )
-                    self._status.set(
-                        f"Escuchando en {host}:{port} — esperando Workers..."
-                    )
+                    self._status.set(f"Escuchando en {host}:{port} — esperando Workers...")
 
                 elif kind == "init_error":
                     self._state = self._S_OFFLINE
@@ -1306,9 +1266,7 @@ class PSApp:
         tag = f"w{wid}"
         color = self.WORKER_COLORS[wid % len(self.WORKER_COLORS)]
         if not self._tree.exists(tag):
-            self._tree.insert(
-                "", tk.END, iid=tag, values=(wid, addr, "Activo"), tags=(tag,)
-            )
+            self._tree.insert("", tk.END, iid=tag, values=(wid, addr, "Activo"), tags=(tag,))
             self._tree.tag_configure(tag, foreground=color)
         self._refresh_buttons()
         self._log(f"[W{wid}] Conectado desde {addr}")
@@ -1368,14 +1326,10 @@ class PSApp:
         self._last_clock_update = time.perf_counter()
         self.root.after(CLOCK_UPDATE_MS, self._update_clock)
         self._refresh_buttons()
-        self._log(
-            f"[PS] ✓ START enviado a Worker {wid} — Entrenamiento iniciado (Clock activado)."
-        )
+        self._log(f"[PS] ✓ START enviado a Worker {wid} — Entrenamiento iniciado (Clock activado).")
         self._status.set("Entrenamiento asíncrono en progreso...")
 
-    def _on_step(
-        self, step: int, loss: float, acc: float, stale: int, elapsed: float
-    ) -> None:
+    def _on_step(self, step: int, loss: float, acc: float, stale: int, elapsed: float) -> None:
         """
         Actualiza métricas instantáneas de entrenamiento.
 
@@ -1465,9 +1419,7 @@ class PSApp:
             f"Step {step:,} | loss={loss:.4f} | acc={acc:.2f}% | "
             f"workers={len(self._workers)} | t={elapsed:.0f}s"
         )
-        self._log(
-            f"[Step {step:,}] loss={loss:.4f} (nats) | acc={acc:.2f}% | t={elapsed:.0f}s"
-        )
+        self._log(f"[Step {step:,}] loss={loss:.4f} (nats) | acc={acc:.2f}% | t={elapsed:.0f}s")
 
     def _update_clock(self) -> None:
         """Actualiza el reloj cada segundo continuamente desde que el PS esta listo.
@@ -1626,9 +1578,7 @@ class PSApp:
                 )
             self._ax_acc.legend(fontsize=8)
 
-            self._ax_wk.step(
-                self._steps_hist, self._workers_hist, color=COLORS["workers"], lw=2
-            )
+            self._ax_wk.step(self._steps_hist, self._workers_hist, color=COLORS["workers"], lw=2)
             self._ax_wk.set_ylim(0, max(self._workers_hist, default=1) + 1)
             self._ax_wk.yaxis.set_major_locator(MaxNLocator(integer=True))
 
@@ -1753,7 +1703,7 @@ def main() -> None:
         if app._ps:
             try:
                 app._ps.stop()
-            except Exception:
+            except Exception:  # noqa: S110 (cleanup code, PS may already be stopped)
                 pass
         root.destroy()
         os._exit(0)

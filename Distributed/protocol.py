@@ -152,8 +152,6 @@ def _recv_exact(sock: socket.socket, n: int) -> bytes:
     while len(buf) < n:  # Sigue leyendo hasta tener n bytes
         chunk = sock.recv(n - len(buf))  # Solo pide lo que falta
         if not chunk:
-            raise ConnectionError(
-                f"Conexión cerrada: esperados {n} bytes, recibidos {len(buf)}"
-            )
+            raise ConnectionError(f"Conexión cerrada: esperados {n} bytes, recibidos {len(buf)}")
         buf += chunk
     return buf

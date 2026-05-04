@@ -76,9 +76,7 @@ class MLPPyTorch(nn.Module):
         :rtype: None
         """
         super().__init__()
-        self.fc1 = nn.Linear(
-            feature_dim, hidden1
-        )  # nn.Linear = Capa totalmente conectada
+        self.fc1 = nn.Linear(feature_dim, hidden1)  # nn.Linear = Capa totalmente conectada
         self.bn0 = nn.BatchNorm1d(hidden1)
         self.fc2 = nn.Linear(hidden1, hidden2)
         self.bn1 = nn.BatchNorm1d(hidden2)
@@ -134,6 +132,5 @@ class MLPPyTorch(nn.Module):
         :rtype: Dict[str, np.ndarray]
         """
         return {
-            name: tensor.data.cpu().numpy().copy()
-            for name, tensor in self.state_dict().items()
+            name: tensor.data.cpu().numpy().copy() for name, tensor in self.state_dict().items()
         }

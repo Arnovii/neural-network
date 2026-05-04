@@ -108,9 +108,7 @@ def get_train_transform(image_size: int = IMAGE_SIZE) -> T.Compose:
             ),  # Perturbación ligera de color
             T.RandomHorizontalFlip(),  # A veces gira la imagen
             T.ToImage(),  # Convierte la imagen (PIL) a formato que PyTorch entiende
-            T.ToDtype(
-                torch.float32, scale=True
-            ),  # Convierte valores de 0-255 -> 0.0–1.0
+            T.ToDtype(torch.float32, scale=True),  # Convierte valores de 0-255 -> 0.0–1.0
             T.Normalize(mean=MEAN, std=STD),  # Ajusta los valores de la imagen
             T.RandomErasing(
                 p=0.25, scale=(0.02, 0.2), ratio=(0.3, 3.3), value=0
@@ -402,10 +400,10 @@ class ImageNetStream:
                     if img is None:
                         continue
                     try:
-                        tensor = self.transform(
-                            img
-                        )  # Aplicamos pipeline de get_train_transform()
-                    except Exception:
+                        tensor = self.transform(img)  # Aplicamos pipeline de get_train_transform()
+                    except Exception as e:
+                        # Transform falloso: muestra corrupta o incompatible, omitir
+                        print(f"[ImageNetStream] Skipping corrupted training sample: {e}")
                         continue
 
                     # Guardamos en el buffer
@@ -647,9 +645,7 @@ class PrefetchBuffer:
                 time.sleep(0.1)
                 continue
             if item is None:
-                raise RuntimeError(
-                    str(self._error) if self._error else "Stream terminado"
-                )
+                raise RuntimeError(str(self._error) if self._error else "Stream terminado")
             return item
 
     @property
@@ -751,10 +747,10 @@ class ValidationStream:
             if img is None:
                 continue
             try:
-                tensor = self.transform(
-                    img
-                )  # Aplicamos pipeline de get_val_transform()
-            except Exception:
+                tensor = self.transform(img)  # Aplicamos pipeline de get_val_transform()
+            except Exception as e:
+                # Transform falloso en validacion: muestra corrupta, omitir
+                print(f"[ImageNetStream] Skipping corrupted validation sample: {e}")
                 continue
             buf_X.append(tensor.numpy())
             buf_Y.append(label)

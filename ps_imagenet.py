@@ -129,15 +129,11 @@ def main() -> None:
             --hidden1 1024 \\
             --hidden2 512
     """
-    parser = argparse.ArgumentParser(
-        description="Parameter Server asíncrono — ImageNet-1k"
-    )
+    parser = argparse.ArgumentParser(description="Parameter Server asíncrono — ImageNet-1k")
     parser.add_argument("--host", type=str, default=DEFAULT_HOST)
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument("--lr", type=float, default=DEFAULT_LR)
-    parser.add_argument(
-        "--staleness-lambda", type=float, default=DEFAULT_STALENESS_LAMBDA
-    )
+    parser.add_argument("--staleness-lambda", type=float, default=DEFAULT_STALENESS_LAMBDA)
     parser.add_argument("--hidden1", type=int, default=HIDDEN1_DEFAULT)
     parser.add_argument("--hidden2", type=int, default=HIDDEN2_DEFAULT)
     parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE)
@@ -148,13 +144,9 @@ def main() -> None:
         default=HF_DATASET_DEFAULT,
         help="Dataset HuggingFace (default: ILSVRC/imagenet-1k)",
     )
-    parser.add_argument(
-        "--cnn-arch", type=str, default="resnet18", choices=["resnet18", "simple"]
-    )
+    parser.add_argument("--cnn-arch", type=str, default="resnet18", choices=["resnet18", "simple"])
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED)
-    parser.add_argument(
-        "--steps-per-report", type=int, default=STEPS_PER_REPORT_DEFAULT
-    )
+    parser.add_argument("--steps-per-report", type=int, default=STEPS_PER_REPORT_DEFAULT)
     parser.add_argument("--max-steps", type=int, default=MAX_STEPS_UNLIMITED)
     parser.add_argument("--metrics-window", type=int, default=METRICS_WINDOW_DEFAULT)
     parser.add_argument(
@@ -178,26 +170,18 @@ def main() -> None:
     print("PARAMETER SERVER ASÍNCRONO — ImageNet-1k")
     print("=" * 68)
     print(f"  Host              : {args.host}:{args.port}")
-    print(
-        f"  Worker host      : {get_worker_ip(args.host)}  (usar como --server-host en workers)"
-    )
+    print(f"  Worker host      : {get_worker_ip(args.host)}  (usar como --server-host en workers)")
     print(f"  CNN               : {args.cnn_arch}")
-    print(
-        f"  MLP               : feature_dim → {args.hidden1} → {args.hidden2} → {NUM_CLASSES}"
-    )
+    print(f"  MLP               : feature_dim → {args.hidden1} → {args.hidden2} → {NUM_CLASSES}")
     print(f"  Batch size        : {args.batch_size}  (enviado a Workers)")
     print(f"  Image size        : {args.image_size}  (enviado a Workers)")
-    print(
-        f"  Semilla           : {args.seed if args.seed is not None else 'aleatorio'}"
-    )
+    print(f"  Semilla           : {args.seed if args.seed is not None else 'aleatorio'}")
     print(f"  LR                : {args.lr}")
     print(f"  Staleness λ       : {args.staleness_lambda}")
     print(f"  Steps/reporte     : {args.steps_per_report}")
     print(f"  Max steps         : {args.max_steps or '∞'}")
     print(f"  Export dir        : {args.export_dir}")
-    print(
-        f"  HF Token          : {'✓ configurado' if hf_token else '✗ no configurado'}"
-    )
+    print(f"  HF Token          : {'✓ configurado' if hf_token else '✗ no configurado'}")
     print("=" * 68)
     print("  ℹ Esperando workers dinámicamente (sin límite)...\n")
 
@@ -246,9 +230,7 @@ def main() -> None:
         """
         print(f"  [-] Worker {wid} desconectado.")
 
-    def on_step(
-        step: int, loss: float, acc: float, staleness: int, elapsed: float
-    ) -> None:
+    def on_step(step: int, loss: float, acc: float, staleness: int, elapsed: float) -> None:
         """
         Callback de PS: se ejecuta después de cada step de entrenamiento.
 
@@ -322,9 +304,7 @@ def main() -> None:
         :rtype: None
         """
         print(f"\n{'─' * 60}")
-        print(
-            f"  Reporte | step={step:,} | loss={loss:.4f} | acc={acc:.2f}% | {elapsed:.0f}s"
-        )
+        print(f"  Reporte | step={step:,} | loss={loss:.4f} | acc={acc:.2f}% | {elapsed:.0f}s")
         print(f"{'─' * 60}\n")
 
     # ── Crear PS ──

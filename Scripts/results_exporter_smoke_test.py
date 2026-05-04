@@ -33,7 +33,7 @@ def simulate_step(step: int, total_steps: int) -> dict[str, Any]:
     progress = step / max(total_steps, 1)
     wave = math.sin(step / 37.0) * 0.08 + math.cos(step / 91.0) * 0.04
     trend = max(0.0, 2.7 - 1.9 * progress)
-    loss = max(0.03, trend + wave + random.uniform(-0.03, 0.03))
+    loss = max(0.03, trend + wave + random.uniform(-0.03, 0.03))  # noqa: S311 (simulation data, not cryptographic)
     accuracy = min(100.0, max(0.0, 4.0 + 94.0 * progress + math.sin(step / 53.0) * 1.5))
     workers = 1 + (step // 250) % 4
     elapsed = step * 0.42 + math.sin(step / 17.0) * 0.15

@@ -360,9 +360,7 @@ class ParameterServer:
         # Contador global de versión
         self._version: int = 0
         self._t_start: float = 0.0  # Tiempo de inicio (para elapsed)
-        self._t_start_initialized: bool = (
-            False  # Flag para inicializar solo una vez en START
-        )
+        self._t_start_initialized: bool = False  # Flag para inicializar solo una vez en START
 
         # CNN (para distribución inicial y evaluación)
         self._cnn: CNNExtractor | None = None
@@ -371,9 +369,7 @@ class ParameterServer:
         self._sockets: Dict[int, socket.socket] = {}
         self._addrs: Dict[int, str] = {}
         self._worker_freeze: Dict[int, bool] = {}  # wid -> freeze_cnn
-        self._worker_rank: Dict[
-            int, int
-        ] = {}  # wid -> rank (0-based, asignado dinámicamente)
+        self._worker_rank: Dict[int, int] = {}  # wid -> rank (0-based, asignado dinámicamente)
         self._next_id: int = 0
         self._next_rank: int = 0  # Contador para asignar ranks secuenciales
         self._workers_lock = threading.Lock()
@@ -486,11 +482,7 @@ class ParameterServer:
         # Detecta keys de BN que NO deben promediarse
         no_avg: set = set()
         for key, arr in mlp_state.items():
-            if (
-                "running_mean" in key
-                or "running_var" in key
-                or "num_batches_tracked" in key
-            ):
+            if "running_mean" in key or "running_var" in key or "num_batches_tracked" in key:
                 no_avg.add(key)
         with self._params_lock:
             self._mlp_state = {key: value.copy() for key, value in mlp_state.items()}
@@ -531,17 +523,13 @@ class ParameterServer:
             "seed": self.seed,
             "host": self.host,
             "port": self.port,
-            "cnn_arch": getattr(
-                self._cnn, "arch", "unknown"
-            ),  # Obtiene arquitectura CNN
+            "cnn_arch": getattr(self._cnn, "arch", "unknown"),  # Obtiene arquitectura CNN
             "hidden1": self.hidden1,
             "hidden2": self.hidden2,
             "steps_per_report": self.steps_per_report,
             "description": "Distributed Async-SGD on ImageNet-1k",
         }
-        self._results_exporter = ResultsExporter(
-            config=config, export_dir=self.export_dir
-        )
+        self._results_exporter = ResultsExporter(config=config, export_dir=self.export_dir)
 
         # Registra handler de logs en el logger global
         _log.add_log_handler(self._results_exporter.record_log)
@@ -590,8 +578,8 @@ class ParameterServer:
         if self._server_sock:
             try:
                 self._server_sock.close()
-            except Exception:
-                pass  # noqa: S110 (cleanup code, socket may already be closed)
+            except Exception:  # noqa: S110 (cleanup code, socket may already be closed)
+                pass
             self._server_sock = None
         if self._accept_thread:
             self._accept_thread.join(timeout=3)
@@ -667,7 +655,7 @@ class ParameterServer:
                 conn, addr = self._server_sock.accept()
             except socket.timeout:
                 continue
-            except Exception:
+            except Exception:  # noqa: S110 (receive error should not break accept loop)
                 break
 
             # Crea hilo por worker
@@ -676,6 +664,226 @@ class ParameterServer:
                 args=(conn, addr),
                 daemon=True,
             ).start()
+
+    # ========================================================================
+    # HANDSHAKE HELPERS (extraídos de _handle_new_connection para reducir complejidad)
+    # ========================================================================
+
+    def _receive_ready(self, conn: socket.socket) -> bool:
+        """Recibe y valida mensaje READY del Worker.
+
+        :param conn: Socket de conexion con el Worker.
+        :type conn: socket.socket
+
+        :returns: True si READY fue recibido correctamente, False en caso contrario.
+        :rtype: bool
+        """
+        try:
+            msg = receive_message(conn)
+        except Exception:  # noqa: S110 (receive error should not break PS)
+            conn.close()
+            return False
+        if msg["type"] != MsgType.READY:
+            conn.close()
+            return False
+        return True
+
+    def _register_worker(self, addr: tuple) -> tuple:
+        """Registra un nuevo Worker y asigna ID y rank.
+
+        :param addr: Tupla (IP, puerto) del cliente.
+        :type addr: tuple
+
+        :returns: Tupla (worker_id, rank).
+        :rtype: tuple
+        """
+        with self._workers_lock:
+            wid = self._next_id
+            self._next_id += 1
+            rank = self._next_rank
+            self._next_rank += 1
+            self._worker_freeze[wid] = False
+            self._worker_rank[wid] = rank
+        return wid, rank
+
+    def _send_worker_id(self, conn: socket.socket, wid: int) -> bool:
+        """Envia WORKER_ID al Worker.
+
+        :param conn: Socket de conexion con el Worker.
+        :type conn: socket.socket
+
+        :param wid: ID asignado al Worker.
+        :type wid: int
+
+        :returns: True si se envio correctamente, False en caso contrario.
+        :rtype: bool
+        """
+        try:
+            send_message(conn, MsgType.WORKER_ID, {"worker_id": wid})
+            return True
+        except Exception:  # noqa: S110 (worker_id send error should not break PS)
+            conn.close()
+            return False
+
+    def _send_config(self, conn: socket.socket, wid: int, rank: int, addr: tuple) -> bool:
+        """Envia CONFIG con parametros de streaming al Worker.
+
+        :param conn: Socket de conexion con el Worker.
+        :type conn: socket.socket
+
+        :param wid: ID del Worker.
+        :type wid: int
+
+        :param rank: Rank asignado al Worker.
+        :type rank: int
+
+        :param addr: Tupla (IP, puerto) del cliente.
+        :type addr: tuple
+
+        :returns: True si se envio correctamente, False en caso contrario.
+        :rtype: bool
+        """
+        try:
+            config = {
+                "batch_size": self.batch_size,
+                "image_size": self.image_size,
+                "dataset_name": self.dataset_name,
+                "seed": self.seed,
+                "rank": rank,
+                "num_workers": self._next_rank,
+                "hf_token": self.hf_token,
+            }
+            send_message(conn, MsgType.CONFIG, config)
+            return True
+        except Exception:  # noqa: S110 (config send error should not break PS)
+            conn.close()
+            return False
+
+    def _wait_for_model(self, wid: int) -> bool:
+        """Espera a que el modelo CNN+MLP este listo (max 120s).
+
+        :param wid: ID del Worker que espera.
+        :type wid: int
+
+        :returns: True si el modelo esta listo, False si timeout o shutdown.
+        :rtype: bool
+        """
+        deadline = 120.0
+        waited = 0.0
+        poll = 0.25
+        _log.ps(f"Worker {wid}: esperando modelo (max {int(deadline)} s)...")
+
+        while True:
+            with self._params_lock:
+                ready = self._cnn is not None and bool(self._mlp_state) and bool(self._cnn_state)
+            if ready:
+                return True
+            if waited >= deadline:
+                _log.error(f"Worker {wid}: timeout esperando CNN+MLP.")
+                return False
+            if self._shutdown.is_set():
+                return False
+            time.sleep(poll)
+            waited += poll
+
+    def _send_cnn_weights(self, conn: socket.socket, wid: int) -> bool:
+        """Envia CNN_WEIGHTS y procesa CNN_ACK del Worker.
+
+        :param conn: Socket de conexion con el Worker.
+        :type conn: socket.socket
+
+        :param wid: ID del Worker.
+        :type wid: int
+
+        :returns: True si la secuencia fue exitosa, False en caso contrario.
+        :rtype: bool
+        """
+        try:
+            if self._cnn is None:
+                raise RuntimeError("CNN not initialized when sending weights")
+            arch = self._cnn.arch
+            weights_bytes = self._cnn._get_weights_bytes()
+            with self._params_lock:
+                mlp_keys = list(self._mlp_state.keys())
+                cnn_key_count = len(self._cnn_state)
+
+            send_message(
+                conn,
+                MsgType.CNN_WEIGHTS,
+                {
+                    "arch": arch,
+                    "weights_bytes": weights_bytes,
+                    "mlp_keys": mlp_keys,
+                    "cnn_key_count": cnn_key_count,
+                },
+            )
+            _log.ps(
+                f"Worker {wid}: CNN enviada — arch={arch} | "
+                f"cnn_params={cnn_key_count} | mlp_keys={mlp_keys}"
+            )
+
+            ack = receive_message(conn)
+            if ack["type"] != MsgType.CNN_ACK:
+                _log.error(f"Worker {wid}: esperaba CNN_ACK, recibio {ack['type']}")
+                return False
+
+            ack_pl = ack.get("payload") or {}
+            if isinstance(ack_pl, dict):
+                ack_arch = ack_pl.get("arch")
+                freeze_flag = bool(ack_pl.get("freeze_cnn", False))
+                if ack_arch and ack_arch != arch:
+                    _log.error(f"Worker {wid}: mismatch arch PS={arch}, Worker={ack_arch}")
+                    return False
+                with self._workers_lock:
+                    self._worker_freeze[wid] = freeze_flag
+                mode = "freeze" if freeze_flag else "E2E"
+                _log.ps(f"Worker {wid}: CNN cargada ✓ arch={arch} mode={mode}")
+            else:
+                _log.ps(f"Worker {wid}: CNN cargada ✓ arch={arch}")
+            return True
+        except Exception as e:
+            _log.error(f"Error distribuyendo CNN a Worker {wid}: {e}")
+            return False
+
+    def _send_start(self, wid: int, conn: socket.socket, addr: tuple) -> bool:
+        """Envia START al Worker e inicializa temporizador.
+
+        :param wid: ID del Worker.
+        :type wid: int
+
+        :param conn: Socket de conexion con el Worker.
+        :type conn: socket.socket
+
+        :param addr: Tupla (IP, puerto) del cliente.
+        :type addr: tuple
+
+        :returns: True si se envio correctamente, False en caso contrario.
+        :rtype: bool
+        """
+        try:
+            send_message(conn, MsgType.START, {})
+
+            with self._params_lock:
+                if not self._t_start_initialized:
+                    self._t_start = time.perf_counter()
+                    self._t_start_initialized = True
+
+            if self.on_start_sent:
+                self.on_start_sent(wid)
+
+            if self._results_exporter is not None:
+                with self._workers_lock:
+                    worker_addr = self._addrs.get(wid, f"{addr[0]}:{addr[1]}")
+                self._results_exporter.record_worker_event(
+                    step=self.current_version,
+                    event_type="connected",
+                    worker_id=wid,
+                    worker_addr=worker_addr,
+                )
+            return True
+        except Exception as e:
+            _log.error(f"Error enviando START a Worker {wid}: {e}")
+            return False
 
     def _handle_new_connection(self, conn: socket.socket, addr: tuple) -> None:
         """Handshake completo para un Worker recien conectado.
@@ -703,178 +911,55 @@ class ParameterServer:
             Timeout implicito: si CNN+MLP no estan listo en 120s, el Worker
             puede timeout waiting for weights.
         """
-        # ----------------- 1. READY -----------------
-        try:
-            msg = receive_message(conn)
-        except Exception:
-            conn.close()
-            return
-        if msg["type"] != MsgType.READY:
-            conn.close()
+        # 1. Recibir READY
+        if not self._receive_ready(conn):
             return
 
-        with self._workers_lock:
-            # Creamos id único
-            # Guardamos socket y dirección
-            wid = self._next_id
-            self._next_id += 1
-            rank = self._next_rank
-            self._next_rank += 1
-            self._sockets[wid] = conn
-            self._addrs[wid] = f"{addr[0]}:{addr[1]}"
-            self._worker_freeze[wid] = False
-            self._worker_rank[wid] = rank
+        # 2. Registrar Worker
+        wid, rank = self._register_worker(addr)
+        self._sockets[wid] = conn
+        self._addrs[wid] = f"{addr[0]}:{addr[1]}"
 
-        try:
-            send_message(conn, MsgType.WORKER_ID, {"worker_id": wid})
-        except Exception:
+        # 3. Enviar WORKER_ID
+        if not self._send_worker_id(conn, wid):
             with self._workers_lock:
                 self._sockets.pop(wid, None)
                 self._addrs.pop(wid, None)
                 self._worker_freeze.pop(wid, None)
-            conn.close()
             return
 
-        # Enviar CONFIG con parámetros de streaming
-        try:
-            config = {
-                "batch_size": self.batch_size,
-                "image_size": self.image_size,
-                "dataset_name": self.dataset_name,
-                "seed": self.seed,
-                "rank": rank,
-                "num_workers": self._next_rank,  # Total de workers conectados (incluyendo el actual)
-                "hf_token": self.hf_token,  # Token HF para streaming
-            }
-            send_message(conn, MsgType.CONFIG, config)
-        except Exception:
+        # 4. Enviar CONFIG
+        if not self._send_config(conn, wid, rank, addr):
             with self._workers_lock:
                 self._sockets.pop(wid, None)
                 self._addrs.pop(wid, None)
                 self._worker_freeze.pop(wid, None)
-            conn.close()
             return
 
         _log.ps(f"Worker {wid} conectado desde {addr[0]}:{addr[1]}")
         if self.on_worker_connected:
             self.on_worker_connected(wid, f"{addr[0]}:{addr[1]}")
 
-        # ----------------- 2. Esperar CNN + MLP (bloqueo seguro) -----------------
-
-        # Esto evita un race condition, donde el worker se conecte antes de que el modelo esté listo.
-        # En otras palabras, el worker dice "dame la CNN", pero el PS no la tiene aún
-
-        deadline = 120.0
-        waited = 0.0
-        poll = 0.25
-        _log.ps(f"Worker {wid}: esperando modelo (máx {int(deadline)} s)...")
-
-        while True:
-            with self._params_lock:
-                ready = (  # No basta con crear la CNN, sus pesos deben estar listos
-                    self._cnn is not None
-                    and bool(self._mlp_state)
-                    and bool(self._cnn_state)
-                )
-            if ready:
-                break
-            if waited >= deadline:
-                _log.error(f"Worker {wid}: timeout esperando CNN+MLP.")
-                self._remove_worker(wid)
-                conn.close()
-                return
-            if self._shutdown.is_set():
-                self._remove_worker(wid)
-                conn.close()
-                return
-            time.sleep(poll)  # Espera poll segundos
-            waited += poll
+        # 5. Esperar modelo CNN+MLP
+        if not self._wait_for_model(wid):
+            self._remove_worker(wid)
+            conn.close()
+            return
 
         if self._cnn is None:
-            raise RuntimeError(
-                "El modelo de CNN no se ha cargado antes de enviar los pesos"
-            )
+            raise RuntimeError("El modelo de CNN no se ha cargado antes de enviar los pesos")
 
-        # ----------------- 3. Enviar CNN_WEIGHTS (siempre) -----------------
-        try:
-            arch = self._cnn.arch
-            weights_bytes = self._cnn._get_weights_bytes()
-            with self._params_lock:
-                mlp_keys = list(self._mlp_state.keys())
-                cnn_key_count = len(self._cnn_state)  # Número de parámetros de la CNN
-
-            send_message(
-                conn,
-                MsgType.CNN_WEIGHTS,
-                {
-                    "arch": arch,
-                    "weights_bytes": weights_bytes,
-                    "mlp_keys": mlp_keys,
-                    "cnn_key_count": cnn_key_count,
-                },
-            )
-            _log.ps(
-                f"Worker {wid}: CNN enviada — arch={arch} | "
-                f"cnn_params={cnn_key_count} | mlp_keys={mlp_keys}"
-            )
-
-            ack = receive_message(conn)
-            if ack["type"] != MsgType.CNN_ACK:
-                _log.error(f"Worker {wid}: esperaba CNN_ACK, recibió {ack['type']}")
-                self._remove_worker(wid)
-                return
-
-            ack_pl = ack.get("payload") or {}
-            if isinstance(ack_pl, dict):
-                ack_arch = ack_pl.get("arch")
-                freeze_flag = bool(ack_pl.get("freeze_cnn", False))
-                if ack_arch and ack_arch != arch:
-                    _log.error(
-                        f"Worker {wid}: mismatch arch PS={arch}, Worker={ack_arch}"
-                    )
-                    self._remove_worker(wid)
-                    return
-                with self._workers_lock:
-                    self._worker_freeze[wid] = freeze_flag
-                mode = "freeze" if freeze_flag else "E2E"
-                _log.ps(f"Worker {wid}: CNN cargada ✓ arch={arch} mode={mode}")
-            else:
-                _log.ps(f"Worker {wid}: CNN cargada ✓ arch={arch}")
-
-        except Exception as e:
-            _log.error(f"Error distribuyendo CNN a Worker {wid}: {e}")
+        # 6. Enviar CNN_WEIGHTS y recibir ACK
+        if not self._send_cnn_weights(conn, wid):
             self._remove_worker(wid)
             return
 
-        # ----------------- 4. START -----------------
-        try:
-            send_message(conn, MsgType.START, {})
-
-            # Inicia temporizador (punto de inicio real del entrenamiento del worker)
-            with self._params_lock:
-                if not self._t_start_initialized:
-                    self._t_start = time.perf_counter()
-                    self._t_start_initialized = True
-
-            # Notifica a la GUI que el primer worker ha recibido START
-            if self.on_start_sent:
-                self.on_start_sent(wid)
-
-            if self._results_exporter is not None:
-                with self._workers_lock:
-                    worker_addr = self._addrs.get(wid, f"{addr[0]}:{addr[1]}")
-                self._results_exporter.record_worker_event(
-                    step=self.current_version,
-                    event_type="connected",
-                    worker_id=wid,
-                    worker_addr=worker_addr,
-                )
-        except Exception as e:
-            _log.error(f"Error enviando START a Worker {wid}: {e}")
+        # 7. Enviar START
+        if not self._send_start(wid, conn, addr):
             self._remove_worker(wid)
             return
 
-        # ----------------- 5. Loop de servicio -----------------
+        # 8. Iniciar loop de servicio
         self._serve_worker(wid, conn)
 
     def _serve_worker(self, wid: int, conn: socket.socket) -> None:
@@ -899,7 +984,7 @@ class ParameterServer:
             while not self._shutdown.is_set():
                 try:
                     msg = receive_message(conn)
-                except Exception:
+                except Exception:  # noqa: S110 (receive error should not break PS)
                     break
 
                 mtype = msg["type"]
@@ -910,16 +995,12 @@ class ParameterServer:
                 elif mtype == MsgType.REQUEST_PARAMS:
                     with self._params_lock:
                         self._total_requests += 1
-                        mlp_copy = {
-                            key: value.copy() for key, value in self._mlp_state.items()
-                        }
+                        mlp_copy = {key: value.copy() for key, value in self._mlp_state.items()}
                         ver = self._version
                         with self._workers_lock:
                             is_freeze = self._worker_freeze.get(wid, False)
                         cnn_copy = (
-                            {}
-                            if is_freeze
-                            else {k: v.copy() for k, v in self._cnn_state.items()}
+                            {} if is_freeze else {k: v.copy() for k, v in self._cnn_state.items()}
                         )
 
                     try:
@@ -999,9 +1080,7 @@ class ParameterServer:
                 for key in mlp_weights:
                     if key in self._no_avg_mlp_keys or key not in self._mlp_state:
                         continue  # running_mean/var y num_batches_tracked: no promediar
-                    self._mlp_state[key] += alpha * (
-                        mlp_weights[key] - self._mlp_state[key]
-                    )
+                    self._mlp_state[key] += alpha * (mlp_weights[key] - self._mlp_state[key])
 
             if cnn_weights:
                 for key in cnn_weights:
@@ -1150,9 +1229,7 @@ class ParameterServer:
             for name, arr in cnn_copy.items():
                 if name in sd:
                     # Convierte Numpy a Tensor PyTorch
-                    sd[name] = (
-                        torch.from_numpy(arr).to(sd[name].device).to(sd[name].dtype)
-                    )
+                    sd[name] = torch.from_numpy(arr).to(sd[name].device).to(sd[name].dtype)
             base.load_state_dict(sd)
         self._cnn._model.eval()
 
@@ -1245,8 +1322,8 @@ class ParameterServer:
             try:
                 send_message(sock, MsgType.STOP, None)
                 sock.close()
-            except Exception:
-                pass  # noqa: S110 (cleanup code, worker may be disconnected)
+            except Exception:  # noqa: S110 (cleanup code, worker may be disconnected)
+                pass
 
     def _remove_worker(self, wid: int) -> None:
         """
@@ -1271,8 +1348,8 @@ class ParameterServer:
         if sock:
             try:
                 sock.close()
-            except Exception:
-                pass  # noqa: S110 (cleanup code, socket may already be closed)
+            except Exception:  # noqa: S110 (cleanup code, socket may already be closed)
+                pass
         if self._results_exporter is not None:
             self._results_exporter.record_worker_event(
                 step=self.current_version,

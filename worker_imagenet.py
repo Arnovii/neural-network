@@ -120,9 +120,7 @@ def main() -> None:
     print("=" * 68)
     print(f"  PS             : {args.server_host}:{args.server_port}")
     device_str = (
-        f"{args.device} (auto-detected)"
-        if args.device == get_default_device()
-        else args.device
+        f"{args.device} (auto-detected)" if args.device == get_default_device() else args.device
     )
     print(f"  Device         : {device_str}")
     print(f"  Shuffle buffer : {args.shuffle_buffer}")

@@ -62,6 +62,7 @@ import matplotlib
 
 matplotlib.use("Agg")  # Backend no-GUI para entornos headless
 import matplotlib.pyplot as plt
+from matplotlib.axes import Axes
 from matplotlib.gridspec import GridSpec
 from Utils.constants import COLORS, EXPORT_DIR_DEFAULT
 from matplotlib.ticker import MaxNLocator
@@ -269,7 +270,7 @@ class ResultsExporter:
                 fa_std.append(acc_std)
                 fs_st.append(staleness)
                 fa_al.append(alpha)
-            except Exception:
+            except Exception:  # noqa: S110 (history write errors should not break recording)
                 # Seguridad: nunca propagar errores de escritura de historial
                 pass
 
@@ -1026,6 +1027,318 @@ class ResultsExporter:
         y = min(ylim[1] - height_data - pad_y, y)
         return x, y
 
+    # ========================================================================
+    # BAND PLOT HELPERS (lógica común entre _plot_band_loss y _plot_band_accuracy)
+    # ========================================================================
+
+    def _add_band_annotations(
+        self,
+        ax: Axes,
+        steps: np.ndarray,
+        values: np.ndarray,
+        std_values: np.ndarray,
+        color: str,
+        is_accuracy: bool,
+        x_margin: float,
+        existing_boxes: list,
+    ) -> None:
+        """Añade anotaciones comunes a gráficas de banda (±1σ, stats, eje secundario, min/max).
+
+        :param ax: Eje matplotlib donde se dibuja la gráfica.
+        :type ax: Axes
+
+        :param steps: Array de pasos de entrenamiento.
+        :type steps: np.ndarray
+
+        :param values: Array de valores principales (loss o accuracy).
+        :type values: np.ndarray
+
+        :param std_values: Array de desviaciones estándar.
+        :type std_values: np.ndarray
+
+        :param color: Color de la curva principal.
+        :type color: str
+
+        :param is_accuracy: True si es accuracy (formato %), False si es loss.
+        :type is_accuracy: bool
+
+        :param x_margin: Margen horizontal calculado previamente.
+        :type x_margin: float
+
+        :param existing_boxes: Lista de cajas existentes para detección de colisiones.
+        :type existing_boxes: list
+
+        :returns: None
+        :rtype: None
+        """
+        if len(std_values) == 0 or np.allclose(std_values, 0.0):
+            return
+
+        y_upper = float(values[-1] + std_values[-1])
+        y_lower = float(values[-1] - std_values[-1])
+
+        # Líneas de referencia ±1σ
+        ax.axhline(y_upper, color="gray", linestyle=":", linewidth=0.8, alpha=0.6)
+        ax.axhline(y_lower, color="gray", linestyle=":", linewidth=0.8, alpha=0.6)
+
+        x_range_plot = ax.get_xlim()[1] - ax.get_xlim()[0]
+        y_range_plot = ax.get_ylim()[1] - ax.get_ylim()[0]
+
+        # Registrar bbox del punto final para colisiones
+        try:
+            pw = x_range_plot * 0.012 * (10 if is_accuracy else 8)
+            ph = y_range_plot * 0.022
+            existing_boxes.append((steps[-1] + x_range_plot * 0.005, values[-1] - ph / 2, pw, ph))
+        except Exception:  # noqa: S110 (bbox registration failure should not break plot)
+            pass
+
+        # Calcular posiciones con sistema anti-colisión
+        x_anchor = steps[-1] - x_margin * 0.5
+        y_offset_small = y_range_plot * 0.012
+
+        # Etiqueta +1σ
+        try:
+            fmt_val = f"{y_upper:.2f}%" if is_accuracy else f"{y_upper:.4f}"
+            x_plus, y_plus = self._safe_label_position(
+                ax,
+                x_anchor,
+                y_upper + y_offset_small,
+                f"+1σ: {fmt_val}",
+                "above",
+                existing_boxes,
+                fontsize=7.5,
+            )
+            ax.annotate(
+                f"+1σ: {fmt_val}",
+                xy=(x_plus, y_plus),
+                fontsize=7.5,
+                color="gray",
+                ha="left",
+                va="bottom",
+            )
+        except Exception:  # noqa: S110 (annotation failure should not break plot)
+            pass
+
+        # Etiqueta -1σ
+        try:
+            fmt_val = f"{y_lower:.2f}%" if is_accuracy else f"{y_lower:.4f}"
+            x_minus, y_minus = self._safe_label_position(
+                ax,
+                x_anchor,
+                y_lower - y_offset_small,
+                f"-1σ: {fmt_val}",
+                "below",
+                existing_boxes,
+                fontsize=7.5,
+            )
+            ax.annotate(
+                f"-1σ: {fmt_val}",
+                xy=(x_minus, y_minus),
+                fontsize=7.5,
+                color="gray",
+                ha="left",
+                va="top",
+            )
+        except Exception:  # noqa: S110 (annotation failure should not break plot)
+            pass
+
+        # Eje Y secundario para σ
+        try:
+            ax2 = ax.twinx()
+            ax2.plot(
+                steps,
+                std_values,
+                color="gray",
+                linestyle="--",
+                linewidth=1.0,
+                alpha=0.6,
+                label="σ (eje der.)",
+            )
+            ylabel = "σ Accuracy (%)" if is_accuracy else "σ Loss (adim.)"
+            ax2.set_ylabel(ylabel, fontsize=9, color="gray")
+            ax2.tick_params(axis="y", labelcolor="gray", labelsize=8)
+
+            # Calcular ylim del eje secundario para evitar cruce con banda
+            try:
+                band_min = float(np.min(values - std_values))
+                sigma_max = float(np.max(std_values))
+                ax_ylim_min = ax.get_ylim()[0]
+                ax2_scale = (band_min - ax_ylim_min) / sigma_max * 0.85
+                if ax2_scale > 0:
+                    ax2.set_ylim(0, sigma_max / ax2_scale)
+                else:
+                    ax2.set_ylim(0, sigma_max * 4.0)
+            except Exception:  # noqa: S110 (ylim calculation failure)
+                ax2.set_ylim(0, float(np.max(std_values)) * 2.5)
+
+            ax2.set_yticks([])
+            ax2.grid(False)
+
+            # Combinar leyendas
+            lines1, labels1 = ax.get_legend_handles_labels()
+            lines2, labels2 = ax2.get_legend_handles_labels()
+            ax.legend(lines1 + lines2, labels1 + labels2, fontsize=8)
+        except Exception:  # noqa: S110 (secondary axis setup failure should not break plot)
+            pass
+
+    def _add_extremum_marker(
+        self,
+        ax: Axes,
+        steps: np.ndarray,
+        values: np.ndarray,
+        color: str,
+        find_max: bool,
+        existing_boxes: list,
+        is_accuracy: bool,
+    ) -> None:
+        """Añade marcador de máximo o mínimo con sistema anti-colisión.
+
+        :param ax: Eje matplotlib donde se dibuja la gráfica.
+        :type ax: Axes
+
+        :param steps: Array de pasos de entrenamiento.
+        :type steps: np.ndarray
+
+        :param values: Array de valores principales.
+        :type values: np.ndarray
+
+        :param color: Color de la curva (para el arrow).
+        :type color: str
+
+        :param find_max: True para máximo, False para mínimo.
+        :type find_max: bool
+
+        :param existing_boxes: Lista de cajas existentes para colisiones.
+        :type existing_boxes: list
+
+        :param is_accuracy: True si es accuracy (formato %).
+        :type is_accuracy: bool
+
+        :returns: None
+        :rtype: None
+        """
+        if len(values) == 0:
+            return
+
+        idx = int(np.argmax(values) if find_max else np.argmin(values))
+        step_range = steps[-1] - steps[0] if len(steps) > 1 else 1
+        x_range_plot = ax.get_xlim()[1] - ax.get_xlim()[0]
+        y_range_plot = ax.get_ylim()[1] - ax.get_ylim()[0]
+
+        # Si el extremo está dentro del 5% del rango final de X
+        if (steps[-1] - steps[idx]) < step_range * 0.05:
+            x_init = steps[idx] - x_range_plot * 0.08
+        else:
+            x_init = steps[idx]
+
+        label_prefix = "Máx" if find_max else "Mín"
+        if is_accuracy:
+            label_text = f"{label_prefix}: {values[idx]:.2f}%"
+            y_pos = (
+                values[idx] + y_range_plot * 0.03 if find_max else values[idx] - y_range_plot * 0.03
+            )
+            side = "above" if find_max else "below"
+            arrow_color = "darkgreen" if find_max else "darkred"
+            va = "bottom" if find_max else "top"
+        else:
+            label_text = f"{label_prefix}: {values[idx]:.4f}"
+            y_pos = (
+                values[idx] + y_range_plot * 0.03 if find_max else values[idx] - y_range_plot * 0.03
+            )
+            side = "above" if find_max else "below"
+            arrow_color = "darkgreen" if find_max else "darkred"
+            va = "bottom" if find_max else "top"
+
+        x_ext, y_ext = self._safe_label_position(
+            ax,
+            x_init,
+            y_pos,
+            label_text,
+            side,
+            existing_boxes,
+            fontsize=8,
+        )
+
+        ax.annotate(
+            label_text,
+            xy=(steps[idx], values[idx]),
+            xytext=(x_ext, y_ext),
+            fontsize=8,
+            arrowprops=dict(arrowstyle="->", color=arrow_color, lw=0.8),
+            color=arrow_color,
+            ha="left",
+            va=va,
+        )
+
+    def _add_stats_text_box(
+        self,
+        ax: Axes,
+        steps: np.ndarray,
+        values: np.ndarray,
+        full_std: list,
+        is_accuracy: bool,
+    ) -> None:
+        """Añade recuadro de estadísticas σ en posición adaptativa.
+
+        :param ax: Eje matplotlib donde se dibuja la gráfica.
+        :type ax: Axes
+
+        :param steps: Array de pasos de entrenamiento.
+        :type steps: np.ndarray
+
+        :param values: Array de valores principales.
+        :type values: np.ndarray
+
+        :param full_std: Lista completa de desviaciones estándar del historial.
+        :type full_std: list
+
+        :param is_accuracy: True si es accuracy (formato %).
+        :type is_accuracy: bool
+
+        :returns: None
+        :rtype: None
+        """
+        try:
+            std_arr = np.array(full_std) if len(full_std) > 0 else np.array([])
+            std_mean = float(np.mean(std_arr)) if len(std_arr) > 0 else 0.0
+            std_final = float(std_arr[-1]) if len(std_arr) > 0 else 0.0
+
+            if is_accuracy:
+                text_box = f"σ medio: {std_mean:.4f}%\nσ final: {std_final:.4f}%"
+                if 0 < std_final < 1.0:
+                    text_box += "\n(Banda < 1px a esta escala)"
+            else:
+                text_box = f"σ medio: {std_mean:.4f} (adim.)\nσ final: {std_final:.4f} (adim.)"
+
+            # Posicionar recuadro en cuadrante opuesto a la curva
+            try:
+                xlim_data = ax.get_xlim()
+                ylim_data = ax.get_ylim()
+                mid_x = (xlim_data[0] + xlim_data[1]) / 2
+                mid_y = (ylim_data[0] + ylim_data[1]) / 2
+                in_right = steps[-1] > mid_x if len(steps) > 0 else True
+                in_top = values[-1] > mid_y if len(values) > 0 else True
+
+                if in_right and in_top:
+                    text_x, text_y, text_ha = 0.02, 0.98, "left"
+                else:
+                    text_x, text_y, text_ha = 0.98, 0.98, "right"
+            except Exception:
+                text_x, text_y, text_ha = 0.98, 0.98, "right"
+
+            ax.text(
+                text_x,
+                text_y,
+                text_box,
+                transform=ax.transAxes,
+                fontsize=9,
+                verticalalignment="top",
+                horizontalalignment=text_ha,
+                bbox=dict(boxstyle="round,pad=0.4", facecolor="white", alpha=0.8, edgecolor="gray"),
+            )
+        except Exception:  # noqa: S110 (text annotation failure should not break plot)
+            pass
+
     def _plot_band_loss(
         self,
         steps: np.ndarray,
@@ -1095,227 +1408,44 @@ class ResultsExporter:
         ax.grid(True, alpha=0.3)
         ax.xaxis.set_major_locator(MaxNLocator(integer=True))
 
-        # Calcular ylim seguro según restricción del usuario
+        # Calcular ylim seguro
         try:
-            ymin = float(np.min(lower)) * 0.998
-            ymax = float(np.max(upper)) * 1.002
-            ax.set_ylim(ymin, ymax)
+            ax.set_ylim(float(np.min(lower)) * 0.998, float(np.max(upper)) * 1.002)
         except Exception:
             ax.set_ylim(*ylim)
-
-        # xlim exacto para la banda
         try:
             ax.set_xlim(float(steps[0]), float(steps[-1]))
         except Exception:
             ax.set_xlim(*xlim)
 
-        # Anotación de estadísticas sobre el historial completo
-        try:
-            loss_std_arr = (
-                np.array(self._full_loss_std)
-                if len(self._full_loss_std) > 0
-                else loss_std
-            )
-            loss_std_mean = (
-                float(np.mean(loss_std_arr)) if len(loss_std_arr) > 0 else 0.0
-            )
-            loss_std_final = float(loss_std_arr[-1]) if len(loss_std_arr) > 0 else 0.0
-            text_box = f"σ medio: {loss_std_mean:.4f} (adim.)\nσ final: {loss_std_final:.4f} (adim.)"
+        # Estadísticas y recuadro
+        self._add_stats_text_box(ax, steps, losses, self._full_loss_std, is_accuracy=False)
 
-            # Posicionar recuadro en cuadrante opuesto a la curva
-            try:
-                xlim_data = ax.get_xlim()
-                ylim_data = ax.get_ylim()
-                mid_x = (xlim_data[0] + xlim_data[1]) / 2
-                mid_y = (ylim_data[0] + ylim_data[1]) / 2
-                # Determinar cuadrante del punto final
-                in_right = steps[-1] > mid_x if len(steps) > 0 else True
-                in_top = losses[-1] > mid_y if len(losses) > 0 else True
-
-                if in_right and in_top:
-                    # Cuadrante superior derecho → recuadro en sup-izq
-                    text_x, text_y = 0.02, 0.98
-                    text_ha = "left"
-                elif not in_right and in_top:
-                    # Cuadrante superior izquierdo → recuadro en sup-der
-                    text_x, text_y = 0.98, 0.98
-                    text_ha = "right"
-                else:
-                    # Otros cuadrantes → recuadro en sup-der por defecto
-                    text_x, text_y = 0.98, 0.98
-                    text_ha = "right"
-            except Exception:
-                text_x, text_y = 0.98, 0.98
-                text_ha = "right"
-
-            ax.text(
-                text_x,
-                text_y,
-                text_box,
-                transform=ax.transAxes,
-                fontsize=9,
-                verticalalignment="top",
-                horizontalalignment=text_ha,
-                bbox=dict(
-                    boxstyle="round,pad=0.4",
-                    facecolor="white",
-                    alpha=0.8,
-                    edgecolor="gray",
-                ),
-            )
-        except Exception:
-            pass
-
-        # Inicializar ANTES del try para que siempre esté definido
+        # Anotaciones de banda (±1σ, eje secundario)
         existing_boxes = []
+        self._add_band_annotations(
+            ax,
+            steps,
+            losses,
+            loss_std,
+            color_loss,
+            False,
+            x_margin,
+            existing_boxes,
+        )
 
-        # Líneas de referencia del rango final ±1σ y anotaciones adaptivas
+        # Marcador de mínimo
         try:
-            if len(loss_std) > 0 and not np.allclose(loss_std, 0.0):
-                y_upper = float(losses[-1] + loss_std[-1])
-                y_lower = float(losses[-1] - loss_std[-1])
-                ax.axhline(
-                    y_upper, color="gray", linestyle=":", linewidth=0.8, alpha=0.6
-                )
-                ax.axhline(
-                    y_lower, color="gray", linestyle=":", linewidth=0.8, alpha=0.6
-                )
-
-                x_range_plot = ax.get_xlim()[1] - ax.get_xlim()[0]
-                y_range_plot = ax.get_ylim()[1] - ax.get_ylim()[0]
-                try:
-                    pw = x_range_plot * 0.012 * 8  # ~8 chars para el valor
-                    ph = y_range_plot * 0.022
-                    existing_boxes.append(
-                        (steps[-1] + x_range_plot * 0.005, losses[-1] - ph / 2, pw, ph)
-                    )
-                except Exception:
-                    pass
-
-                # Calcular posiciones con sistema anti-colisión
-                x_anchor = steps[-1] - x_margin * 0.5
-                y_offset_small = y_range_plot * 0.012
-
-                # Etiqueta +1σ (side='above')
-                try:
-                    x_plus, y_plus = self._safe_label_position(
-                        ax,
-                        x_anchor,
-                        y_upper + y_offset_small,
-                        f"+1σ: {y_upper:.4f}",
-                        "above",
-                        existing_boxes,
-                        fontsize=7.5,
-                    )
-                    ax.annotate(
-                        f"+1σ: {y_upper:.4f}",
-                        xy=(x_plus, y_plus),
-                        fontsize=7.5,
-                        color="gray",
-                        ha="left",
-                        va="bottom",
-                    )
-                except Exception:
-                    pass
-
-                # Etiqueta -1σ (side='below')
-                try:
-                    x_minus, y_minus = self._safe_label_position(
-                        ax,
-                        x_anchor,
-                        y_lower - y_offset_small,
-                        f"-1σ: {y_lower:.4f}",
-                        "below",
-                        existing_boxes,
-                        fontsize=7.5,
-                    )
-                    ax.annotate(
-                        f"-1σ: {y_lower:.4f}",
-                        xy=(x_minus, y_minus),
-                        fontsize=7.5,
-                        color="gray",
-                        ha="left",
-                        va="top",
-                    )
-                except Exception:
-                    pass
-
-                # Eje Y secundario para σ
-                try:
-                    ax2 = ax.twinx()
-                    ax2.plot(
-                        steps,
-                        loss_std,
-                        color="gray",
-                        linestyle="--",
-                        linewidth=1.0,
-                        alpha=0.6,
-                        label="σ (eje der.)",
-                    )
-                    ax2.set_ylabel("σ Loss (adim.)", fontsize=9, color="gray")
-                    ax2.tick_params(axis="y", labelcolor="gray", labelsize=8)
-                    # Calcular ylim del eje secundario para evitar cruce con banda
-                    try:
-                        band_min = float(np.min(losses - loss_std))
-                        sigma_max = float(np.max(loss_std))
-                        ax_ylim_min = ax.get_ylim()[0]
-                        ax2_scale = (band_min - ax_ylim_min) / sigma_max * 0.85
-                        if ax2_scale > 0:
-                            ax2.set_ylim(0, sigma_max / ax2_scale)
-                        else:
-                            ax2.set_ylim(0, sigma_max * 4.0)
-                    except Exception:
-                        ax2.set_ylim(0, float(np.max(loss_std)) * 2.5)
-                    # Ocultar ticks del eje secundario para evitar clutter
-                    ax2.set_yticks([])
-                    ax2.grid(False)
-                    # combinar leyendas
-                    lines1, labels1 = ax.get_legend_handles_labels()
-                    lines2, labels2 = ax2.get_legend_handles_labels()
-                    ax.legend(lines1 + lines2, labels1 + labels2, fontsize=8)
-                except Exception:
-                    pass
-
-        except Exception:
-            # Experimento corto: omitir líneas secundarias sin fallar
-            pass
-
-        # Marcar mínimo con sistema anti-colisión
-        try:
-            if len(losses) > 0:
-                idx_min = int(np.argmin(losses))
-                step_range = steps[-1] - steps[0] if len(steps) > 1 else 1
-                x_range_plot = ax.get_xlim()[1] - ax.get_xlim()[0]
-                y_range_plot = ax.get_ylim()[1] - ax.get_ylim()[0]
-
-                # Si el mínimo está dentro del 5% del rango final de X
-                if (steps[-1] - steps[idx_min]) < step_range * 0.05:
-                    x_init_min = steps[idx_min] - x_range_plot * 0.08
-                else:
-                    x_init_min = steps[idx_min]
-
-                # side='below' para mínimo de loss
-                x_min, y_min = self._safe_label_position(
-                    ax,
-                    x_init_min,
-                    losses[idx_min] - y_range_plot * 0.03,
-                    f"Mín: {losses[idx_min]:.4f}",
-                    "below",
-                    existing_boxes,
-                    fontsize=8,
-                )
-
-                ax.annotate(
-                    f"Mín: {losses[idx_min]:.4f}",
-                    xy=(steps[idx_min], losses[idx_min]),
-                    xytext=(x_min, y_min),
-                    fontsize=8,
-                    arrowprops=dict(arrowstyle="->", color="darkred", lw=0.8),
-                    color="darkred",
-                    ha="left",
-                    va="top",
-                )
-        except Exception:
+            self._add_extremum_marker(
+                ax,
+                steps,
+                losses,
+                color_loss,
+                find_max=False,
+                existing_boxes=existing_boxes,
+                is_accuracy=False,
+            )
+        except Exception:  # noqa: S110 (min marker failure should not break plot)
             pass
 
         plt.tight_layout()
@@ -1458,187 +1588,44 @@ class ResultsExporter:
         ax.grid(True, alpha=0.3)
         ax.xaxis.set_major_locator(MaxNLocator(integer=True))
 
-        # Calcular ylim seguro según restricción
+        # Calcular ylim seguro
         try:
-            ymin = float(np.min(lower)) * 0.998
-            ymax = float(np.max(upper)) * 1.002
-            ax.set_ylim(ymin, ymax)
+            ax.set_ylim(float(np.min(lower)) * 0.998, float(np.max(upper)) * 1.002)
         except Exception:
             ax.set_ylim(*ylim)
-
         try:
             ax.set_xlim(float(steps[0]), float(steps[-1]))
         except Exception:
             ax.set_xlim(*xlim)
 
-        # Estadísticas sobre historial completo
-        try:
-            acc_std_arr = (
-                np.array(self._full_acc_std) if len(self._full_acc_std) > 0 else acc_std
-            )
-            acc_std_mean = float(np.mean(acc_std_arr)) if len(acc_std_arr) > 0 else 0.0
-            acc_std_final = float(acc_std_arr[-1]) if len(acc_std_arr) > 0 else 0.0
-            text_box = f"σ medio: {acc_std_mean:.4f}%\nσ final: {acc_std_final:.4f}%"
-            # Agregar nota si la banda es menor a 1px a esta escala
-            if acc_std_final < 1.0 and acc_std_final > 0:
-                text_box += "\n(Banda < 1px a esta escala)"
+        # Estadísticas y recuadro
+        self._add_stats_text_box(ax, steps, accuracies, self._full_acc_std, is_accuracy=True)
 
-            # Posicionar recuadro en cuadrante opuesto a la curva
-            try:
-                xlim_data = ax.get_xlim()
-                ylim_data = ax.get_ylim()
-                mid_x = (xlim_data[0] + xlim_data[1]) / 2
-                mid_y = (ylim_data[0] + ylim_data[1]) / 2
-                in_right = steps[-1] > mid_x if len(steps) > 0 else True
-                in_top = accuracies[-1] > mid_y if len(accuracies) > 0 else True
-
-                if in_right and in_top:
-                    text_x, text_y = 0.02, 0.98
-                    text_ha = "left"
-                elif not in_right and in_top:
-                    text_x, text_y = 0.98, 0.98
-                    text_ha = "right"
-                else:
-                    text_x, text_y = 0.98, 0.98
-                    text_ha = "right"
-            except Exception:
-                text_x, text_y = 0.98, 0.98
-                text_ha = "right"
-
-            ax.text(
-                text_x,
-                text_y,
-                text_box,
-                transform=ax.transAxes,
-                fontsize=9,
-                verticalalignment="top",
-                horizontalalignment=text_ha,
-                bbox=dict(
-                    boxstyle="round,pad=0.4",
-                    facecolor="white",
-                    alpha=0.8,
-                    edgecolor="gray",
-                ),
-            )
-        except Exception:
-            pass
-
-        # Inicializar ANTES del try para que siempre esté definido
+        # Anotaciones de banda (±1σ, eje secundario)
         existing_boxes_acc = []
+        self._add_band_annotations(
+            ax,
+            steps,
+            accuracies,
+            acc_std,
+            color_acc,
+            True,
+            x_margin,
+            existing_boxes_acc,
+        )
 
-        # Líneas ±1σ en el final y eje secundario para σ
+        # Marcador de máximo
         try:
-            if len(acc_std) > 0 and not np.allclose(acc_std, 0.0):
-                y_upper = float(accuracies[-1] + acc_std[-1])
-                y_lower = float(accuracies[-1] - acc_std[-1])
-                ax.axhline(
-                    y_upper, color="gray", linestyle=":", linewidth=0.8, alpha=0.6
-                )
-                ax.axhline(
-                    y_lower, color="gray", linestyle=":", linewidth=0.8, alpha=0.6
-                )
-
-                x_range_plot_acc = ax.get_xlim()[1] - ax.get_xlim()[0]
-                y_range_plot_acc = ax.get_ylim()[1] - ax.get_ylim()[0]
-                try:
-                    pw_acc = (
-                        x_range_plot_acc * 0.012 * 10
-                    )  # ~10 chars para el valor con %
-                    ph_acc = y_range_plot_acc * 0.022
-                    existing_boxes_acc.append(
-                        (
-                            steps[-1] + x_range_plot_acc * 0.005,
-                            accuracies[-1] - ph_acc / 2,
-                            pw_acc,
-                            ph_acc,
-                        )
-                    )
-                except Exception:
-                    pass
-
-                # Calcular posiciones con sistema anti-colisión
-                x_anchor_acc = steps[-1] - x_margin * 0.5
-                y_offset_small_acc = y_range_plot_acc * 0.012
-
-                # Etiqueta +1σ (side='above')
-                try:
-                    x_plus_acc, y_plus_acc = self._safe_label_position(
-                        ax,
-                        x_anchor_acc,
-                        y_upper + y_offset_small_acc,
-                        f"+1σ: {y_upper:.2f}%",
-                        "above",
-                        existing_boxes_acc,
-                        fontsize=7.5,
-                    )
-                    ax.annotate(
-                        f"+1σ: {y_upper:.2f}%",
-                        xy=(x_plus_acc, y_plus_acc),
-                        fontsize=7.5,
-                        color="gray",
-                        ha="left",
-                        va="bottom",
-                    )
-                except Exception:
-                    pass
-
-                # Etiqueta -1σ (side='below')
-                try:
-                    x_minus_acc, y_minus_acc = self._safe_label_position(
-                        ax,
-                        x_anchor_acc,
-                        y_lower - y_offset_small_acc,
-                        f"-1σ: {y_lower:.2f}%",
-                        "below",
-                        existing_boxes_acc,
-                        fontsize=7.5,
-                    )
-                    ax.annotate(
-                        f"-1σ: {y_lower:.2f}%",
-                        xy=(x_minus_acc, y_minus_acc),
-                        fontsize=7.5,
-                        color="gray",
-                        ha="left",
-                        va="top",
-                    )
-                except Exception:
-                    pass
-
-                try:
-                    ax2 = ax.twinx()
-                    ax2.plot(
-                        steps,
-                        acc_std,
-                        color="gray",
-                        linestyle="--",
-                        linewidth=1.0,
-                        alpha=0.6,
-                        label="σ (eje der.)",
-                    )
-                    ax2.set_ylabel("σ Accuracy (%)", fontsize=9, color="gray")
-                    ax2.tick_params(axis="y", labelcolor="gray", labelsize=8)
-                    # Calcular ylim del eje secundario para evitar cruce con banda
-                    try:
-                        band_min = float(np.min(accuracies - acc_std))
-                        sigma_max = float(np.max(acc_std))
-                        ax_ylim_min = ax.get_ylim()[0]
-                        ax2_scale = (band_min - ax_ylim_min) / sigma_max * 0.85
-                        if ax2_scale > 0:
-                            ax2.set_ylim(0, sigma_max / ax2_scale)
-                        else:
-                            ax2.set_ylim(0, sigma_max * 4.0)
-                    except Exception:
-                        ax2.set_ylim(0, float(np.max(acc_std)) * 2.5)
-                    # Ocultar ticks del eje secundario para evitar clutter
-                    ax2.set_yticks([])
-                    ax2.grid(False)
-                    lines1, labels1 = ax.get_legend_handles_labels()
-                    lines2, labels2 = ax2.get_legend_handles_labels()
-                    ax.legend(lines1 + lines2, labels1 + labels2, fontsize=8)
-                except Exception:
-                    pass
-
-        except Exception:
+            self._add_extremum_marker(
+                ax,
+                steps,
+                accuracies,
+                color_acc,
+                find_max=True,
+                existing_boxes=existing_boxes_acc,
+                is_accuracy=True,
+            )
+        except Exception:  # noqa: S110 (max marker failure should not break plot)
             pass
 
         if len(steps) > 0:
@@ -1646,52 +1633,12 @@ class ResultsExporter:
         else:
             ax.set_xlim(*xlim)
 
-        # Marcar máximo con sistema anti-colisión
-        try:
-            if len(accuracies) > 0:
-                idx_max = int(np.argmax(accuracies))
-                step_range = steps[-1] - steps[0] if len(steps) > 1 else 1
-                x_range_plot_acc = ax.get_xlim()[1] - ax.get_xlim()[0]
-                y_range_plot_acc = ax.get_ylim()[1] - ax.get_ylim()[0]
-
-                # Si el máximo está dentro del 5% del rango final de X
-                if (steps[-1] - steps[idx_max]) < step_range * 0.05:
-                    x_init_max = steps[idx_max] - x_range_plot_acc * 0.08
-                else:
-                    x_init_max = steps[idx_max]
-
-                # side='above' para máximo de accuracy
-                x_max, y_max = self._safe_label_position(
-                    ax,
-                    x_init_max,
-                    accuracies[idx_max] + y_range_plot_acc * 0.03,
-                    f"Máx: {accuracies[idx_max]:.2f}%",
-                    "above",
-                    existing_boxes_acc,
-                    fontsize=8,
-                )
-
-                ax.annotate(
-                    f"Máx: {accuracies[idx_max]:.2f}%",
-                    xy=(steps[idx_max], accuracies[idx_max]),
-                    xytext=(x_max, y_max),
-                    fontsize=8,
-                    arrowprops=dict(arrowstyle="->", color="darkgreen", lw=0.8),
-                    color="darkgreen",
-                    ha="left",
-                    va="bottom",
-                )
-        except Exception:
-            pass
-
         plt.tight_layout()
         output_path = self.session_dir / "plot_band_acc.png"
         plt.savefig(output_path, dpi=300, pad_inches=0.4)
         plt.close()
 
-    def _plot_individual_workers(
-        self, steps: np.ndarray, workers_count: np.ndarray
-    ) -> None:
+    def _plot_individual_workers(self, steps: np.ndarray, workers_count: np.ndarray) -> None:
         """Genera gráfica individual de Workers (estilo idéntico a la GUI).
 
         :param steps: Array de pasos de entrenamiento.
@@ -1773,7 +1720,7 @@ class ResultsExporter:
         try:
             ax1.set_xlim(float(steps[0]), float(steps[-1]))
             ax2.set_xlim(float(steps[0]), float(steps[-1]))
-        except Exception:
+        except Exception:  # noqa: S110  # noqa: S110
             pass
 
         self._add_event_markers((ax1, ax2), event_steps, event_types)
@@ -1821,9 +1768,7 @@ class ResultsExporter:
         fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 7.5), sharex=True)
 
         ax1.plot(steps, loss_std, color=COLORS["loss"], lw=2, label="σ Loss")
-        ax1.set_title(
-            f"Variabilidad de Loss — σ (ventana de {self._config_metrics_window} pasos)"
-        )
+        ax1.set_title(f"Variabilidad de Loss — σ (ventana de {self._config_metrics_window} pasos)")
         ax1.set_ylabel("σ Loss")
         ax1.grid(True, alpha=0.3)
 
@@ -1839,7 +1784,7 @@ class ResultsExporter:
         try:
             ax1.set_xlim(float(steps[0]), float(steps[-1]))
             ax2.set_xlim(float(steps[0]), float(steps[-1]))
-        except Exception:
+        except Exception:  # noqa: S110 (xlim setup failure should not break plot)
             pass
 
         self._add_event_markers((ax1, ax2), event_steps, event_types)
@@ -1853,6 +1798,172 @@ class ResultsExporter:
         plt.savefig(output_path, dpi=300, pad_inches=0.4)
         plt.close()
 
+    # ========================================================================
+    # METADATA HELPERS (extraídos de _write_metadata para reducir complejidad)
+    # ========================================================================
+
+    def _get_metrics_arrays(self) -> dict:
+        """Obtiene arrays de métricas desde historial completo o ventana.
+
+        :returns: Diccionario con arrays de métricas.
+        :rtype: dict
+        """
+        with self._lock:
+            if len(self._full_losses) > 0:
+                return {
+                    "steps": np.array(list(self._full_steps)),
+                    "accuracy": np.array(list(self._full_accuracies)),
+                    "workers": np.array(list(self._full_workers)),
+                    "elapsed": np.array(list(self._full_elapsed)),
+                    "staleness": np.array(list(self._full_staleness)),
+                    "alpha": np.array(list(self._full_alpha)),
+                    "loss_std": np.array(list(self._full_loss_std)),
+                    "acc_std": np.array(list(self._full_acc_std)),
+                }
+            return {
+                "steps": np.array(list(self._metrics_steps)),
+                "accuracy": np.array(list(self._metrics_accuracy)),
+                "workers": np.array(list(self._metrics_workers)),
+                "elapsed": np.array(list(self._metrics_elapsed)),
+                "staleness": np.array(list(self._metrics_staleness)),
+                "alpha": np.array(list(self._metrics_alpha)),
+                "loss_std": np.array(list(self._metrics_loss_std)),
+                "acc_std": np.array(list(self._metrics_acc_std)),
+            }
+
+    @staticmethod
+    def _safe_stat(arr, func, default=0.0):
+        """Calcula estadística segura para array vacío.
+
+        :param arr: Array numpy.
+        :type arr: np.ndarray
+
+        :param func: Función estadística (np.mean, np.max, etc).
+        :type func: callable
+
+        :param default: Valor por defecto si array vacío.
+        :type default: float
+
+        :returns: Resultado de la función o default.
+        :rtype: float
+        """
+        return float(func(arr)) if len(arr) > 0 else default
+
+    def _compute_staleness_analysis(self, staleness_arr, alpha_arr) -> dict:
+        """Computa análisis de staleness y factor alpha.
+
+        :param staleness_arr: Array de valores de staleness.
+        :type staleness_arr: np.ndarray
+
+        :param alpha_arr: Array de valores de alpha.
+        :type alpha_arr: np.ndarray
+
+        :returns: Diccionario con análisis de staleness.
+        :rtype: dict
+        """
+        return {
+            "mean": self._safe_stat(staleness_arr, np.mean),
+            "max": int(self._safe_stat(staleness_arr, np.max, 0)),
+            "std": self._safe_stat(staleness_arr, np.std, 0.0),
+            "alpha_mean": self._safe_stat(alpha_arr, np.mean, 1.0),
+            "alpha_min": self._safe_stat(alpha_arr, np.min, 1.0),
+            "alpha_std": self._safe_stat(alpha_arr, np.std, 0.0),
+        }
+
+    def _compute_throughput(self, steps_arr, elapsed_arr, batch_size) -> dict:
+        """Computa métricas de throughput.
+
+        :param steps_arr: Array de pasos.
+        :type steps_arr: np.ndarray
+
+        :param elapsed_arr: Array de tiempos transcurridos.
+        :type elapsed_arr: np.ndarray
+
+        :param batch_size: Tamaño de batch.
+        :type batch_size: int
+
+        :returns: Diccionario con métricas de throughput.
+        :rtype: dict
+        """
+        delta_steps = np.diff(steps_arr)
+        delta_time = np.diff(elapsed_arr)
+        delta_time[delta_time == 0] = 1e-6
+        steps_per_sec = delta_steps / delta_time
+
+        return {
+            "mean_steps_per_second": self._safe_stat(steps_per_sec, np.mean),
+            "peak_steps_per_second": self._safe_stat(steps_per_sec, np.max),
+            "min_steps_per_second": self._safe_stat(steps_per_sec, np.min),
+            "mean_images_per_second": self._safe_stat(steps_per_sec, np.mean) * batch_size,
+            "peak_images_per_second": self._safe_stat(steps_per_sec, np.max) * batch_size,
+            "samples_processed": int(steps_arr[-1] * batch_size) if len(steps_arr) > 0 else 0,
+        }
+
+    def _compute_convergence(self, acc_arr, steps_arr, elapsed_arr) -> dict:
+        """Computa métricas de convergencia por umbrales de accuracy.
+
+        :param acc_arr: Array de accuracy.
+        :type acc_arr: np.ndarray
+
+        :param steps_arr: Array de pasos.
+        :type steps_arr: np.ndarray
+
+        :param elapsed_arr: Array de tiempos transcurridos.
+        :type elapsed_arr: np.ndarray
+
+        :returns: Diccionario con métricas de convergencia.
+        :rtype: dict
+        """
+        convergence = {}
+        for thresh in [5, 10, 20, 30, 40, 50]:
+            mask = acc_arr >= thresh
+            if np.any(mask):
+                idx = np.argmax(mask)
+                convergence[f"steps_to_{thresh}_percent_accuracy"] = int(steps_arr[idx])
+                convergence[f"time_to_{thresh}_percent_accuracy_seconds"] = float(elapsed_arr[idx])
+            else:
+                convergence[f"steps_to_{thresh}_percent_accuracy"] = None
+                convergence[f"time_to_{thresh}_percent_accuracy_seconds"] = None
+        return convergence
+
+    def _compute_stability(self, loss_std_arr, acc_std_arr) -> dict:
+        """Computa métricas de estabilidad (std de loss y accuracy).
+
+        :param loss_std_arr: Array de std de loss.
+        :type loss_std_arr: np.ndarray
+
+        :param acc_std_arr: Array de std de accuracy.
+        :type acc_std_arr: np.ndarray
+
+        :returns: Diccionario con métricas de estabilidad.
+        :rtype: dict
+        """
+        return {
+            "loss_std_mean": self._safe_stat(loss_std_arr, np.mean),
+            "loss_std_final": self._safe_stat(loss_std_arr, lambda x: x[-1]),
+            "acc_std_mean": self._safe_stat(acc_std_arr, np.mean),
+            "acc_std_final": self._safe_stat(acc_std_arr, lambda x: x[-1]),
+        }
+
+    def _compute_workers_summary(self, workers_arr) -> dict:
+        """Computa resumen de workers.
+
+        :param workers_arr: Array de conteo de workers.
+        :type workers_arr: np.ndarray
+
+        :returns: Diccionario con resumen de workers.
+        :rtype: dict
+        """
+        return {
+            "max_simultaneous": int(self._safe_stat(workers_arr, np.max, 0)),
+            "total_ever_connected": len(
+                [e for e in self._worker_events if e["event_type"] == "connected"]
+            ),
+            "total_disconnections": len(
+                [e for e in self._worker_events if e["event_type"] == "disconnected"]
+            ),
+        }
+
     def _write_metadata(self) -> None:
         """Escribe estadísticas finales en metadata.json.
 
@@ -1862,142 +1973,23 @@ class ResultsExporter:
         if len(self._full_losses) == 0 and len(self._metrics_loss) == 0:
             metadata = {"status": "no_metrics_recorded"}
         else:
-            with self._lock:
-                if len(self._full_losses) > 0:
-                    acc_hist = np.array(list(self._full_accuracies))
-                    workers_hist = np.array(list(self._full_workers))
-                    elapsed_hist = np.array(list(self._full_elapsed))
-                    staleness_hist = np.array(list(self._full_staleness))
-                    alpha_hist = np.array(list(self._full_alpha))
-                    loss_std_hist = np.array(list(self._full_loss_std))
-                    acc_std_hist = np.array(list(self._full_acc_std))
-                    steps_arr = np.array(list(self._full_steps))
-                else:
-                    acc_hist = np.array(list(self._metrics_accuracy))
-                    workers_hist = np.array(list(self._metrics_workers))
-                    elapsed_hist = np.array(list(self._metrics_elapsed))
-                    staleness_hist = np.array(list(self._metrics_staleness))
-                    alpha_hist = np.array(list(self._metrics_alpha))
-                    loss_std_hist = np.array(list(self._metrics_loss_std))
-                    acc_std_hist = np.array(list(self._metrics_acc_std))
-                    steps_arr = np.array(list(self._metrics_steps))
+            metrics = self._get_metrics_arrays()
+            steps_arr = metrics["steps"]
+            acc_arr = metrics["accuracy"]
+            workers_arr = metrics["workers"]
+            elapsed_arr = metrics["elapsed"]
+            staleness_arr = metrics["staleness"]
+            alpha_arr = metrics["alpha"]
+            loss_std_arr = metrics["loss_std"]
+            acc_std_arr = metrics["acc_std"]
 
-            duration = float(elapsed_hist[-1]) if len(elapsed_hist) > 0 else 0.0
+            duration = self._safe_stat(elapsed_arr, lambda x: x[-1])
             batch_size = self.config.get("batch_size", 0)
-
-            staleness_arr = staleness_hist
-            alpha_arr = alpha_hist
-            loss_std_arr = loss_std_hist
-            acc_std_arr = acc_std_hist
-            acc_arr = acc_hist
-            elapsed_arr = elapsed_hist
-            workers_arr = workers_hist
-
-            staleness_analysis = {
-                "mean": float(np.mean(staleness_arr))
-                if len(staleness_arr) > 0
-                else 0.0,
-                "max": int(np.max(staleness_arr)) if len(staleness_arr) > 0 else 0,
-                "std": float(np.std(staleness_arr)) if len(staleness_arr) >= 2 else 0.0,
-                "alpha_mean": float(np.mean(alpha_arr)) if len(alpha_arr) > 0 else 1.0,
-                "alpha_min": float(np.min(alpha_arr)) if len(alpha_arr) > 0 else 1.0,
-                "alpha_std": float(np.std(alpha_arr)) if len(alpha_arr) >= 2 else 0.0,
-            }
-
-            delta_steps = np.diff(steps_arr)
-            delta_time = np.diff(elapsed_arr)
-            delta_time[delta_time == 0] = 1e-6
-            steps_per_sec = delta_steps / delta_time
-            throughput = {
-                "mean_steps_per_second": float(np.mean(steps_per_sec))
-                if len(steps_per_sec) > 0
-                else 0.0,
-                "peak_steps_per_second": float(np.max(steps_per_sec))
-                if len(steps_per_sec) > 0
-                else 0.0,
-                "min_steps_per_second": float(np.min(steps_per_sec))
-                if len(steps_per_sec) > 0
-                else 0.0,
-                "mean_images_per_second": float(np.mean(steps_per_sec) * batch_size)
-                if len(steps_per_sec) > 0
-                else 0.0,
-                "peak_images_per_second": float(np.max(steps_per_sec) * batch_size)
-                if len(steps_per_sec) > 0
-                else 0.0,
-                "samples_processed": int(steps_arr[-1] * batch_size)
-                if len(steps_arr) > 0
-                else 0,
-            }
-
-            accuracy_thresholds = [5, 10, 20, 30, 40, 50]
-            convergence = {}
-            for thresh in accuracy_thresholds:
-                mask = acc_arr >= thresh
-                if np.any(mask):
-                    idx = np.argmax(mask)
-                    convergence[f"steps_to_{thresh}_percent_accuracy"] = int(
-                        steps_arr[idx]
-                    )
-                    convergence[f"time_to_{thresh}_percent_accuracy_seconds"] = float(
-                        elapsed_arr[idx]
-                    )
-                else:
-                    convergence[f"steps_to_{thresh}_percent_accuracy"] = None
-                    convergence[f"time_to_{thresh}_percent_accuracy_seconds"] = None
-
-            stability = {
-                "loss_std_mean": float(np.mean(loss_std_arr))
-                if len(loss_std_arr) > 0
-                else 0.0,
-                "loss_std_final": float(loss_std_arr[-1])
-                if len(loss_std_arr) > 0
-                else 0.0,
-                "acc_std_mean": float(np.mean(acc_std_arr))
-                if len(acc_std_arr) > 0
-                else 0.0,
-                "acc_std_final": float(acc_std_arr[-1])
-                if len(acc_std_arr) > 0
-                else 0.0,
-            }
-
-            max_simultaneous = int(np.max(workers_arr)) if len(workers_arr) > 0 else 0
-            total_ever_connected = len(
-                [e for e in self._worker_events if e["event_type"] == "connected"]
-            )
-            total_disconnections = len(
-                [e for e in self._worker_events if e["event_type"] == "disconnected"]
-            )
-
-            workers_summary = {
-                "max_simultaneous": max_simultaneous,
-                "total_ever_connected": total_ever_connected,
-                "total_disconnections": total_disconnections,
-            }
-
-            updates_dict = {
-                "total_applied": int(steps_arr[-1]) if len(steps_arr) > 0 else 0,
-                "total_rejected_nan": int(self.nan_rejected_count),
-            }
-
-            mean_tcp_requests_per_second = (
-                float(self.tcp_request_count / duration) if duration > 0 else 0.0
-            )
-
-            training_summary = {
-                "total_steps": int(steps_arr[-1]) if len(steps_arr) > 0 else 0,
-                "total_samples_processed": int(steps_arr[-1] * batch_size)
-                if len(steps_arr) > 0
-                else 0,
-                "total_wall_time_seconds": duration,
-                "effective_training_seconds": duration,
-                "mean_tcp_requests_per_second": mean_tcp_requests_per_second,
-                "total_tcp_requests": int(self.tcp_request_count),
-            }
 
             metadata = {
                 "status": "completed",
                 "session_timestamp": self.timestamp,
-                "total_steps": int(steps_arr[-1]) if len(steps_arr) > 0 else 0,
+                "total_steps": int(self._safe_stat(steps_arr, lambda x: x[-1], 0)),
                 "total_metrics_points": self._total_metrics,
                 "duration_seconds": duration,
                 "loss": {
@@ -2015,16 +2007,30 @@ class ResultsExporter:
                     "mean": float(np.mean(list(self._metrics_accuracy))),
                 },
                 "workers": {
-                    "max_connected": int(np.max(list(self._metrics_workers))),
+                    "max_connected": int(self._safe_stat(workers_arr, np.max, 0)),
                 },
                 "total_log_lines": len(self._logs),
-                "staleness_analysis": staleness_analysis,
-                "throughput": throughput,
-                "convergence": convergence,
-                "stability": stability,
-                "updates": updates_dict,
-                "workers_summary": workers_summary,
-                "training_summary": training_summary,
+                "staleness_analysis": self._compute_staleness_analysis(staleness_arr, alpha_arr),
+                "throughput": self._compute_throughput(steps_arr, elapsed_arr, batch_size),
+                "convergence": self._compute_convergence(acc_arr, steps_arr, elapsed_arr),
+                "stability": self._compute_stability(loss_std_arr, acc_std_arr),
+                "updates": {
+                    "total_applied": int(self._safe_stat(steps_arr, lambda x: x[-1], 0)),
+                    "total_rejected_nan": int(self.nan_rejected_count),
+                },
+                "workers_summary": self._compute_workers_summary(workers_arr),
+                "training_summary": {
+                    "total_steps": int(self._safe_stat(steps_arr, lambda x: x[-1], 0)),
+                    "total_samples_processed": int(
+                        self._safe_stat(steps_arr, lambda x: x[-1], 0) * batch_size
+                    ),
+                    "total_wall_time_seconds": duration,
+                    "effective_training_seconds": duration,
+                    "mean_tcp_requests_per_second": (
+                        self.tcp_request_count / duration if duration > 0 else 0.0
+                    ),
+                    "total_tcp_requests": int(self.tcp_request_count),
+                },
             }
 
         metadata_file = self.session_dir / "metadata.json"

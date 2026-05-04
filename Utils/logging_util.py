@@ -136,8 +136,8 @@ class FormattedLogger:
         for handler in self._log_handlers:
             try:
                 handler(full_msg)
-            except Exception:
-                pass  # Ignora errores en handlers para no romper el logging
+            except Exception:  # noqa: S110 (handler errors should not break logging)
+                pass
 
     def ps(self, msg: str, progress=None, metric=None):
         """

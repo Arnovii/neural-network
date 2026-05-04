@@ -330,12 +330,12 @@ class WorkerNode:
         if self._stream:
             try:
                 self._stream.stop()
-            except Exception:
+            except Exception:  # noqa: S110 (cleanup code, stream may already be stopped)
                 pass
         if self._sock:
             try:
                 self._sock.close()
-            except Exception:
+            except Exception:  # noqa: S110 (cleanup code, socket may already be closed)
                 pass
         _log.worker_msg(self._worker_id, "Recursos liberados.")
 
@@ -363,11 +363,12 @@ class WorkerNode:
         """
 
         # Garantiza que el batch_size e image_size fueron recibidos en CONFIG
-        assert self.batch_size is not None, "batch_size debe ser configurado por CONFIG"
-        assert self.image_size is not None, "image_size debe ser configurado por CONFIG"
-        assert self.dataset_name is not None, (
-            "dataset_name debe ser configurado por CONFIG"
-        )
+        if self.batch_size is None:
+            raise RuntimeError("batch_size debe ser configurado por CONFIG")
+        if self.image_size is None:
+            raise RuntimeError("image_size debe ser configurado por CONFIG")
+        if self.dataset_name is None:
+            raise RuntimeError("dataset_name debe ser configurado por CONFIG")
 
         self._stream = build_worker_stream(
             worker_rank=self.worker_rank,
@@ -383,8 +384,7 @@ class WorkerNode:
         self._stream.start()
         _log.worker_msg(
             self._worker_id,
-            f"Stream iniciado: {self.dataset_name} | "
-            f"shard {self.worker_rank}/{self.num_workers}",
+            f"Stream iniciado: {self.dataset_name} | shard {self.worker_rank}/{self.num_workers}",
         )
 
     # ================================================================
@@ -411,7 +411,8 @@ class WorkerNode:
 
         :raises RuntimeError: Si CNN_WEIGHTS tiene arquitectura desconocida.
         """
-        assert self._sock is not None
+        if self._sock is None:
+            raise RuntimeError("Socket no inicializado antes de recibir mensajes")
 
         while True:
             msg = receive_message(self._sock)
@@ -480,9 +481,7 @@ class WorkerNode:
 
         # Solo crea la CNN si no existe aún, o hubo un cambio de arquitectura
         if self._cnn is None or self._cnn.arch != arch:
-            _log.worker_msg(
-                self._worker_id, f"Instanciando CNN arch={arch} en {self.device}"
-            )
+            _log.worker_msg(self._worker_id, f"Instanciando CNN arch={arch} en {self.device}")
             # CNNExtractor.__init__ establece requires_grad según arch:
             #   resnet18 → False (congelada), simple → True (entrenable)
             self._cnn = CNNExtractor(arch=arch, device=str(self.device), seed=self.seed)
@@ -537,7 +536,8 @@ class WorkerNode:
             f"params={actual_keys} | modo={mode}",
         )
 
-        assert self._sock is not None
+        if self._sock is None:
+            raise RuntimeError("Socket no inicializado antes de enviar CNN_ACK")
         send_message(
             self._sock,
             MsgType.CNN_ACK,
@@ -573,8 +573,10 @@ class WorkerNode:
         :returns: None
         :rtype: None
         """
-        assert self._cnn is not None
-        assert self._mlp is not None
+        if self._cnn is None:
+            raise RuntimeError("CNN no inicializada antes de configurar optimizador")
+        if self._mlp is None:
+            raise RuntimeError("MLP no inicializado antes de configurar optimizador")
 
         # Guardar LRs como atributos para uso en _train_batch
         self._lr_mlp = lr
@@ -591,9 +593,7 @@ class WorkerNode:
                 weight_decay=WEIGHT_DECAY,  # L2 regularización: θ += -wd·θ por paso
             )
             # _all_params para clipping: lista completa CNN+MLP precalculada
-            self._all_params = list(self._cnn._model.parameters()) + list(
-                self._mlp.parameters()
-            )
+            self._all_params = list(self._cnn._model.parameters()) + list(self._mlp.parameters())
         else:
             # Modo freeze: solo MLP, sin optimizador formal
             self._sgd = None
@@ -632,13 +632,14 @@ class WorkerNode:
         :raises RuntimeError: Si CNN no fue inicializada antes de entrar al loop.
         """
         if self._cnn is None:
-            raise RuntimeError(
-                f"[W{self._worker_id}] _training_loop sin CNN inicializada."
-            )
+            raise RuntimeError(f"[W{self._worker_id}] _training_loop sin CNN inicializada.")
 
-        assert self._sock is not None
-        assert self._cnn is not None
-        assert self._stream is not None
+        if self._sock is None:
+            raise RuntimeError("Socket no inicializado antes de entrar al training loop")
+        if self._cnn is None:
+            raise RuntimeError("CNN no inicializada antes de entrar al training loop")
+        if self._stream is None:
+            raise RuntimeError("Stream no inicializado antes de entrar al training loop")
 
         _log.worker_msg(
             self._worker_id,
@@ -676,9 +677,7 @@ class WorkerNode:
             if not mlp_state:
                 raise RuntimeError(f"[W{self._worker_id}] PS devolvió mlp_state vacío.")
             if not cnn_state and not self._freeze_cnn:
-                raise RuntimeError(
-                    f"[W{self._worker_id}] PS devolvió cnn_state vacío en modo E2E."
-                )
+                raise RuntimeError(f"[W{self._worker_id}] PS devolvió cnn_state vacío en modo E2E.")
 
             if not first_params_logged:
                 fc1_shape = mlp_state.get("fc1.weight", np.array([])).shape
@@ -745,9 +744,7 @@ class WorkerNode:
                         "batch_size": total_n,
                         "version_read": version_read,
                         "mlp_weights": self._serialize_mlp(),
-                        "cnn_weights": None
-                        if self._freeze_cnn
-                        else self._serialize_cnn(),
+                        "cnn_weights": None if self._freeze_cnn else self._serialize_cnn(),
                     },
                 )
             except Exception as e:
@@ -799,8 +796,10 @@ class WorkerNode:
         :returns: Tupla (loss, accuracy_pct, n_samples) con métricas del batch.
         :rtype: Tuple[float, float, int]
         """
-        assert self._cnn is not None
-        assert self._mlp is not None
+        if self._cnn is None:
+            raise RuntimeError("CNN no inicializada antes de procesar batch")
+        if self._mlp is None:
+            raise RuntimeError("MLP no inicializado antes de procesar batch")
 
         # OPTIMIZACIÓN: from_numpy ya crea tensor en CPU.
         # Solo mover a GPU si es necesario, evitando copia innecesaria.
@@ -822,9 +821,7 @@ class WorkerNode:
             self._mlp.train()
             self._mlp.zero_grad()
             logits = self._mlp(features)
-            loss_t = nn.functional.cross_entropy(
-                logits, Y, label_smoothing=LABEL_SMOOTHING
-            )
+            loss_t = nn.functional.cross_entropy(logits, Y, label_smoothing=LABEL_SMOOTHING)
             loss_t.backward()
 
             # Bucle manual inline: solo 6 parámetros del MLP.
@@ -840,14 +837,13 @@ class WorkerNode:
             self._cnn._model.train()
             self._mlp.train()
 
-            assert self._sgd is not None
+            if self._sgd is None:
+                raise RuntimeError("SGD optimizer no inicializado en modo E2E")
             self._sgd.zero_grad()
 
             features = self._cnn._model(X)
             logits = self._mlp(features)
-            loss_t = nn.functional.cross_entropy(
-                logits, Y, label_smoothing=LABEL_SMOOTHING
-            )
+            loss_t = nn.functional.cross_entropy(logits, Y, label_smoothing=LABEL_SMOOTHING)
             loss_t.backward()
 
             # Gradient clipping sobre lista precalculada (no se reconstruye aquí)
@@ -897,7 +893,8 @@ class WorkerNode:
         :returns: None
         :rtype: None
         """
-        assert self._cnn is not None
+        if self._cnn is None:
+            raise RuntimeError("CNN no inicializada antes de cargar estado")
         if not cnn_state:
             return
 
@@ -946,15 +943,11 @@ class WorkerNode:
         """
         if existing is None:
             if "fc1.weight" not in mlp_state:
-                raise RuntimeError(
-                    f"[W{self._worker_id}] mlp_state no contiene fc1.weight."
-                )
+                raise RuntimeError(f"[W{self._worker_id}] mlp_state no contiene fc1.weight.")
             feature_dim = mlp_state["fc1.weight"].shape[1]
             hidden1 = mlp_state["fc1.weight"].shape[0]
             hidden2 = mlp_state["fc2.weight"].shape[0]
-            existing = MLPPyTorch(feature_dim, hidden1, hidden2, NUM_CLASSES).to(
-                self.device
-            )
+            existing = MLPPyTorch(feature_dim, hidden1, hidden2, NUM_CLASSES).to(self.device)
             _log.worker_msg(
                 self._worker_id,
                 f"MLP creado desde PS: {feature_dim}→{hidden1}→{hidden2}→{NUM_CLASSES}",
@@ -984,11 +977,12 @@ class WorkerNode:
         :returns: Diccionario mapeando nombres de parametros a arrays NumPy.
         :rtype: Dict[str, np.ndarray]
         """
-        assert self._cnn is not None
+        if self._cnn is None:
+            raise RuntimeError("CNN no inicializada antes de extraer estado")
+
         base = getattr(self._cnn._model, "model", self._cnn._model)
         return {
-            name: tensor.detach().cpu().numpy().copy()
-            for name, tensor in base.state_dict().items()
+            name: tensor.detach().cpu().numpy().copy() for name, tensor in base.state_dict().items()
         }
 
     def _serialize_mlp(self) -> Dict[str, np.ndarray]:
@@ -1000,7 +994,9 @@ class WorkerNode:
         :returns: Diccionario mapeando nombres de parametros a arrays NumPy.
         :rtype: Dict[str, np.ndarray]
         """
-        assert self._mlp is not None
+        if self._mlp is None:
+            raise RuntimeError("MLP no inicializado antes de extraer estado")
+
         return {
             name: tensor.detach().cpu().numpy().copy()
             for name, tensor in self._mlp.state_dict().items()
