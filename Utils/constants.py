@@ -45,6 +45,10 @@ FEATURE_DIM: int = 512
 DEFAULT_HOST: str = "0.0.0.0"  # noqa: S104 (PS server binds to all interfaces intentionally)
 DEFAULT_PORT: int = 9999
 
+# Streaming de datos
+STREAM_RECONNECT_MAX_ATTEMPTS: int = 5  # Máximo número de reconexiones para ImageNet streaming
+STREAM_RECONNECT_DELAY_SECONDS: int = 5  # Segundos de espera entre intentos de reconexión
+
 # ============================================================
 # COLORES (GUI & Gráficas)
 # ============================================================

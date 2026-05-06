@@ -54,9 +54,14 @@ from Utils.constants import (
     IMAGE_SIZE,
     PREFETCH_DEFAULT,
     SHUFFLE_BUFFER_DEFAULT,
+    STREAM_RECONNECT_DELAY_SECONDS,
+    STREAM_RECONNECT_MAX_ATTEMPTS,
     VALIDATION_BATCH_SIZE_DEFAULT,
     VAL_BATCHES_DEFAULT,
 )
+from Utils.logging_util import get_logger
+
+_log = get_logger(use_colors=False)
 
 
 # ── Estadísticas estándar de ImageNet ────────────────────────────
@@ -372,25 +377,24 @@ class ImageNetStream:
         buf_X: list = []
         buf_Y: list = []
         reconnect_count = 0
-        MAX_RECONNECT_ATTEMPTS = 5
 
         while True:
             if self._dataset is None:
-                if reconnect_count >= MAX_RECONNECT_ATTEMPTS:
+                if reconnect_count >= STREAM_RECONNECT_MAX_ATTEMPTS:
                     raise RuntimeError(
                         f"[Stream W{self.worker_rank}] Failed to connect after "
-                        f"{MAX_RECONNECT_ATTEMPTS} attempts. Aborting."
+                        f"{STREAM_RECONNECT_MAX_ATTEMPTS} attempts. Aborting."
                     )
                 try:
                     self._dataset = self._open_dataset()
                     reconnect_count = 0  # Reset contador al conectar exitosamente
                 except Exception as e:
                     reconnect_count += 1
-                    print(
-                        f"[Stream W{self.worker_rank}] Connection error ({reconnect_count}/{MAX_RECONNECT_ATTEMPTS}): {e}. "
-                        f"Retrying in 5s..."
+                    _log.warning(
+                        f"[Stream W{self.worker_rank}] Connection error ({reconnect_count}/{STREAM_RECONNECT_MAX_ATTEMPTS}): {e}. "
+                        f"Retrying in {STREAM_RECONNECT_DELAY_SECONDS}s..."
                     )
-                    time.sleep(5)
+                    time.sleep(STREAM_RECONNECT_DELAY_SECONDS)
                     continue
             try:
                 for sample in self._dataset:
@@ -402,8 +406,7 @@ class ImageNetStream:
                     try:
                         tensor = self.transform(img)  # Aplicamos pipeline de get_train_transform()
                     except Exception as e:
-                        # Transform falloso: muestra corrupta o incompatible, omitir
-                        print(f"[ImageNetStream] Skipping corrupted training sample: {e}")
+                        _log.warning(f"[ImageNetStream] Skipping corrupted training sample: {e}")
                         continue
 
                     # Guardamos en el buffer
@@ -430,11 +433,11 @@ class ImageNetStream:
                 self._dataset = None
             except Exception as e:
                 reconnect_count += 1
-                print(
-                    f"[Stream W{self.worker_rank}] Stream error ({reconnect_count}/{MAX_RECONNECT_ATTEMPTS}): {e}. "
-                    f"Reconnecting in 5s..."
+                _log.warning(
+                    f"[Stream W{self.worker_rank}] Stream error ({reconnect_count}/{STREAM_RECONNECT_MAX_ATTEMPTS}): {e}. "
+                    f"Reconnecting in {STREAM_RECONNECT_DELAY_SECONDS}s..."
                 )
-                time.sleep(5)
+                time.sleep(STREAM_RECONNECT_DELAY_SECONDS)
                 self._dataset = None
 
     def __iter__(self) -> Iterator[Tuple[np.ndarray, np.ndarray]]:
@@ -749,8 +752,7 @@ class ValidationStream:
             try:
                 tensor = self.transform(img)  # Aplicamos pipeline de get_val_transform()
             except Exception as e:
-                # Transform falloso en validacion: muestra corrupta, omitir
-                print(f"[ImageNetStream] Skipping corrupted validation sample: {e}")
+                _log.warning(f"[ImageNetStream] Skipping corrupted validation sample: {e}")
                 continue
             buf_X.append(tensor.numpy())
             buf_Y.append(label)

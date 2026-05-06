@@ -159,6 +159,106 @@ class FormattedLogger:
         """
         self.log("ps", msg, progress, metric)
 
+    def worker(self, msg: str, progress=None, metric=None):
+        """
+        Registra mensaje con formateo de fase 'worker' (Worker Node).
+
+        Método de conveniencia que llama log() con phase='worker'.
+
+        :param msg: Texto del mensaje.
+        :type msg: str
+
+        :param progress: Información de progreso opcional.
+        :type progress: str | None
+
+        :param metric: Información de métrica opcional.
+        :type metric: str | None
+
+        :returns: None
+        :rtype: None
+        """
+        self.log("worker", msg, progress, metric)
+
+    def train(self, msg: str, progress=None, metric=None):
+        """
+        Registra mensaje con formateo de fase 'train' (Training/MLP).
+
+        Método de conveniencia que llama log() con phase='train'.
+
+        :param msg: Texto del mensaje.
+        :type msg: str
+
+        :param progress: Información de progreso opcional.
+        :type progress: str | None
+
+        :param metric: Información de métrica opcional.
+        :type metric: str | None
+
+        :returns: None
+        :rtype: None
+        """
+        self.log("train", msg, progress, metric)
+
+    def warning(self, msg: str, progress=None, metric=None):
+        """
+        Registra mensaje con formateo de fase 'warn' (Warning/Advertencia).
+
+        Método de conveniencia que llama log() con phase='warn'.
+
+        :param msg: Texto del mensaje.
+        :type msg: str
+
+        :param progress: Información de progreso opcional.
+        :type progress: str | None
+
+        :param metric: Información de métrica opcional.
+        :type metric: str | None
+
+        :returns: None
+        :rtype: None
+        """
+        self.log("warn", msg, progress, metric)
+
+    def error(self, msg: str, progress=None, metric=None):
+        """
+        Registra mensaje con formateo de fase 'error' (Error).
+
+        Método de conveniencia que llama log() con phase='error'.
+
+        :param msg: Texto del mensaje.
+        :type msg: str
+
+        :param progress: Información de progreso opcional.
+        :type progress: str | None
+
+        :param metric: Información de métrica opcional.
+        :type metric: str | None
+
+        :returns: None
+        :rtype: None
+        """
+        self.log("error", msg, progress, metric)
+
+    def warn(self, msg: str, progress=None, metric=None):
+        """
+        Registra mensaje con formateo de fase 'warn' (Alias para warning).
+
+        Método de conveniencia que llama log() con phase='warn'.
+
+        :param msg: Texto del mensaje.
+        :type msg: str
+
+        :param progress: Información de progreso opcional.
+        :type progress: str | None
+
+        :param metric: Información de métrica opcional.
+        :type metric: str | None
+
+        :returns: None
+        :rtype: None
+        """
+        self.log("warn", msg, progress, metric)
+
     def worker_msg(self, worker_id, msg: str, progress=None, metric=None):
         """
         Registra mensaje con formateo de fase 'worker' incluido el Worker ID.
@@ -183,54 +283,6 @@ class FormattedLogger:
         wid = worker_id if worker_id is not None else "?"
         full_msg = f"[W{wid}] {msg}"
         self.log("worker", full_msg, progress, metric)
-
-    def train(self, msg: str, progress=None, metric=None):
-        """
-        Registra mensaje con formateo de fase 'train' (Entrenamiento MLP).
-
-        Método de conveniencia que llama log() con phase='train'.
-
-        :param msg: Texto del mensaje.
-        :type msg: str
-
-        :param progress: Información de progreso opcional.
-        :type progress: str | None
-
-        :param metric: Información de métrica opcional.
-        :type metric: str | None
-
-        :returns: None
-        :rtype: None
-        """
-        self.log("train", msg, progress, metric)
-
-    def warn(self, msg: str):
-        """
-        Registra mensaje de advertencia con formateo de fase 'warn'.
-
-        Método de conveniencia que llama log() con phase='warn'.
-
-        :param msg: Texto del mensaje de advertencia.
-        :type msg: str
-
-        :returns: None
-        :rtype: None
-        """
-        self.log("warn", msg)
-
-    def error(self, msg: str):
-        """
-        Registra mensaje de error con formateo de fase 'error'.
-
-        Método de conveniencia que llama log() con phase='error'.
-
-        :param msg: Texto del mensaje de error.
-        :type msg: str
-
-        :returns: None
-        :rtype: None
-        """
-        self.log("error", msg)
 
     def section(self, title: str) -> None:
         """

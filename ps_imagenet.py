@@ -230,7 +230,7 @@ def main() -> None:
         """
         print(f"  [-] Worker {wid} desconectado.")
 
-    def on_step(step: int, loss: float, acc: float, staleness: int, elapsed: float) -> None:
+    def on_step(step: int, loss: float, acc: float, staleness: float, elapsed: float) -> None:
         """
         Callback de PS: se ejecuta después de cada step de entrenamiento.
 

@@ -45,7 +45,6 @@ import socket
 import threading
 import time
 import collections
-import math as _math
 from typing import Callable, Dict, List, Tuple
 
 import numpy as np
@@ -71,53 +70,6 @@ from Utils.constants import (
 )
 
 _log = get_logger(use_colors=True)
-
-
-# ================================================================
-# UTILIDAD: LINEAR SCALING RULE PARA LR
-# ================================================================
-
-
-def suggest_lr(lr_base: float, n_workers: int) -> float:
-    """
-    Calcula el learning rate sugerido según la Linear Scaling Rule.
-
-    En entrenamiento distribuido síncrono, la regla lineal de Goyal et al.
-    (2017) recomienda escalar lr ∝ n_workers para mantener la misma
-    dinámica de descenso de gradiente que con un solo worker.
-
-    En entrenamiento ASÍNCRONO con FedAvg y corrección de staleness,
-    la escala lineal es demasiado agresiva: el staleness ya atenúa
-    algunos updates, por lo que se usa escala por raíz cuadrada:
-
-        lr_sugerido = lr_base × √n_workers
-
-    Esta fórmula es más conservadora y apropiada cuando los workers
-    tienen asincronía variable (staleness heterogéneo).
-
-    Con 1 worker: lr_sugerido = lr_base (sin cambio).
-    Con 4 workers: lr_sugerido ≈ 2 × lr_base.
-
-    La función es informativa — no modifica el sistema. Úsela como
-    referencia al configurar learning_rate en ParameterServer.
-
-    :param lr_base:    LR de referencia para 1 worker.
-    :type lr_base:     float
-
-    :param n_workers:  Número de Workers que se planea conectar.
-    :type n_workers:   int
-
-    :returns: LR ajustado según √n_workers.
-    :rtype:   float
-
-    :example:
-        >>> suggest_lr(0.01, 1)   # → 0.01
-        >>> suggest_lr(0.01, 4)   # → 0.02
-        >>> suggest_lr(0.001, 2)  # → 0.00141...
-    """
-    if n_workers <= 1:
-        return lr_base
-    return lr_base * _math.sqrt(n_workers)
 
 
 # ================================================================
@@ -234,11 +186,11 @@ class ParameterServer:
         export_dir: str = EXPORT_DIR_DEFAULT,
         hidden1: int = HIDDEN1_DEFAULT,
         hidden2: int = HIDDEN2_DEFAULT,
-        on_step: Callable | None = None,
-        on_report: Callable | None = None,
-        on_worker_connected: Callable | None = None,
-        on_worker_disconnected: Callable | None = None,
-        on_start_sent: Callable | None = None,
+        on_step: Callable[[int, float, float, float, float], None] | None = None,
+        on_report: Callable[[int, float, float, float], None] | None = None,
+        on_worker_connected: Callable[[int, str], None] | None = None,
+        on_worker_disconnected: Callable[[int], None] | None = None,
+        on_start_sent: Callable[[int], None] | None = None,
     ) -> None:
         """
         Inicializa el Parameter Server para entrenamiento Async-SGD distribuido.
@@ -962,6 +914,46 @@ class ParameterServer:
         # 8. Iniciar loop de servicio
         self._serve_worker(wid, conn)
 
+    def _handle_request_params(self, wid: int, conn: socket.socket) -> bool:
+        """Maneja solicitud REQUEST_PARAMS de un Worker.
+
+        Prepara copias thread-safe del estado del modelo (MLP + CNN condicionalmente),
+        envía parámetros actuales con versión, learning rates, etc.
+
+        :param wid: Worker ID.
+        :type wid: int
+
+        :param conn: Socket de conexión con el Worker.
+        :type conn: socket.socket
+
+        :returns: True si se envió correctamente, False si error y debe desconectar.
+        :rtype: bool
+        """
+        with self._params_lock:
+            self._total_requests += 1
+            mlp_copy = {key: value.copy() for key, value in self._mlp_state.items()}
+            ver = self._version
+            with self._workers_lock:
+                is_freeze = self._worker_freeze.get(wid, False)
+            cnn_copy = {} if is_freeze else {k: v.copy() for k, v in self._cnn_state.items()}
+
+        try:
+            send_message(
+                conn,
+                MsgType.PARAMS,
+                {
+                    "mlp_state": mlp_copy,
+                    "cnn_state": cnn_copy,
+                    "version": ver,
+                    "lr": self.learning_rate,  # LR del MLP
+                    "lr_cnn": self.learning_rate_cnn,  # LR de la CNN
+                },
+            )
+            return True
+        except Exception as e:
+            _log.error(f"Error enviando PARAMS a Worker {wid}: {e}")
+            return False
+
     def _serve_worker(self, wid: int, conn: socket.socket) -> None:
         """
         Loop de servicio asíncrono para un Worker.
@@ -993,30 +985,7 @@ class ParameterServer:
                     break
 
                 elif mtype == MsgType.REQUEST_PARAMS:
-                    with self._params_lock:
-                        self._total_requests += 1
-                        mlp_copy = {key: value.copy() for key, value in self._mlp_state.items()}
-                        ver = self._version
-                        with self._workers_lock:
-                            is_freeze = self._worker_freeze.get(wid, False)
-                        cnn_copy = (
-                            {} if is_freeze else {k: v.copy() for k, v in self._cnn_state.items()}
-                        )
-
-                    try:
-                        send_message(
-                            conn,
-                            MsgType.PARAMS,
-                            {
-                                "mlp_state": mlp_copy,
-                                "cnn_state": cnn_copy,
-                                "version": ver,
-                                "lr": self.learning_rate,  # LR del MLP
-                                "lr_cnn": self.learning_rate_cnn,  # LR de la CNN
-                            },
-                        )
-                    except Exception as e:
-                        _log.error(f"Error enviando PARAMS a Worker {wid}: {e}")
+                    if not self._handle_request_params(wid, conn):
                         break
 
                 elif mtype == MsgType.UPDATES:
@@ -1115,7 +1084,7 @@ class ParameterServer:
             avg_loss, avg_acc, std_loss, std_acc = loss, acc, 0.0, 0.0
 
         if self.on_step:
-            self.on_step(step, loss, acc, staleness, elapsed)
+            self.on_step(step, loss, acc, float(staleness), elapsed)
 
         if self._results_exporter is not None:
             with self._workers_lock:
