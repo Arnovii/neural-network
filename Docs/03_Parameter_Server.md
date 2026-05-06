@@ -768,7 +768,7 @@ python ps_imagenet.py \
     --image-size 224 \
     --dataset "ILSVRC/imagenet-1k" \
     --seed 42 \
-    --steps-per-report 500 \
+    --steps-per-report 10 \
     --max-steps 10000 \
     --export-dir ./mis_resultados \
     --hf-token "hf_..."
@@ -789,7 +789,7 @@ python ps_imagenet.py \
 | `--dataset` | `ILSVRC/imagenet-1k` | Dataset HuggingFace |
 | `--cnn-arch` | `resnet18` | Arquitectura CNN (`resnet18` o `simple`) |
 | `--seed` | `None` | Semilla RNG (None = aleatorio) |
-| `--steps-per-report` | `500` | Steps entre reportes |
+| `--steps-per-report` | `10` | Steps entre reportes |
 | `--max-steps` | `0` (sin límite) | Límite de steps de entrenamiento |
 | `--metrics-window` | `50` | Tamaño de ventana deslizante de métricas |
 | `--hf-token` | `None` | Token de HuggingFace |

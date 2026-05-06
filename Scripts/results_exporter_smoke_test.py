@@ -164,7 +164,7 @@ def run_smoke_test(total_steps: int, export_dir: Path, seed: int) -> Path:
 def main() -> int:
     """Punto de entrada CLI para ejecutar el smoke test.
 
-    Parsea argumentos de linea de comandos y delega en
+    Parsea parámetros de línea de comandos y delega en
     ``run_smoke_test`` con los parametros especificados.
 
     :returns: Codigo de salida (0 para exito).

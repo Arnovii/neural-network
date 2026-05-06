@@ -99,7 +99,7 @@ result_dir = exporter.finalize()
   "cnn_arch": "resnet18",
   "hidden1": 1024,
   "hidden2": 512,
-  "steps_per_report": 500,
+  "steps_per_report": 10,
   "host": "0.0.0.0",
   "port": 9999,
   "description": "Distributed Async-SGD on ImageNet-1k"

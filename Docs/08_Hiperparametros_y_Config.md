@@ -108,7 +108,7 @@ Ejemplo: s = 10 (staleness)
 
 ### Steps per Report
 
-**Default**: 500  
+**Default**: 10
 **Efecto**: Cada cuántos steps reportar métricas
 
 ```
@@ -165,12 +165,12 @@ class RunningMetrics:
 **Relación con Steps Per Report**:
 
 ```
-ventana=50, steps_per_report=500:
+ventana=50, steps_per_report=10:
   - Accuracy GUI (encima gráfica) se actualiza cada step (~1s)
   - Accuracy en gráfica se actualiza cada 500 steps (~5-10 min)
   - Demora visible pero responsivo
 
-ventana=200, steps_per_report=500:
+ventana=200, steps_per_report=10:
   - Accuracy GUI demora más en estabilizarse
   - Accuracy en gráfica es muy suave
   - Menos volatilidad pero tardío
@@ -267,7 +267,7 @@ python ps_imagenet.py --max-steps 1000 --steps-per-report 100 --hf-token "hf_...
 --batch-size 64         # Balance memoria/throughput
 --hidden1 1024          # MLP completo
 --hidden2 512
---steps-per-report 500  # Menos overhead
+--steps-per-report 10  # Menos overhead
 ```
 
 **Esperado**:
@@ -308,7 +308,7 @@ python ps_imagenet.py \
   --hidden1 1024 \
   --hidden2 512 \
   --cnn-arch resnet18 \
-  --steps-per-report 500 \
+  --steps-per-report 10 \
   --max-steps 50000 \
   --metrics-window 50 \
   --hf-token "hf_..."
@@ -490,7 +490,7 @@ from Utils.constants import DEFAULT_BATCH_SIZE, IMAGE_SIZE, COLORS
 | COLORS | dict | Paleta principal de colores (estado, métricas y UI) |
 | DEFAULT_BATCH_SIZE | 64 | Imágenes por batch en cada Worker |
 | DEFAULT_HOST | "0.0.0.0" | Host de escucha del PS por defecto |
-| DEFAULT_LR | 0.01 | Learning rate MLP |
+| DEFAULT_LR | 0.001 | Learning rate MLP |
 | DEFAULT_LR_CNN | 0.001 | Learning rate CNN (E2E) |
 | DEFAULT_PORT | 9999 | Puerto TCP del PS por defecto |
 | DEFAULT_SEED | None | Semilla por defecto (None = aleatorio) |

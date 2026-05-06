@@ -135,7 +135,7 @@ Worker host: 192.168.1.100  (usar como --server-host en workers)
 | `--image-size` | `224` | Resolución de imágenes |
 | `--dataset` | `ILSVRC/imagenet-1k` | Dataset |
 | `--seed` | `None` | Semilla RNG (None = aleatorio) |
-| `--steps-per-report` | `500` | Steps entre reportes |
+| `--steps-per-report` | `10` | Steps entre reportes |
 | `--max-steps` | `0` | Límite steps (0 = ilimitado) |
 | `--export-dir` | `./Exports` | Directorio de resultados |
 | `--hf-token` | `None` | Token HuggingFace |

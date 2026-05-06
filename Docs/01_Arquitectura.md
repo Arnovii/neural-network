@@ -254,7 +254,7 @@ rank=2, num_workers=3 → muestras 2, 5, 8, 11, ... (1/3 del dataset)
 
 | Constante | Valor | Descripción |
 |---|---|---|
-| `DEFAULT_LR` | 0.01 | Learning rate del MLP |
+| `DEFAULT_LR` | 0.001 | Learning rate del MLP |
 | `DEFAULT_LR_CNN` | 0.001 | Learning rate CNN (E2E) |
 | `HIDDEN1_DEFAULT` | 1024 | Neuronas capa oculta 1 |
 | `HIDDEN2_DEFAULT` | 512 | Neuronas capa oculta 2 |
@@ -317,19 +317,19 @@ ip = get_worker_ip("127.0.0.1")  # "127.0.0.1"
 **Archivos generados por experimento (13 archivos)**:
 ```
 ./Exports/[timestamp]/
-├── config.json           # Configuración completa del experimento
-├── metrics.csv           # Series de tiempo (step, loss, acc, workers, elapsed)
-├── ps_logs.txt          # Todos los logs del Parameter Server
-├── metadata.json        # Estadísticas finales (step final, loss/acc final, workers máx)
-├── hyperparameters.json  # Hiperparámetros efectivos
-├── checkpoint.pth       # Checkpoint del modelo (si está habilitado)
-├── summary.txt          # Resumen ejecutivo del entrenamiento
-├── export_info.json     # Información de exportación
-├── plot_3panels.png     # 3 gráficas combinadas (Loss | Accuracy | Workers)
-├── plot_loss.png        # Gráfica individual de Loss
-├── plot_accuracy.png    # Gráfica individual de Accuracy
-├── plot_workers.png     # Gráfica individual de Workers activos
-└── plot_staleness.png   # Gráfica de staleness over time
+├── config.json           # Configuración del experimento
+├── metrics.csv           # Series de tiempo (step, loss, acc, workers, stds, staleness, alpha)
+├── worker_events.csv     # Historial de conexiones/desconexiones de Workers
+├── ps_logs.txt           # Todos los logs del Parameter Server
+├── metadata.json         # Estadísticas finales (min/max loss, acc, etc.)
+├── plot_3panels.png      # 3 gráficas horizontales (loss/acc/workers)
+├── plot_loss.png         # Gráfica individual de Loss
+├── plot_accuracy.png     # Gráfica individual de Accuracy
+├── plot_workers.png      # Gráfica individual de Workers
+├── plot_band_loss.png    # Loss con banda de confianza ±1σ
+├── plot_band_acc.png     # Accuracy con banda de confianza ±1σ
+├── plot_staleness.png    # Staleness + factor de corrección α
+└── plot_std.png          # Desviaciones estándar de Loss y Accuracy
 ```
 
 **Estilos de visualización**:

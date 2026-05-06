@@ -89,26 +89,18 @@ class _BasicBlock(nn.Module):
         El shortcut es identidad si stride=1 y in_ch=out_ch, sino Conv(1×1).
         Zero-init en BN final hace que el bloque inicie como identidad.
 
-        :param in_ch:
-            Número de canales de entrada.
-        :type in_ch:
-            int
+        :param in_ch: Número de canales de entrada.
+        :type in_ch: int
 
-        :param out_ch:
-            Número de canales de salida (número de filtros).
-        :type out_ch:
-            int
+        :param out_ch: Número de canales de salida (número de filtros).
+        :type out_ch: int
 
-        :param stride:
-            Stride de la primera convolución. Default: 1 (sin submuestreo espacial).
+        :param stride: Stride de la primera convolución. Default: 1 (sin submuestreo espacial).
             Usar stride=2 para reducir resolución espacial a la mitad.
-        :type stride:
-            int, optional
+        :type stride: int
 
-        :returns:
-            Nada.
-        :rtype:
-            None
+        :returns: Nada.
+        :rtype: None
 
         :examples:
             Crear un bloque basic que mantiene resolución (stride=1):

@@ -6,7 +6,7 @@ Sistema de exportación de resultados completamente desacoplado del Parameter Se
 DISEÑO DE DESACOPLAMIENTO:
   - ResultsExporter NO importa ni depende de ParameterServer
   - Se integra únicamente vía callbacks y métodos públicos
-  - Los datos se pasan por argumentos simples (int, float, str, dict)
+  - Los datos se pasan por parámetros simples (int, float, str, dict)
   - No requiere conocimiento de la arquitectura interna de PS
 
 BUFFERING Y RENDIMIENTO:

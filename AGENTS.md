@@ -77,7 +77,7 @@ READY → WORKER_ID → CONFIG → CNN_WEIGHTS → CNN_ACK → START
 | Param | Default | Description |
 |-------|---------|------------|
 | `--lr` | 0.001 | Learning rate MLP |
-| `--lr-cnn` | 0.001 | LR CNN (E2E only) |
+| `--lr-cnn` | 0.01 | LR CNN (E2E only) |
 | `--staleness-lambda` | 0.1 | Staleness correction factor |
 | `--hidden1` | 1024 | MLP hidden layer 1 |
 | `--hidden2` | 512 | MLP hidden layer 2 |
@@ -183,14 +183,14 @@ Este repo NO tiene configurado:
 4. **No convergence**: Ajustar staleness_lambda (0.1 default)
 
 ## File Key Lines and Features
-| File | Lines | Content |
-|------|-------|---------|
-| `ps_gui_imagenet.py` | 1256-1326 | GUI plot rendering |
-| `Distributed/parameter_server.py` | 1-100 | Design notes, async-SGD, staleness |
-| `Distributed/worker_node.py` | 1-66 | Training modes, E2E vs MLP-only |
-| `Model/cnn_extractor.py` | 1-51 | Architecture docs (ResNet-18 vs Simple) |
-| `Utils/results_exporter.py` | 1-100 | Export system design, 13-file output |
-| `Utils/results_exporter.py` | 279-370 | Plot generation (_generate_plots + 9 methods) |
+| File |Content | Content |
+|------|--------|---------|
+| `ps_gui_imagenet.py` | GUI plot rendering |
+| `Distributed/parameter_server.py` | Design notes, async-SGD, staleness |
+| `Distributed/worker_node.py` | Training modes, E2E vs MLP-only |
+| `Model/cnn_extractor.py` | Architecture docs (ResNet-18 vs Simple) |
+| `Utils/results_exporter.py` | Export system design, 13-file output |
+| `Utils/results_exporter.py` | Plot generation (_generate_plots + 9 methods) |
 
 ## ResultsExporter Class (Utils/results_exporter.py)
 - **Thread-safe**: record_metric() y record_log() con locks

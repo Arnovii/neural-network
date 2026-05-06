@@ -164,7 +164,7 @@ La interfaz gráfica es el **front-end de control y monitoreo** del sistema dist
 **Async SGD**:
 - `LR` (float): default 0.01, range (0.00001, 1.0)
 - `λ (Staleness)` (float): default 0.1,range (0.0, 1.0)
-- `Steps/Reporte` (int): default 500
+- `Steps/Reporte` (int): default 10
 - `Ventana Métricas` (int): default 50 (METRICS_WINDOW_DEFAULT)
 - `Límite Steps` (int, opcional): default vacío (sin límite)
 

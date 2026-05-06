@@ -137,7 +137,7 @@ Está declarado en el proyecto como dependencia de visualización interactiva pa
 
 ### 5. Capa de configuración y entorno
 
-#### `python-dotenv` 1.2.2 / módulo `dotenv`
+#### `python-dotenv` >=1.2.2 / módulo `dotenv`
 
 El proyecto carga variables desde `.env` mediante `load_dotenv`.
 

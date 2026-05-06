@@ -75,7 +75,7 @@ def get_default_device() -> str:
 def main() -> None:
     """Punto de entrada para el proceso worker asincronico.
 
-    Analiza argumentos de linea de comandos, muestra configuracion, e inicializa
+    Analiza parámetros de línea de comandos, muestra configuración, e inicializa
     una instancia WorkerNode para conectar con Parameter Server e iniciar
     entrenamiento distribuido de ImageNet-1k.
 

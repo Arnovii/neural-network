@@ -764,7 +764,7 @@ class WorkerNode:
         Paso de entrenamiento con SGD + gradient clipping.
 
         LRs y optimizador ya fueron configurados en _rebuild_optimizer.
-        Este método los usa directamente — no recibe lr como argumento.
+        Este método los usa directamente — no recibe lr como parámetro.
 
         El modo de entrenamiento se determina por ``self._freeze_cnn``, que
         refleja el estado permanente de requires_grad establecido en CNNExtractor.__init__:

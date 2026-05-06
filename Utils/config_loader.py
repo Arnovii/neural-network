@@ -41,7 +41,7 @@ def get_hf_token(override: str | None = None) -> Optional[str]:
     :rtype: Optional[str]
 
     :example:
-        # Con argumentos CLI
+        # Con parámetros CLI
         token = get_hf_token(args.hf_token)  # CLI > env > .env
 
         # Auto-detecta

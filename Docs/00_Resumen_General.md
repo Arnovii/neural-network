@@ -221,7 +221,7 @@ matplotlib == 3.10.8
 datasets == 4.8.4
 numpy == 2.4.2
 psutil == 7.2.2
-python-dotenv == 1.2.2
+python-dotenv >= 1.2.2
 ```
 
 ## Sistema de Exportación de Resultados
@@ -232,18 +232,18 @@ El `ResultsExporter` genera automáticamente **13 archivos por experimento**:
 ```
 ./Exports/[timestamp]/
 ├── config.json           # Configuración del experimento
-├── metrics.csv           # Series de tiempo (step, loss, acc, workers, staleness, std_dev)
+├── metrics.csv           # Series de tiempo (step, loss, acc, workers, stds, staleness, alpha)
+├── worker_events.csv     # Historial de conexiones/desconexiones de Workers
 ├── ps_logs.txt           # Todos los logs del Parameter Server
 ├── metadata.json         # Estadísticas finales
 ├── plot_3panels.png      # 3 gráficas (Loss | Accuracy | Workers)
 ├── plot_loss.png         # Gráfica individual de Loss
 ├── plot_accuracy.png     # Gráfica individual de Accuracy
 ├── plot_workers.png      # Gráfica individual de Workers
-├── plot_staleness.png    # Gráfica de staleness promedio por step
-├── plot_std_dev.png      # Gráfica de desviaciones estándar
-├── plot_loss_band.png    # Gráfica de Loss con banda de confianza ±1σ
-├── plot_accuracy_band.png # Gráfica de Accuracy con banda de confianza ±1σ
-└── plot_workers_band.png # Gráfica de Workers con banda de confianza ±1σ
+├── plot_band_loss.png    # Loss con banda de confianza ±1σ
+├── plot_band_acc.png     # Accuracy con banda de confianza ±1σ
+├── plot_staleness.png    # Staleness y factor de corrección α
+└── plot_std.png          # Desviaciones estándar de Loss y Accuracy
 ```
 
 ### Características de las Gráficas

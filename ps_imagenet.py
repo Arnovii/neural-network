@@ -75,9 +75,9 @@ def main() -> None:
 
     Orquesta el flujo completo del servidor PS asincrono:
 
-    1. **Parsing de argumentos CLI**: Lee parametros de linea de comandos
+    1. **Parsing de parámetros CLI**: Lee parámetros de línea de comandos
        (host, puerto, learning rates, arquitectura CNN, seed, etc.)
-    2. **Resolucion de HF Token**: Prioridad: argumento CLI > variable HF_TOKEN
+    2. **Resolución de HF Token**: Prioridad: parámetro CLI > variable HF_TOKEN
     3. **Instanciacion de modelos**:
        - CNNExtractor (resnet18 preentrenado o simple CNN)
        - MLPPyTorch (feature_dim -> hidden1 -> hidden2 -> 1000 clases)
@@ -163,7 +163,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    # HF token: argumento CLI tiene prioridad, luego .env, luego variable de entorno
+    # HF token: parámetro CLI tiene prioridad, luego .env, luego variable de entorno
     hf_token = get_hf_token(args.hf_token)
 
     print("=" * 68)
