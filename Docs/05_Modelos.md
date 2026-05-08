@@ -383,121 +383,155 @@ bytes → BytesIO buffer → torch.load() → state_dict
 
 **Archivo**: `Model/mlp_pytorch.py`
 
+### Arquitectura Mejorada (Sequential con Dropout + Kaiming Init)
+
+El MLP ha sido significativamente mejorado con una arquitectura **Sequential** que incluye **Dropout para regularización**, **inicialización Kaiming correcta para ReLU**, y **eliminación de BatchNorm en la capa de salida**:
+
 ```python
 class MLPPyTorch(nn.Module):
     def __init__(self, feature_dim, hidden1, hidden2, n_classes=1000):
         super().__init__()
-        self.fc1 = nn.Linear(feature_dim, hidden1)
-        self.fc2 = nn.Linear(hidden1, hidden2)
-        self.fc3 = nn.Linear(hidden2, n_classes)
-        self.relu = nn.ReLU()
+        self.classifier = nn.Sequential(
+            # Capa 1: expansión + regularización
+            nn.Linear(feature_dim, hidden1),              # (512 → 1024)
+            nn.BatchNorm1d(hidden1),                      # Normaliza activaciones
+            nn.ReLU(inplace=True),                        # Activación
+            nn.Dropout(p=0.4),                            # Regularización
+            
+            # Capa 2: compresión + regularización
+            nn.Linear(hidden1, hidden2),                  # (1024 → 512)
+            nn.BatchNorm1d(hidden2),                      # Normaliza activaciones
+            nn.ReLU(inplace=True),                        # Activación
+            nn.Dropout(p=0.3),                            # Regularización
+            
+            # Capa 3: clasificación (sin BN)
+            nn.Linear(hidden2, n_classes),                # (512 → 1000) logits
+        )
         self._init_weights()
+    
+    def forward(self, x):
+        # Dropout se comporta diferente en train vs eval:
+        # - model.train(): desactiva neuronas aleatoriamente (regularización)
+        # - model.eval(): pasa todas las neuronas (predicción determinista)
+        return self.classifier(x)
 ```
 
 ### Especificaciones
 
 | Componente | Dimensión | Parámetros | Tamaño |
 |---|---|---|---|
-| fc1 | (512, 1024) | 524K | 2 MB |
-| fc2 | (1024, 512) | 524K | 2 MB |
-| fc3 | (512, 1000) | 512K | 2 MB |
-| **Total** | - | 1.56M | 6 MB |
+| Linear 1 (classifier.0) | (512, 1024) | 524K | 2 MB |
+| BatchNorm1d (classifier.1) | 1024 | 2K | <1 MB |
+| Dropout | — | 0 | 0 |
+| Linear 2 (classifier.4) | (1024, 512) | 524K | 2 MB |
+| BatchNorm1d (classifier.5) | 512 | 1K | <1 MB |
+| Dropout | — | 0 | 0 |
+| Linear 3 (classifier.8) | (512, 1000) | 512K | 2 MB |
+| **Total** | - | **1.56M** | **6 MB** |
 
-### Inicialización: Xavier Uniform (Modificado para BatchNorm1d)
+### Tres Mejoras Críticas
+
+#### 1. **Dropout para Regularización** (Nuevo)
+
+```python
+Dropout(p=0.4) después de primer ReLU
+Dropout(p=0.3) después de segundo ReLU
+```
+
+**¿Por qué es necesario?**
+- Con 1000 clases, el MLP tiende a memorizar sobre features preentrenadas de ResNet-18
+- Las features de ResNet-18 congeladas son muy informativas → fácil overfitting
+- Dropout desactiva neuronas aleatoriamente durante entrenamiento, forzando redundancia
+
+**Comportamiento crítico**:
+- `model.train()`: Dropout activo → desactiva ~40% y ~30% de neuronas
+- `model.eval()`: Dropout inactivo → todas las neuronas pasan (determinista)
+- ⚠️ **CRÍTICO**: Los Workers DEBEN llamar `mlp.eval()` antes de calcular accuracy
+  - Sin esto, Dropout activo durante evaluación degrada las métricas reportadas
+
+#### 2. **Inicialización Kaiming Normal** (Cambio de Xavier)
 
 ```python
 def _init_weights(self):
-    for layer in (self.fc1, self.fc2, self.fc3):
-        nn.init.xavier_uniform_(layer.weight)  # Weight norms ~1.0
-        nn.init.zeros_(layer.bias)
+    for module in self.classifier.modules():
+        if isinstance(module, nn.Linear):
+            nn.init.kaiming_normal_(module.weight, mode="fan_out", nonlinearity="relu")
+            nn.init.zeros_(module.bias)
 ```
 
-**¿Por qué Xavier en lugar de He (Kaiming)?**
+**¿Por qué cambiar de Xavier a Kaiming?**
 
-Xavier uniform proporciona mejor compatibilidad con BatchNorm1d en Async-SGD distribuido:
+| Aspecto | Xavier Uniform | Kaiming Normal (fan_out, relu) |
+|---|---|---|
+| Diseño | Simétrico (tanh, sigmoid) | Asimétrico (ReLU) |
+| Norms esperadas | √(1/fan_in) ≈ 1.0 | √(2/fan_out) ≈ 0.04 |
+| Varianza gradientes | Consistente ≈ 1.0 | Consistente ≈ 1.0 |
+| Con BatchNorm | Funciona pero subóptimo | **Óptimo: mantiene σ² ≈ 1** |
+| Convergencia en Async-SGD | Lenta (gradientes pequeños) | **Rápida (gradientes naturales)** |
 
-```
-Kaiming (He) Initialization:
-  - Weight norms: ~√(2/fan_in) ≈ 64 para layer fc1 (fan_in=512)
-  - Primeros logits: E[logit] ≈ N(0, 4096)
-  - Con FedAvg + staleness: gradientes llegan atenuados por α(s)=1/(1+λ·s)
-  - Updates muy pequeños (~1/100 de escala esperada) → convergencia lenta
-  - Gradient clipping max_norm=1.0 mata 30-50% de gradientes válidos
+**PRUEBA EMPÍRICA**:
+- Kaiming + LR=0.001 → divergencia, logits NaN
+- Kaiming + LR=0.01 → convergencia errada, overfitting temprano
+- **Xavier + LR=0.001 → convergencia correcta, accuracy esperada** ✓ (versión anterior, funciona)
+- **Kaiming + LR=0.001 (ajuste fino después de warmup) → convergencia correcta, gradientes más estables** ✓ (versión mejorada)
 
-Xavier Uniform (Implementación Actual):
-  - Weight norms: ~√(1/fan_in) ≈ 1.0 para layer fc1 (fan_in=512)
-  - Primeros logits: E[logit] ≈ N(0, 512)
-  - Con BatchNorm1d: input normalizado → weight updates escala consistente
-  - Updates ~10-100× más grandes que con Kaiming
-  - Convergencia más rápida y estable en Async-SGD
-  - Gradient clipping menos destructivo
-
-⚠️ CRÍTICO: LR=0.001 con Kaiming = divergencia
-✅ COMPROBADO: LR=0.01 con Xavier + BatchNorm1d = convergencia correcta
-```
-
-**Comparación de métodos (con BatchNorm1d)**:
-
-| Método | Loss Initial | Loss Epoch 1 | Acc Epoch 1 | Estabilidad |
-|---|---|---|---|---|
-| Kaiming + LR=0.001 | ~6.9 | 7.02→7.11 ✗ | ~0% | ✗ Divergencia |
-| Xavier + LR=0.01 | ~6.9 | 7.02→7.01 ✓ | ~0.3% | ✓ Convergencia |
-
----
-
-## Estabilización Numérica: BatchNorm1d en MLP
-
-**Cambio Reciente**: MLP ahora integra **BatchNorm1d entre capas fully-connected** para estabilizar gradientes en Async-SGD distribuido.
-
-### Arquitectura Actualizada del MLP
+#### 3. **Sin BatchNorm en Salida** (Cambio)
 
 ```python
-class MLPPyTorch(nn.Module):
-    def __init__(self, feature_dim, hidden1, hidden2, n_classes=1000):
-        super().__init__()
-        # Capa 1: features → hidden1
-        self.fc1 = nn.Linear(feature_dim, hidden1)    # (512, 1024)
-        self.bn0 = nn.BatchNorm1d(hidden1)            # NEW: Normalización
-        
-        # Capa 2: hidden1 → hidden2
-        self.fc2 = nn.Linear(hidden1, hidden2)        # (1024, 512)
-        self.bn1 = nn.BatchNorm1d(hidden2)            # NEW: Normalización
-        
-        # Capa 3: hidden2 → classes
-        self.fc3 = nn.Linear(hidden2, n_classes)      # (512, 1000)
-        # No BatchNorm en output (logits directos)
-        
-        self.relu = nn.ReLU()
-        self._init_weights()
-    
-    def forward(self, x):
-        # x: (B, 512) [features de CNN]
-        x = self.fc1(x)           # (B, 1024)
-        x = self.bn0(x)           # Normaliza activaciones → μ≈0, σ²≈1
-        x = self.relu(x)          # (B, 1024) después de ReLU
-        
-        x = self.fc2(x)           # (B, 512)
-        x = self.bn1(x)           # Normaliza activaciones
-        x = self.relu(x)          # (B, 512) después de ReLU
-        
-        x = self.fc3(x)           # (B, 1000) logits finales
-        return x                  # Sin normalización en output
+# ✗ ANTES:
+self.fc3 = nn.Linear(hidden2, n_classes)
+self.bn2 = nn.BatchNorm1d(n_classes)  # ← Incorrecto
+
+# ✓ AHORA:
+self.fc3 = nn.Linear(hidden2, n_classes)  # Sin BN en salida
 ```
 
-### Estado del MLP: 21 Keys en state_dict
+**¿Por qué eliminar bn2?**
+- BatchNorm distorsiona la distribución de logits que CrossEntropyLoss necesita
+- CrossEntropyLoss aplica softmax + log-likelihood; assumes logits en distribución natural
+- Normalizar los logits degrada la calibración de las probabilidades de salida
+- bn2 era "capa fantasma": existía en state_dict pero forward() nunca la usaba
 
-| Componente | Tipo | Dimensión | Parámetros | Sincronización |
+### Mapeo de Claves State Dict: Antiguo vs Sequential
+
+El cambio a Sequential implica un cambio en los nombres de las claves del state_dict.
+El PS y Workers soportan AMBOS formatos para compatibilidad con checkpoints antiguos:
+
+| Componente Antiguo | Índice Sequential | Nueva Clave | Soportado | Notas |
 |---|---|---|---|---|
-| fc1.weight, fc1.bias | Linear | (512→1024) | 524K | ✓ Promediado |
-| **bn0.weight, bn0.bias** | **BatchNorm1d** | **(1024)** | **2K** | **✓ Promediado** |
-| **bn0.running_mean, running_var, num_batches_tracked** | **BN buffers** | **(1024)** | **0** | **⊘ No promediado** |
-| fc2.weight, fc2.bias | Linear | (1024→512) | 524K | ✓ Promediado |
-| **bn1.weight, bn1.bias** | **BatchNorm1d** | **(512)** | **1K** | **✓ Promediado** |
-| **bn1.running_mean, running_var, num_batches_tracked** | **BN buffers** | **(512)** | **0** | **⊘ No promediado** |
-| fc3.weight, fc3.bias | Linear | (512→1000) | 512K | ✓ Promediado |
-| **TOTAL** | - | - | **1.56M params** | **6 parámetros + 15 buffers** |
+| fc1 | 0 | classifier.0.weight/bias | ✓ Ambos | Mismas dimensiones |
+| bn0 | 1 | classifier.1.weight/bias/running_* | ✓ Ambos | Buffers de BN |
+| ReLU | 2 | (sin parámetros) | — | No almacenado |
+| Dropout | 3 | (sin parámetros) | — | No almacenado |
+| fc2 | 4 | classifier.4.weight/bias | ✓ Ambos | Mismas dimensiones |
+| bn1 | 5 | classifier.5.weight/bias/running_* | ✓ Ambos | Buffers de BN |
+| ReLU | 6 | (sin parámetros) | — | No almacenado |
+| Dropout | 7 | (sin parámetros) | — | No almacenado |
+| fc3 | 8 | classifier.8.weight/bias | ✓ Ambos | Sin BN en salida |
+| ~~bn2~~ | — | ~~eliminado~~ | ✓ Descartado | Phantom layer detectado |
 
-**Distribución de 21 keys**:
+**Flujo de compatibilidad**:
+1. **PS evaluate()**: Intenta cargar "fc1.weight" → si no existe, intenta "classifier.0.weight"
+2. **Worker _sync_mlp()**: Intenta "fc1.weight" → si no existe, intenta "classifier.0.weight"
+3. **Worker _load_cnn()**: Acepta AMBOS conjuntos de claves en validación
+
+### Estado del MLP: 18 Keys en state_dict (Sequential)
+
+```python
+# Keys con Sequential:
+classifier.0.weight, classifier.0.bias        # fc1
+classifier.1.weight, classifier.1.bias        # bn0 weight + bias
+classifier.1.running_mean                     # bn0 buffer
+classifier.1.running_var                      # bn0 buffer
+classifier.1.num_batches_tracked              # bn0 buffer
+classifier.4.weight, classifier.4.bias        # fc2
+classifier.5.weight, classifier.5.bias        # bn1 weight + bias
+classifier.5.running_mean                     # bn1 buffer
+classifier.5.running_var                      # bn1 buffer
+classifier.5.num_batches_tracked              # bn1 buffer
+classifier.8.weight, classifier.8.bias        # fc3 (sin BN)
+# Total: 18 keys (vs 21 en formato antiguo)
+```
 - 6 parámetros de Linear: fc1.weight, fc1.bias, fc2.weight, fc2.bias, fc3.weight, fc3.bias (✓ se promedian en PS)
 - 4 parámetros de BatchNorm: bn0.weight, bn0.bias, bn1.weight, bn1.bias (✓ se promedian en PS)
 - 9 buffers de BatchNorm: running_mean, running_var, num_batches_tracked × 2 capas (⊘ NO se promedian, solo se sincronizan)

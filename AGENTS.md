@@ -94,7 +94,7 @@ READY → WORKER_ID → CONFIG → CNN_WEIGHTS → CNN_ACK → START
 | `ParameterServer` | `Distributed/parameter_server.py` | Coordinator, FedAvg async |
 | `WorkerNode` | `Distributed/worker_node.py` | Training loop async |
 | `CNNExtractor` | `Model/cnn_extractor.py` | ResNet-18 o Simple CNN |
-| `MLPPyTorch` | `Model/mlp_pytorch.py` | 2-layer MLP classifier |
+| `MLPPyTorch` | `Model/mlp_pytorch.py` | Clasificador MLP 2-capas con Sequential, Dropout, Kaiming init |
 | `ImageNetStream` | `Utils/imagenet_streaming.py` | HuggingFace streaming |
 | `PrefetchBuffer` | `Utils/imagenet_streaming.py` | Async prefetch |
 | `ResultsExporter` | `Utils/results_exporter.py` | Exporta métricas/plots (13 archivos) |
@@ -156,6 +156,47 @@ Este repo NO tiene configurado:
 4. **Weight decay**: 1e-4 (E2E) — regularización L2
 5. **Gradient clipping**: max_norm=10.0 — estabilidad en E2E
 6. **Sharding**: strided index — Workers cubren dataset sin overlap
+
+## MLP Architecture Improvements
+
+El `MLPPyTorch` usa arquitectura **Sequential** (no módulos separados) con tres mejoras críticas:
+
+### 1. **Dropout para Regularización** (Nuevo)
+- Capa 1: Dropout(0.4) después ReLU
+- Capa 2: Dropout(0.3) después ReLU
+- **Por qué**: Con 1000 clases, el MLP memoriza sobre features preentrenadas de ResNet-18
+- **Comportamiento**: Activo en `model.train()`, desactivado en `model.eval()`
+- **Crítico**: Los Workers DEBEN llamar `mlp.eval()` antes de calcular accuracy (si no, Dropout degrada métricas)
+
+### 2. **Inicialización Kaiming Normal** (Cambio)
+- Cambio: Xavier uniform → Kaiming normal (fan_out, relu)
+- **Por qué Xavier**: Diseñado para activaciones simétricas (tanh). Con ReLU, Kaiming es correcto
+- **Efecto**: Varianza de activaciones más estable (~1) a través de capas profundas
+- **Beneficio**: Gradientes más estables en arranque del entrenamiento asincrónico distribuido
+
+### 3. **Sin BatchNorm en Salida** (Cambio)
+- Eliminado: bn2 (BatchNorm sobre logits)
+- **Por qué**: BatchNorm distorsionaba la distribución de logits que CrossEntropyLoss necesita
+- **Antes**: bn2 era una "capa fantasma" — existía en state_dict pero forward() nunca la usaba
+- **Ahora**: Arquitectura clara: fc1 → BN → ReLU → Dropout → fc2 → BN → ReLU → Dropout → fc3 (sin BN)
+
+### Mapeo de Claves State Dict
+
+Desde Sequential, los nombres de parámetros cambiaron:
+
+| Módulo Antiguo | Índice Sequential | Nuevo Nombre |
+|---|---|---|
+| fc1 | 0 | classifier.0.weight/bias |
+| bn0 | 1 | classifier.1.weight/bias/running_* |
+| ReLU | 2 | (no parameters) |
+| Dropout | 3 | (no parameters) |
+| fc2 | 4 | classifier.4.weight/bias |
+| bn1 | 5 | classifier.5.weight/bias/running_* |
+| ReLU | 6 | (no parameters) |
+| Dropout | 7 | (no parameters) |
+| fc3 | 8 | classifier.8.weight/bias |
+
+**Compatibilidad**: Parameter Server y Workers detectan AMBOS formatos (antiguo y Sequential) durante `evaluate()` y `_sync_mlp()` para no romper con checkpoints antiguos.
 
 ## Exports Structure
 ```

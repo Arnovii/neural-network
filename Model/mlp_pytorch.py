@@ -4,25 +4,56 @@ Model/mlp_pytorch.py
 MLP PyTorch para clasificación sobre features CNN en ImageNet.
 
 ARQUITECTURA:
-    fc = Fully Connected
     features (feature_dim)
-        → fc1 (hidden1, ReLU)
-        → fc2 (hidden2, ReLU)
-        → fc3 (n_classes)   ← sin activación (CrossEntropyLoss la incluye)
+        → fc1 (hidden1) → BN → ReLU → Dropout(0.4)
+        → fc2 (hidden2) → BN → ReLU → Dropout(0.3)
+        → fc3 (n_classes)   ← sin activación ni BN (CrossEntropyLoss la incluye)
+
+CAMBIOS RESPECTO A VERSIÓN ANTERIOR:
+    - Eliminado bn2 (BatchNorm en capa de salida): distorsionaba los logits
+      que CrossEntropyLoss necesita en su distribución natural. Era además
+      una capa fantasma: existía en state_dict pero forward() nunca la usaba.
+    - Agregado Dropout(0.4) y Dropout(0.3): mejora generalización con 1000 clases
+      donde el MLP tiende a memorizar sobre features preentrenadas de ResNet-18.
+    - Inicialización cambiada de Xavier uniform a Kaiming normal: Xavier está
+      diseñado para activaciones simétricas (tanh). Con ReLU, Kaiming es
+      matemáticamente correcto y produce gradientes más estables en el arranque.
+    - Arquitectura definida con nn.Sequential: simplifica forward(), reduce
+      código duplicado y hace el grafo de cómputo más legible.
 
 INICIALIZACIÓN:
-    Xavier uniform para capas lineales compatible con BatchNorm.
-    Produce activaciones con varianza ~1 evitando softmax uniforme
-    y accuracy≈0% en las primeras iteraciones.
+    Kaiming normal (fan_out, relu) para capas lineales.
+    Produce varianza de activaciones ~1 a través de capas profundas con ReLU.
 
 FORMATO DE PARÁMETROS:
-    PS y Workers intercambian parámetros como state_dict PyTorch:
-        fc1.weight: (hidden1, feature_dim)
-        fc1.bias:   (hidden1,)
-        fc2.weight: (hidden2, hidden1)
-        fc2.bias:   (hidden2,)
-        fc3.weight: (n_classes, hidden2)
-        fc3.bias:   (n_classes,)
+    PS y Workers intercambian parámetros como state_dict PyTorch.
+    Los nombres cambian respecto a la versión anterior por el Sequential:
+        classifier.0.weight / classifier.0.bias     ← fc1
+        classifier.1.weight / classifier.1.bias     ← BN1 (weight=gamma, bias=beta)
+        classifier.1.running_mean / running_var / num_batches_tracked
+        classifier.4.weight / classifier.4.bias     ← fc2
+        classifier.5.weight / classifier.5.bias     ← BN2
+        classifier.5.running_mean / running_var / num_batches_tracked
+        classifier.8.weight / classifier.8.bias     ← fc3
+
+    NOTA: El PS detecta running_mean/running_var/num_batches_tracked por
+    subcadena en el nombre, por lo que el cambio a Sequential es transparente
+    para el mecanismo de FedAvg del Parameter Server.
+
+DROPOUT Y MODOS train()/eval():
+    Dropout se comporta diferente según el modo del modelo:
+    - model.train(): desactiva neuronas aleatoriamente (regularización)
+    - model.eval():  pasa todas las neuronas (inferencia determinista)
+    El worker DEBE llamar model.train() antes del forward de entrenamiento
+    y model.eval() antes de evaluar o extraer features. Si no lo hace,
+    el Dropout activo durante evaluación degradará el accuracy medido.
+
+LR RECOMENDADO CON ESTA ARQUITECTURA:
+    Con ResNet-18 congelado y este MLP:
+        LR MLP: 0.001 – 0.01  (no 0.1 — demasiado agresivo para features preentrenadas)
+    Con staleness λ=0.1 y 2 workers (staleness promedio ~2):
+        α ≈ 0.83  →  LR efectivo real ≈ LR × 0.83
+    Con 6 workers el staleness sube; considerar reducir LR o aumentar λ.
 """
 
 from typing import Dict
@@ -38,14 +69,15 @@ class MLPPyTorch(nn.Module):
     """Clasificador MLP de 2 capas ocultas para ImageNet (1000 clases).
 
     Arquitectura:
-    - Input: vector de features CNN (feature_dim, ej 512 de ResNet-18)
-    - Capa 1: feature_dim → hidden1 (ej 1024) + BatchNorm + ReLU
-    - Capa 2: hidden1 → hidden2 (ej 512) + BatchNorm + ReLU
-    - Output: hidden2 → 1000 (logits sin activación)
+    - Input: vector de features CNN (feature_dim, típicamente 512 de ResNet-18)
+    - Capa 1: feature_dim → hidden1 + BatchNorm + ReLU + Dropout(0.4)
+    - Capa 2: hidden1 → hidden2 + BatchNorm + ReLU + Dropout(0.3)
+    - Output: hidden2 → n_classes (logits, sin BN ni activación)
 
-    Thread-safe: Múltiples Workers cargan state_dict sin conflictos.
-    Serialización: state_dict_numpy() para transporte por TCP (numpy arrays).
-    Inicialización: Xavier uniform para varianza ~1 compatible con BatchNorm.
+    Diseñado para entrenamiento asíncrono distribuido (Async-SGD):
+    - BatchNorm estabiliza features entre updates de distintos workers
+    - Dropout reduce overfitting con 1000 clases sobre features preentrenadas
+    - Sin BatchNorm en la salida: preserva distribución de logits para CrossEntropyLoss
     """
 
     def __init__(
@@ -61,74 +93,89 @@ class MLPPyTorch(nn.Module):
         :param feature_dim: Dimensión del vector de entrada CNN (ej: 512 para ResNet-18)
         :type feature_dim: int
 
-        :param hidden1: Unidades de la 1ª capa oculta (defecto config PS: 1024).
-                       Distribuida por PS a todos los Workers via CONFIG.
+        :param hidden1: Unidades de la 1ª capa oculta (recomendado: 1024).
         :type hidden1: int
 
-        :param hidden2: Unidades de la 2ª capa oculta (defecto config PS: 512).
-                       Distribuida por PS a todos los Workers via CONFIG.
+        :param hidden2: Unidades de la 2ª capa oculta (recomendado: 512).
         :type hidden2: int
 
-        :param n_classes: Numero de clases (defecto: 1000 para ImageNet).
+        :param n_classes: Número de clases (defecto: 1000 para ImageNet).
         :type n_classes: int
 
         :returns: None
         :rtype: None
         """
         super().__init__()
-        self.fc1 = nn.Linear(feature_dim, hidden1)  # nn.Linear = Capa totalmente conectada
-        self.bn0 = nn.BatchNorm1d(hidden1)
-        self.fc2 = nn.Linear(hidden1, hidden2)
-        self.bn1 = nn.BatchNorm1d(hidden2)
-        self.fc3 = nn.Linear(hidden2, n_classes)
-        self.bn2 = nn.BatchNorm1d(n_classes)
-        self.relu = nn.ReLU()
+
+        self.classifier = nn.Sequential(
+            # Capa 1: expansión + normalización + activación + regularización
+            nn.Linear(feature_dim, hidden1),  # índice 0
+            nn.BatchNorm1d(hidden1),  # índice 1
+            nn.ReLU(inplace=True),  # índice 2
+            nn.Dropout(p=0.4),  # índice 3
+            # Capa 2: compresión + normalización + activación + regularización
+            nn.Linear(hidden1, hidden2),  # índice 4
+            nn.BatchNorm1d(hidden2),  # índice 5
+            nn.ReLU(inplace=True),  # índice 6
+            nn.Dropout(p=0.3),  # índice 7
+            # Salida: logits sin activación ni BN
+            nn.Linear(hidden2, n_classes),  # índice 8
+        )
+
         self._init_weights()
 
     def _init_weights(self) -> None:
-        """Inicializa los pesos del MLP con Xavier uniform.
+        """Inicializa pesos con Kaiming normal para capas con ReLU.
 
-        Xavier uniform initialization para capas lineales, compatible
-        con BatchNorm1d. Produce activaciones con varianza predecible (~1).
-        En contraste con Kaiming, evita normas grandes que producen
-        updates pequenos en Async-SGD distribuido.
+        Kaiming normal (fan_out) mantiene la varianza de los gradientes
+        constante a través de las capas durante el backpropagation,
+        asumiendo activaciones ReLU. Produce arranques más estables que
+        Xavier uniform en redes con ReLU.
+
+        BatchNorm se inicializa con gamma=1, beta=0 (identidad) por defecto
+        de PyTorch — no requiere inicialización manual.
 
         :returns: None
         :rtype: None
         """
-        # Itera sobre las 3 capas lineales del modelo
-        for layer in (self.fc1, self.fc2, self.fc3):
-            # Xavier uniform es más compatible con BatchNorm que Kaiming
-            nn.init.xavier_uniform_(layer.weight, gain=1.0)
-            nn.init.zeros_(layer.bias)
+        for module in self.classifier.modules():
+            if isinstance(module, nn.Linear):
+                nn.init.kaiming_normal_(module.weight, mode="fan_out", nonlinearity="relu")
+                nn.init.zeros_(module.bias)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
-        Ejecuta forward pass a través del MLP con BatchNorm1d.
+        Ejecuta forward pass a través del clasificador.
 
-        Arquitectura: fc1 → bn0 → relu → fc2 → bn1 → relu → fc3 (sin BN en salida).
-        BatchNorm estabiliza features para Async-SGD distribuido.
+        El comportamiento de Dropout depende del modo del modelo:
+        - En train(): aplica dropout (regularización activa)
+        - En eval(): desactiva dropout (inferencia determinista)
 
-        :param x: Tensor de entrada con features CNN (batch_size, feature_dim)
+        Llamar model.train() antes de entrenar y model.eval() antes
+        de evaluar para garantizar comportamiento correcto.
+
+        :param x: Tensor de features CNN (batch_size, feature_dim)
         :type x: torch.Tensor
 
         :returns: Logits sin softmax (batch_size, n_classes)
         :rtype: torch.Tensor
         """
-        x = self.relu(self.bn0(self.fc1(x)))
-        x = self.relu(self.bn1(self.fc2(x)))
-        x = self.fc3(x)
-        return x
+        return self.classifier(x)
 
     def state_dict_numpy(self) -> Dict[str, np.ndarray]:
         """
-        Exporta el state_dict completo (parámetros + buffers BN) como Dict[str, np.ndarray].
+        Exporta el state_dict completo como Dict[str, np.ndarray].
 
-        Convierte todos los parámetros entrenables Y buffers de BatchNorm (running_mean, running_var, num_batches_tracked)
-        a numpy arrays en CPU. Útil para serializar el modelo a través de TCP hacia el Parameter Server.
+        Incluye parámetros entrenables (weight, bias) y buffers de BatchNorm
+        (running_mean, running_var, num_batches_tracked). Todos convertidos
+        a numpy arrays en CPU para serialización TCP hacia el Parameter Server.
 
-        :returns: Diccionario con claves de parámetros y buffers, valores como numpy arrays.
-                  Ejemplo: {'fc1.weight': array(...), 'fc1.bias': array(...), 'bn0.running_mean': array(...), ...}
+        El PS detecta los buffers de BN por subcadena en el nombre de clave,
+        por lo que el cambio a Sequential es transparente para FedAvg.
+
+        :returns: Diccionario {nombre_parametro: numpy_array}
+                  Ejemplo de claves con Sequential:
+                  'classifier.0.weight', 'classifier.1.running_mean', etc.
         :rtype: Dict[str, np.ndarray]
         """
         return {

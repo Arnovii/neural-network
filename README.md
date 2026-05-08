@@ -22,7 +22,7 @@ Este proyecto implementa un framework completo para **entrenamiento distribuido 
 - **Comunicación**: TCP/IP con serialización Pickle, 10 tipos de mensaje
 - **Modelos**: 
   - **CNN Extractor**: ResNet-18 preentrenado (CONGELADA) O CNN Simple (ENTRENABLE E2E)
-  - **MLP Clasificador** (entrenado): 3 capas (512→1024→512→1000) con BatchNorm1d + Xavier init para estabilidad
+  - **MLP Clasificador** (entrenado): 3 capas (512→1024→512→1000) con BatchNorm1d + Dropout + Kaiming init para estabilidad
 - **Datos**: Streaming desde ILSVRC/imagenet-1k o timm/imagenet-1k-wds
 - **Hardware**: Soporte automático para CUDA, MPS (Apple Metal), CPU
 

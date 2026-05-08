@@ -998,6 +998,73 @@ class ParameterServer:
             self._remove_worker(wid)
 
     # ================================================================
+    # FEDAVG ASÍNCRONO CON CORRECCIÓN DE STALENESS
+    # ================================================================
+
+    def _fedavg_apply(
+        self,
+        mlp_weights: dict | None,
+        cnn_weights: dict | None,
+        version_read: int,
+    ) -> Tuple[int, float]:
+        """
+        Aplica FedAvg con corrección de staleness a MLP y CNN.
+
+        Fórmula:
+            θ_new = θ + α(s) · (θ_worker − θ)
+            α(s) = 1 / (1 + λ · s)
+            s = versión_actual − versión_leída
+
+        Los tensores marcados en _no_avg_keys (num_batches_tracked de BN)
+        no se promedian: mantienen el valor del PS. Promediar un contador
+        de batches no tiene significado semántico y puede distorsionar
+        el comportamiento de BatchNorm en eval().
+
+        PRECONDICIÓN: Debe llamarse DENTRO de un bloque `with self._params_lock:`.
+
+        :param mlp_weights: Diccionario de pesos del MLP desde el Worker (puede ser None en modo E2E).
+        :type mlp_weights: dict | None
+
+        :param cnn_weights: Diccionario de pesos de la CNN desde el Worker (puede ser None si freeze).
+        :type cnn_weights: dict | None
+
+        :param version_read: Versión del modelo que el Worker leyó al inicio del batch.
+        :type version_read: int
+
+        :returns: Tupla (staleness, alpha) para logging y exportación de métricas.
+        :rtype: Tuple[int, float]
+        """
+        # Calcula factor de corrección Alpha
+        staleness_int: int = max(0, self._version - version_read)
+        alpha = 1.0 / (1.0 + self.staleness_lambda * staleness_int)
+
+        # Aplica FedAvg al MLP
+        if mlp_weights:
+            for key in mlp_weights:
+                if key in self._no_avg_mlp_keys or key not in self._mlp_state:
+                    continue  # running_mean/var y num_batches_tracked: no promediar
+                self._mlp_state[key] += alpha * (mlp_weights[key] - self._mlp_state[key])
+
+        # Aplica FedAvg a la CNN
+        if cnn_weights:
+            for key in cnn_weights:
+                if key in self._no_avg_keys or key not in self._cnn_state:
+                    continue
+                arr = self._cnn_state[key]  # float32 ya en el tipo correcto
+                inc = cnn_weights[key]
+                # OPTIMIZACIÓN: FedAvg en float32 directamente.
+                # La diferencia numérica vs float64 es ~1e-7 relativa,
+                # negligible para señales de gradiente (~1e-3 a 1e-5).
+                # arr += alpha*(inc-arr) es in-place: evita asignación de nuevo array.
+                # Versión anterior: astype(float64) → aritmética → astype(float32)
+                # → 2 copias extra + aritmética 2× más lenta en numpy.
+                if inc.dtype != arr.dtype:
+                    inc = inc.astype(arr.dtype)
+                arr += alpha * (inc - arr)
+
+        return staleness_int, alpha
+
+    # ================================================================
     # ACTUALIZACIÓN ASÍNCRONA
     # ================================================================
 
@@ -1041,40 +1108,15 @@ class ParameterServer:
             return
 
         with self._params_lock:
-            # Calcula factor de corrección Alpha
-            staleness = max(0, self._version - version_read)
-            alpha = 1.0 / (1.0 + self.staleness_lambda * staleness)
-
-            if mlp_weights:
-                for key in mlp_weights:
-                    if key in self._no_avg_mlp_keys or key not in self._mlp_state:
-                        continue  # running_mean/var y num_batches_tracked: no promediar
-                    self._mlp_state[key] += alpha * (mlp_weights[key] - self._mlp_state[key])
-
-            if cnn_weights:
-                for key in cnn_weights:
-                    if key in self._no_avg_keys or key not in self._cnn_state:
-                        continue
-                    arr = self._cnn_state[key]  # float32 ya en el tipo correcto
-                    inc = cnn_weights[key]
-                    # OPTIMIZACIÓN: FedAvg en float32 directamente.
-                    # La diferencia numérica vs float64 es ~1e-7 relativa,
-                    # negligible para señales de gradiente (~1e-3 a 1e-5).
-                    # arr += alpha*(inc-arr) es in-place: evita asignación de nuevo array.
-                    # Versión anterior: astype(float64) → aritmética → astype(float32)
-                    # → 2 copias extra + aritmética 2× más lenta en numpy.
-                    if inc.dtype != arr.dtype:
-                        inc = inc.astype(arr.dtype)
-                    arr += alpha * (inc - arr)
-
+            # Aplica FedAvg y obtiene staleness/alpha
+            result_tuple = self._fedavg_apply(mlp_weights, cnn_weights, version_read)
+            staleness: int = result_tuple[0]
+            alpha: float = result_tuple[1]
             self._version += 1
             step = self._version
 
         # Tiempo de entrenamiento desde que se envió START al primer worker
         elapsed = time.perf_counter() - self._t_start if self._t_start != 0.0 else 0.0
-
-        staleness = max(0, self._version - version_read)
-        alpha = 1.0 / (1.0 + self.staleness_lambda * staleness)
 
         self._metrics.update(loss, acc)
         n = self._metrics.total_batches
@@ -1083,9 +1125,12 @@ class ParameterServer:
         else:
             avg_loss, avg_acc, std_loss, std_acc = loss, acc, 0.0, 0.0
 
+        # Callback on_step recibe staleness como float
         if self.on_step:
-            self.on_step(step, loss, acc, float(staleness), elapsed)
+            staleness_float: float = float(staleness)
+            self.on_step(step, loss, acc, staleness_float, elapsed)
 
+        # ResultsExporter.record_metric recibe staleness como int
         if self._results_exporter is not None:
             with self._workers_lock:
                 n_workers = len(self._sockets)
@@ -1202,20 +1247,65 @@ class ParameterServer:
             base.load_state_dict(sd)
         self._cnn._model.eval()
 
+        # Detecta el formato de claves del MLP: fc1.weight (antiguo) o classifier.0.weight (Sequential)
         fc1w = mlp_copy.get("fc1.weight")
+        if fc1w is None:
+            fc1w = mlp_copy.get("classifier.0.weight")
         if fc1w is None:
             _log.warn("[eval] MLP no configurado.")
             return 0.0, 0.0
 
         hidden1, feature_dim = fc1w.shape
-        hidden2 = mlp_copy["fc2.weight"].shape[0]
-        n_classes = mlp_copy["fc3.weight"].shape[0]
+
+        # Detecta fc2.weight en ambos formatos
+        fc2w = mlp_copy.get("fc2.weight")
+        if fc2w is None:
+            fc2w = mlp_copy.get("classifier.4.weight")
+        if fc2w is None:
+            _log.warn("[eval] No se encontró fc2.weight en MLP.")
+            return 0.0, 0.0
+
+        hidden2 = fc2w.shape[0]
+
+        # Detecta fc3.weight en ambos formatos
+        fc3w = mlp_copy.get("fc3.weight")
+        if fc3w is None:
+            fc3w = mlp_copy.get("classifier.8.weight")
+        if fc3w is None:
+            _log.warn("[eval] No se encontró fc3.weight en MLP.")
+            return 0.0, 0.0
+
+        n_classes = fc3w.shape[0]
 
         mlp = MLPPyTorch(feature_dim, hidden1, hidden2, n_classes).to(self._cnn.device)
+
+        # Carga el estado del MLP desde mlp_copy, soportando ambos formatos de claves
         with torch.no_grad():
-            for name, param in mlp.named_parameters():
+            mlp_sd = mlp.state_dict()
+            for name, tensor in mlp_sd.items():
+                # Intenta cargar con el nombre actual (Sequential: classifier.*)
                 if name in mlp_copy:
-                    param.data.copy_(torch.from_numpy(mlp_copy[name]).to(param.device))
+                    tensor.copy_(torch.from_numpy(mlp_copy[name]).to(tensor.device))
+                else:
+                    # Si no existe en mlp_copy, intenta mapear desde formato antiguo
+                    # classifier.0.weight ← fc1.weight, classifier.4.weight ← fc2.weight, etc.
+                    old_name = None
+                    if "classifier.0" in name:
+                        old_name = name.replace("classifier.0", "fc1")
+                    elif "classifier.1" in name:
+                        old_name = name.replace("classifier.1", "bn0")
+                    elif "classifier.4" in name:
+                        old_name = name.replace("classifier.4", "fc2")
+                    elif "classifier.5" in name:
+                        old_name = name.replace("classifier.5", "bn1")
+                    elif "classifier.8" in name:
+                        old_name = name.replace("classifier.8", "fc3")
+
+                    if old_name and old_name in mlp_copy:
+                        tensor.copy_(torch.from_numpy(mlp_copy[old_name]).to(tensor.device))
+
+            mlp.load_state_dict(mlp_sd)
+
         mlp.eval()
 
         criterion = torch.nn.CrossEntropyLoss()  # Función de pérdida de clasificación

@@ -451,6 +451,10 @@ class WorkerNode:
         así que sincronizaciones posteriores no lo modifican.
 
         Valida que números de parámetros y claves MLP coincidan con lo esperado.
+        Acepta dos formatos de claves MLP:
+        - Antiguo: fc1.weight, fc2.weight, fc3.weight, bn0.*, bn1.*, bn2.*
+        - Sequential: classifier.0.weight, classifier.4.weight, classifier.8.weight, etc.
+
         Envía CNN_ACK al PS confirmando carga exitosa.
 
         Tras cargar la CNN, llama a _rebuild_optimizer si el MLP ya está disponible.
@@ -462,8 +466,8 @@ class WorkerNode:
         :returns: None
         :rtype: None
 
-        :raises RuntimeError: Si arquitectura es inválida, o hay mismatch de parámetros
-                              entre CNN recibida y localmente instantiada.
+        :raises RuntimeError: Si arquitectura es inválida, hay mismatch de parámetros,
+                              o las claves del MLP no coinciden con ningún formato esperado.
         """
         arch = payload["arch"]
         weights_bytes = payload["weights_bytes"]
@@ -499,15 +503,15 @@ class WorkerNode:
                 f"PS={cnn_key_count}, Worker={actual_keys}"
             )
 
-        # Verifica que las claves MLP son las esperadas (incluyendo BN1d: pesos, bias, running stats)
-        expected_mlp = {
+        # Verifica que las claves MLP son las esperadas.
+        # Soporta ambos formatos: antiguo (fc1, bn0, etc.) y Sequential (classifier.N.*)
+        expected_mlp_flat = {
             "fc1.weight",
             "fc1.bias",
             "fc2.weight",
             "fc2.bias",
             "fc3.weight",
             "fc3.bias",
-            # BatchNorm1d layers
             "bn0.weight",
             "bn0.bias",
             "bn0.running_mean",
@@ -524,10 +528,33 @@ class WorkerNode:
             "bn2.running_var",
             "bn2.num_batches_tracked",
         }
-        if mlp_keys and set(mlp_keys) != expected_mlp:
-            raise RuntimeError(
-                f"[W{self._worker_id}] MLP keys inesperadas del PS: {set(mlp_keys)}."
-            )
+        expected_mlp_sequential = {
+            "classifier.0.weight",
+            "classifier.0.bias",
+            "classifier.1.weight",
+            "classifier.1.bias",
+            "classifier.1.running_mean",
+            "classifier.1.running_var",
+            "classifier.1.num_batches_tracked",
+            "classifier.4.weight",
+            "classifier.4.bias",
+            "classifier.5.weight",
+            "classifier.5.bias",
+            "classifier.5.running_mean",
+            "classifier.5.running_var",
+            "classifier.5.num_batches_tracked",
+            "classifier.8.weight",
+            "classifier.8.bias",
+        }
+
+        if mlp_keys:
+            mlp_keys_set = set(mlp_keys)
+            # Acepta si coincide con formato antiguo OR Sequential
+            if mlp_keys_set != expected_mlp_flat and mlp_keys_set != expected_mlp_sequential:
+                raise RuntimeError(
+                    f"[W{self._worker_id}] MLP keys inesperadas del PS: {mlp_keys_set}. "
+                    f"Se esperaba formato flat (fc1.*) o Sequential (classifier.*)."
+                )
 
         mode = "freeze (solo MLP)" if self._freeze_cnn else "E2E (CNN + MLP)"
         _log.worker_msg(
@@ -771,21 +798,35 @@ class WorkerNode:
 
         Modo freeze (resnet18):
           - CNN en eval() con no_grad → features sin grafo
-          - MLP actualizado con bucle Python manual (pocas capas, rápido)
-          - lr leído del SGD default group no se usa (bucle manual inline)
-          - Para solo 6 parámetros (fc1.w, fc1.b, fc2.w, fc2.b, fc3.w, fc3.b)
-            el overhead del bucle Python es insignificante
+          - MLP en train() → forward + backward con Dropout activo
+          - Actualización manual: SGD inline sobre parámetros
+          - Cambiar a eval() DESPUÉS del backward para obtener logits limpios
+          - Calcular accuracy en eval() mode (Dropout desactivado, determinista)
+          - Para solo 6 parámetros, el overhead del bucle Python es insignificante
 
         Modo E2E (simple):
           - CNN en train() → features con grad_fn
+          - MLP en train() → forward + backward con Dropout activo
           - backward fluye por MLP + CNN
           - clip_grad_norm_ sobre _all_params (precalculado)
           - sgd.step() en C++ (sin bucle Python por parámetro)
+          - Cambiar a eval() DESPUÉS del step para obtener logits limpios
+          - Calcular accuracy en eval() mode (Dropout desactivado, determinista)
+
+        COMPORTAMIENTO DE DROPOUT:
+          El MLP ahora incluye Dropout (0.4 y 0.3) para regularización con
+          1000 clases. El Dropout se comporta diferente en train vs eval:
+          - train(): desactiva neuronas aleatoriamente (regularización)
+          - eval(): pasa todas las neuronas (predicción determinista)
+
+          Por eso es crítico cambiar a eval() antes de calcular accuracy:
+          sin esto, el Dropout activo durante evaluación degradaría las métricas.
 
         OPTIMIZACIONES vs versión anterior:
           - Y_np: torch.from_numpy() directo (stream produce int64, sin astype)
           - _all_params: precalculado en _rebuild_optimizer (no en cada batch)
           - sgd.step(): C++ backend (en lugar de 2 bucles Python con no_grad)
+          - logits_eval: forward adicional en eval() para obtener accuracy correcta
 
         :param X_np: Batch de imágenes float32 (B, 3, H, W).
         :type X_np: np.ndarray
@@ -832,6 +873,13 @@ class WorkerNode:
                     if p.grad is not None:
                         p.data -= self._lr_mlp * p.grad
 
+            # Cambiar a eval() DESPUÉS del paso de actualización para obtener
+            # logits limpios (sin Dropout) para calcular accuracy correctamente
+            self._mlp.eval()
+            with torch.no_grad():
+                logits_eval = self._mlp(features)
+            correct = (logits_eval.argmax(1) == Y).sum().item()
+
         else:
             # ── Modo simple: E2E ──
             self._cnn._model.train()
@@ -852,10 +900,17 @@ class WorkerNode:
             # SGD step en C++ (sin bucle Python por parámetro)
             self._sgd.step()
 
+            # Cambiar a eval() para obtener logits deterministas (sin Dropout)
+            # para calcular accuracy correctamente
             self._cnn._model.eval()
+            self._mlp.eval()
+            with torch.no_grad():
+                features_eval = self._cnn._model(X)
+                logits_eval = self._mlp(features_eval)
+            correct = (logits_eval.argmax(1) == Y).sum().item()
 
         with torch.no_grad():
-            correct = (logits.argmax(1) == Y).sum().item()
+            pass  # correct ya calculado arriba
 
         n = len(Y_np)
         loss_val = loss_t.item()
@@ -919,11 +974,13 @@ class WorkerNode:
         Sincroniza los parámetros del MLP local con el estado global del PS.
 
         Si es la primera sincronización (``existing`` es None), crea una nueva
-        instancia de MLPPyTorch deduciendo dimensiones del state_dict recibido:
+        instancia de MLPPyTorch deduciendo dimensiones del state_dict recibido.
+        Soporta tanto claves antiguas (fc1.weight, fc2.weight) como Sequential
+        (classifier.0.weight, classifier.4.weight, classifier.8.weight):
 
-        - feature_dim (capa entrada): shape[1] de fc1.weight
-        - hidden1 (capa oculta 1): shape[0] de fc1.weight
-        - hidden2 (capa oculta 2): shape[0] de fc2.weight
+        - feature_dim (capa entrada): shape[1] de fc1.weight o classifier.0.weight
+        - hidden1 (capa oculta 1): shape[0] de fc1.weight o classifier.0.weight
+        - hidden2 (capa oculta 2): shape[0] de fc2.weight o classifier.4.weight
         - n_classes: NUM_CLASSES (1000)
 
         Si ya existe, reutiliza la instancia para evitar reconstruir el módulo.
@@ -939,14 +996,32 @@ class WorkerNode:
         :returns: Instancia de MLPPyTorch sincronizada.
         :rtype: MLPPyTorch
 
-        :raises RuntimeError: Si mlp_state no contiene 'fc1.weight' (inválido).
+        :raises RuntimeError: Si mlp_state no contiene fc1.weight o classifier.0.weight (inválido).
         """
         if existing is None:
-            if "fc1.weight" not in mlp_state:
-                raise RuntimeError(f"[W{self._worker_id}] mlp_state no contiene fc1.weight.")
-            feature_dim = mlp_state["fc1.weight"].shape[1]
-            hidden1 = mlp_state["fc1.weight"].shape[0]
-            hidden2 = mlp_state["fc2.weight"].shape[0]
+            # Detecta formato de claves: antiguo (fc1.weight) o Sequential (classifier.0.weight)
+            fc1w = mlp_state.get("fc1.weight")
+            if fc1w is None:
+                fc1w = mlp_state.get("classifier.0.weight")
+            if fc1w is None:
+                raise RuntimeError(
+                    f"[W{self._worker_id}] mlp_state no contiene fc1.weight ni classifier.0.weight."
+                )
+
+            feature_dim = fc1w.shape[1]
+            hidden1 = fc1w.shape[0]
+
+            # Detecta fc2.weight en ambos formatos
+            fc2w = mlp_state.get("fc2.weight")
+            if fc2w is None:
+                fc2w = mlp_state.get("classifier.4.weight")
+            if fc2w is None:
+                raise RuntimeError(
+                    f"[W{self._worker_id}] mlp_state no contiene fc2.weight ni classifier.4.weight."
+                )
+
+            hidden2 = fc2w.shape[0]
+
             existing = MLPPyTorch(feature_dim, hidden1, hidden2, NUM_CLASSES).to(self.device)
             _log.worker_msg(
                 self._worker_id,
