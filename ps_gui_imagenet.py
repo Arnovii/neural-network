@@ -216,6 +216,9 @@ class PSApp:
 
         :param root: Ventana tkinter raíz (normalmente tk.Tk())
         :type root: tk.Tk
+
+        :returns: None
+        :rtype: None
         """
         self.root = root
         self.root.title("Parameter Server — ImageNet-1k Distribuido")

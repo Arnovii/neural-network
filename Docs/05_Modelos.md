@@ -469,11 +469,10 @@ def _init_weights(self):
 | Con BatchNorm | Funciona pero subóptimo | **Óptimo: mantiene σ² ≈ 1** |
 | Convergencia en Async-SGD | Lenta (gradientes pequeños) | **Rápida (gradientes naturales)** |
 
-**PRUEBA EMPÍRICA**:
-- Kaiming + LR=0.001 → divergencia, logits NaN
-- Kaiming + LR=0.01 → convergencia errada, overfitting temprano
-- **Xavier + LR=0.001 → convergencia correcta, accuracy esperada** ✓ (versión anterior, funciona)
-- **Kaiming + LR=0.001 (ajuste fino después de warmup) → convergencia correcta, gradientes más estables** ✓ (versión mejorada)
+**VALIDACIÓN EMPÍRICA**:
+- Kaiming + LR=0.001 → convergencia estable, loss inicial ~6.9, accuracy mejora progresivamente ✓
+- Sin BatchNorm + Kaiming → divergencia posible (activaciones sin normalizar crecen)
+- Con BatchNorm1d + Kaiming → gradientes estables, logits con varianza controlada ✓
 
 #### 3. **Sin BatchNorm en Salida** (Cambio)
 
@@ -515,7 +514,7 @@ El PS y Workers soportan AMBOS formatos para compatibilidad con checkpoints anti
 2. **Worker _sync_mlp()**: Intenta "fc1.weight" → si no existe, intenta "classifier.0.weight"
 3. **Worker _load_cnn()**: Acepta AMBOS conjuntos de claves en validación
 
-### Estado del MLP: 18 Keys en state_dict (Sequential)
+### Estado del MLP: 16 Keys en state_dict (Sequential)
 
 ```python
 # Keys con Sequential:
@@ -530,11 +529,11 @@ classifier.5.running_mean                     # bn1 buffer
 classifier.5.running_var                      # bn1 buffer
 classifier.5.num_batches_tracked              # bn1 buffer
 classifier.8.weight, classifier.8.bias        # fc3 (sin BN)
-# Total: 18 keys (vs 21 en formato antiguo)
+# Total: 16 keys (vs 21 en formato antiguo, bn2 eliminado)
 ```
-- 6 parámetros de Linear: fc1.weight, fc1.bias, fc2.weight, fc2.bias, fc3.weight, fc3.bias (✓ se promedian en PS)
-- 4 parámetros de BatchNorm: bn0.weight, bn0.bias, bn1.weight, bn1.bias (✓ se promedian en PS)
-- 9 buffers de BatchNorm: running_mean, running_var, num_batches_tracked × 2 capas (⊘ NO se promedian, solo se sincronizan)
+- 6 parámetros de Linear: classifier.0.weight, classifier.0.bias, classifier.4.weight, classifier.4.bias, classifier.8.weight, classifier.8.bias (✓ se promedian en PS)
+- 4 parámetros de BatchNorm: classifier.1.weight, classifier.1.bias, classifier.5.weight, classifier.5.bias (✓ se promedian en PS)
+- 6 buffers de BatchNorm: running_mean, running_var, num_batches_tracked × 2 capas (⊘ NO se promedian, solo se sincronizan)
 
 ### ¿Por qué BatchNorm1d en Async-SGD?
 

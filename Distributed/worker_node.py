@@ -358,7 +358,7 @@ class WorkerNode:
         :returns: None
         :rtype: None
 
-        :raises AssertionError: Si batch_size o image_size no han sido configurados.
+        :raises RuntimeError: Si batch_size, image_size o dataset_name no han sido configurados.
         :raises Exception: Si falla descarga inicial o construcción del stream.
         """
 
@@ -599,6 +599,8 @@ class WorkerNode:
 
         :returns: None
         :rtype: None
+
+        :raises RuntimeError: Si CNN o MLP no estan inicializados.
         """
         if self._cnn is None:
             raise RuntimeError("CNN no inicializada antes de configurar optimizador")
@@ -656,7 +658,8 @@ class WorkerNode:
         :returns: None (retorna si recibe STOP o error de comunicación)
         :rtype: None
 
-        :raises RuntimeError: Si CNN no fue inicializada antes de entrar al loop.
+        :raises RuntimeError: Si CNN, socket, o stream no fueron inicializados antes
+            de entrar al loop, o si el PS devuelve estado vacio.
         """
         if self._cnn is None:
             raise RuntimeError(f"[W{self._worker_id}] _training_loop sin CNN inicializada.")
@@ -836,6 +839,8 @@ class WorkerNode:
 
         :returns: Tupla (loss, accuracy_pct, n_samples) con métricas del batch.
         :rtype: Tuple[float, float, int]
+
+        :raises RuntimeError: Si CNN o MLP no estan inicializados antes del batch.
         """
         if self._cnn is None:
             raise RuntimeError("CNN no inicializada antes de procesar batch")
@@ -947,6 +952,8 @@ class WorkerNode:
 
         :returns: None
         :rtype: None
+
+        :raises RuntimeError: Si CNN no fue inicializada antes de sincronizar.
         """
         if self._cnn is None:
             raise RuntimeError("CNN no inicializada antes de cargar estado")
@@ -1051,6 +1058,8 @@ class WorkerNode:
 
         :returns: Diccionario mapeando nombres de parametros a arrays NumPy.
         :rtype: Dict[str, np.ndarray]
+
+        :raises RuntimeError: Si CNN no fue inicializada antes de serializar.
         """
         if self._cnn is None:
             raise RuntimeError("CNN no inicializada antes de extraer estado")
@@ -1068,6 +1077,8 @@ class WorkerNode:
 
         :returns: Diccionario mapeando nombres de parametros a arrays NumPy.
         :rtype: Dict[str, np.ndarray]
+
+        :raises RuntimeError: Si MLP no fue inicializado antes de serializar.
         """
         if self._mlp is None:
             raise RuntimeError("MLP no inicializado antes de extraer estado")

@@ -532,11 +532,6 @@ def _serialize_mlp(self) -> Dict[str, np.ndarray]:
     }
 ```
 
-**Tamaño de serialización**:
-- MLP: 4.5 MB (6 arrays)
-- CNN: 44 MB (49 arrays con BN buffers)
-- **Total por UPDATE**: ~48.5 MB
-
 **Tiempo de serialización**: ~50-100ms (copy a CPU + numpy conversion)
 
 ---
@@ -584,7 +579,7 @@ Batch Y:          64 × 8 bytes = 512 bytes
 Features:         64 × 512 × 4 bytes = 128 KB
 Logits:           64 × 1000 × 4 bytes = 256 KB
 Gradients (CNN):  ~44 MB (mismas dimensiones que parámetros)
-Gradients (MLP):  ~4.5 MB
+Gradients (MLP):  ~6 MB (1.57M params)
 
 Buffer Prefetch:  prefetch_batches × 12 MB = 4 × 12 = 48 MB
 

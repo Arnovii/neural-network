@@ -1,3 +1,13 @@
+"""
+Utils/config_loader.py — Carga de configuración y variables de entorno.
+
+Funciones para obtener el token de HuggingFace (desde CLI, .env, o variable de entorno),
+así como utilidades para detectar la IP del Worker en redes locales.
+
+FLUJO DE PRIORIDAD DEL TOKEN:
+    CLI (--hf-token) > .env > HF_TOKEN (variable de entorno)
+"""
+
 import os
 import socket
 from pathlib import Path
@@ -40,7 +50,10 @@ def get_hf_token(override: str | None = None) -> Optional[str]:
     :returns: Token de HuggingFace o None
     :rtype: Optional[str]
 
-    :example:
+    .. rubric:: Ejemplo
+
+    .. code-block:: python
+
         # Con parámetros CLI
         token = get_hf_token(args.hf_token)  # CLI > env > .env
 
@@ -93,7 +106,10 @@ def get_worker_ip(host: str) -> str:
     :returns: IP que el worker debe usar como --server-host
     :rtype: str
 
-    :example:
+    .. rubric:: Ejemplo
+
+    .. code-block:: python
+
         >>> get_worker_ip("0.0.0.0")
         '192.168.1.100'
         >>> get_worker_ip("127.0.0.1")

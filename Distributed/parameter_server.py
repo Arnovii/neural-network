@@ -91,6 +91,9 @@ class RunningMetrics:
 
         :param window: Tamaño de la ventana deslizante (ultimos N valores).
         :type window: int
+
+        :returns: None
+        :rtype: None
         """
         self._lock = threading.Lock()
 
@@ -749,6 +752,8 @@ class ParameterServer:
 
         :returns: True si la secuencia fue exitosa, False en caso contrario.
         :rtype: bool
+
+        :raises RuntimeError: Si self._cnn es None (no inicializado).
         """
         try:
             if self._cnn is None:
@@ -862,6 +867,8 @@ class ParameterServer:
         .. note::
             Timeout implicito: si CNN+MLP no estan listo en 120s, el Worker
             puede timeout waiting for weights.
+
+        :raises RuntimeError: Si CNN no fue inicializada antes de enviar pesos al Worker.
         """
         # 1. Recibir READY
         if not self._receive_ready(conn):

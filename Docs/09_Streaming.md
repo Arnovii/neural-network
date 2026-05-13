@@ -148,12 +148,10 @@ class ImageNetStream:
 #### 1. **Carga Inicial del Dataset**
 
 ```python
-dataset = load_dataset(
-    dataset_name,              # e.g., 'ILSVRC/imagenet-1k'
-    split=split,               # 'train'
-    streaming=True,            # ← Clave: No descarga todo
-    use_auth_token=hf_token
-)
+access_data = {"streaming": True, "split": split}
+if hf_token:
+    access_data["token"] = hf_token
+dataset = load_dataset(dataset_name, **access_data)
 ```
 
 **Salida en Consola**:
@@ -205,49 +203,42 @@ while True:  # ← Infinite
         ds_iter = dataset.iter(batch_size=self.batch_size)
 ```
 
-### Transformación de Datos
+### Transformación de Datos (torchvision.transforms.v2)
 
-Ubicación: [Utils/imagenet_streaming.py](../Utils/imagenet_streaming.py#L80)
+Ubicación: [Utils/imagenet_streaming.py](../Utils/imagenet_streaming.py#L77)
+
+El pipeline usa `torchvision.transforms.v2` (Compose) para aplicar las transformaciones a cada imagen individual dentro del generador `_generate()`:
 
 ```python
-def _transform_batch(self, batch):
-    # batch['image']: List[PIL.Image] de tamaño batch_size
-    # batch['label']: List[int] de tamaño batch_size
-    
-    images = []
-    labels = []
-    
-    for img, label in zip(batch['image'], batch['label']):
-        # 1. RandomResizedCrop(224): Crop aleatorio + resize
-        #    (Mantiene aspect entre 0.75-1.0, resize a 224x224)
-        img = self.crop_transform(img)
-        
-        # 2. ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.05)
-        #    Perturbación ligera de color para invarianza perceptual
-        img_tensor = self.color_jitter(img)
-        
-        # 3. RandomHorizontalFlip (50% chance)
-        if random.random() < 0.5:
-            img_tensor = img_tensor.transpose(PIL.Image.FLIP_LEFT_RIGHT)
-        
-        # 4. Convertir a Tensor y normalizar ImageNet stats
-        img_tensor = self.to_tensor(img_tensor)  # [3, 224, 224], values [0..1]
-        img_tensor = self.normalize(img_tensor)  # ImageNet mean/std
-        
-        # 5. RandomErasing(p=0.25, scale=(0.02, 0.2))
-        #    Borra rectángulo aleatorio post-normalización (regularización por oclusión)
-        if random.random() < 0.25:
-            img_tensor = self.random_erase(img_tensor)
-        
-        images.append(img_tensor)
-        labels.append(label)
-    
-    # Stack en batch
-    batch_tensor = torch.stack(images)  # [batch_size, 3, 224, 224]
-    labels_tensor = torch.tensor(labels, dtype=torch.long)
-    
-    return batch_tensor, labels_tensor
+def get_train_transform(image_size=224):
+    return T.Compose([
+        T.RandomResizedCrop(image_size, antialias=True),
+        T.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.05),
+        T.RandomHorizontalFlip(),
+        T.ToImage(),                          # PIL → tensor format
+        T.ToDtype(torch.float32, scale=True), # 0-255 → 0.0-1.0
+        T.Normalize(mean=MEAN, std=STD),      # ImageNet stats
+        T.RandomErasing(p=0.25, scale=(0.02, 0.2), ratio=(0.3, 3.3), value=0),
+    ])
 ```
+
+**Aplicación por muestra** (no por batch):
+
+```python
+# En _generate(), línea 407:
+tensor = self.transform(img)  # transform a PIL individual → tensor (3, 224, 224)
+```
+
+**Pipeline completo**:
+1. `RandomResizedCrop(224)` — crop aleatorio + resize manteniendo aspect ratio
+2. `ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.05)` — perturbación de color
+3. `RandomHorizontalFlip()` — flip horizontal 50% probabilidad
+4. `ToImage()` — convierte PIL a tensor PyTorch
+5. `ToDtype(float32, scale=True)` — normaliza rango [0, 255] → [0.0, 1.0]
+6. `Normalize(mean, std)` — normaliza con stats ImageNet (z-score)
+7. `RandomErasing(p=0.25, scale=(0.02, 0.2))` — borra rectángulo como regularización
+
+Los tensores individuales se acumulan en buffer y se stackean en batch cuando alcanzan `batch_size`.
 
 **ImageNet Normalization Stats**:
 
@@ -404,12 +395,10 @@ class ValidationStream:
         hf_token=None,
         dataset_name='ILSVRC/imagenet-1k'
     ):
-        self.dataset = load_dataset(
-            dataset_name,
-            split='validation',
-            streaming=True,
-            use_auth_token=hf_token
-        )
+        access_data = {"streaming": True, "split": "validation"}
+        if hf_token:
+            access_data["token"] = hf_token
+        self.dataset = load_dataset(dataset_name, **access_data)
         self.batch_size = batch_size
         self.image_size = image_size
         self.transforms = get_validation_transforms(image_size)

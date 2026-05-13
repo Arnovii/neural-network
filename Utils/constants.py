@@ -136,3 +136,23 @@ WEIGHT_DECAY: float = 1e-4  # L2 regularización en SGD (modo E2E)
 
 # Semilla por defecto (None = aleatorio)
 DEFAULT_SEED: int | None = None
+
+# ============================================================
+# LOG CONSTANTS
+# ============================================================
+
+LOG_PHASES = {
+    "ps": "PARAM SRV",
+    "worker": "WORKER",
+    "train": "TRAIN MLP",
+    "warn": "WARN",
+    "error": "ERROR",
+}
+LOG_COLORS = {
+    "ps": "\033[94m",
+    "worker": "\033[92m",
+    "train": "\033[93m",
+    "warn": "\033[33m",
+    "error": "\033[91m",
+}
+LOG_RESET: str = "\033[0m"

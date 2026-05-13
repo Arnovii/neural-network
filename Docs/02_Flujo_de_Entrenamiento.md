@@ -64,9 +64,12 @@ t=6                                                  _train_batch():
 t=7                                                  # Backward
                                                      loss.backward()
                                                      
-                                                     # SGD local (lr=0.001)
-                                                     for param in model.params:
-                                                       param -= 0.001 * param.grad
+                                                      # Gradient clipping (max_norm=10.0)
+                                                      nn.utils.clip_grad_norm_(params, 10.0)
+                                                      
+                                                      # SGD local (lr=0.001, weight_decay=1e-4)
+                                                      for param in model.params:
+                                                        param -= 0.001 * param.grad
                                                      
                                                      # Métricas
                                                      acc = compute_accuracy(logits, Y)
@@ -162,7 +165,7 @@ Y = torch.from_numpy(Y_np).to(device)      # (64,) con labels 0-999
 features = cnn._model(X)                    # (64, 512)
 logits = mlp(features)                      # (64, 1000)
 
-loss = nn.functional.cross_entropy(logits, Y)  # scalar ≈ 6.9-8.0
+loss = nn.functional.cross_entropy(logits, Y, label_smoothing=0.1)  # scalar ≈ 6.9-8.0
 
 avg_loss = total_loss / total_n             # Promedio sobre batches
 ```

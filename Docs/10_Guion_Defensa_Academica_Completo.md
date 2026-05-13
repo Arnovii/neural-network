@@ -109,7 +109,7 @@ El sistema se divide en cinco capas funcionales:
 El componente central es el Servidor de Parámetros (`Distributed/parameter_server.py`). Como sugiere su nombre, es un servidor TCP que escucha en un puerto específico (por defecto 9999) y acepta conexiones de Workers. Mantiene en memoria:
 
 - El estado de la CNN global (~45 MB si es ResNet-18 preentrenada, ~45 MB si es SIMPLE CNN)
-- El estado del MLP global (~4.5 MB)
+- El estado del MLP global (~6 MB)
 - Un contador de versión que incrementa cada vez que se actualiza
 - Métricas agregadas (loss y accuracy sobre una ventana deslizante)
 
@@ -252,7 +252,7 @@ El PS, al recibir REQUEST_PARAMS, hace lo siguiente:
 - Adquiere un lock sobre los parámetros globales para evitar que otros hilos los modifiquen
 - Crea copias de los diccionarios de parámetros CNN y MLP
 - Incluye el contador de version actual y el learning_rate
-- Serializa esto a pickle y lo envía al Worker (típicamente 48.5 MB para ResNet-18 + MLP)
+- Serializa esto a pickle y lo envía al Worker (típicamente ~50 MB para ResNet-18 + MLP)
 
 El Worker recibe este mensaje, que contiene:
 - mlp_state: diccionario con los pesos del MLP global actual
@@ -284,11 +284,11 @@ Este ciclo se repite accum_steps veces (ej 5 veces). Después de 5 entrenamiento
 
 El Worker serializa y envía:
 - El estado actual de CNN local (incluye los cambios de los 5 SGD steps locales): 44 MB
-- El estado actual de MLP local: 4.5 MB
+- El estado actual de MLP local: ~6 MB
 - Loss y accuracy promedio de los accum_steps batches
 - El `version` que el Worker leyó en el paso 2 (importante para que PS calcule staleness)
 
-Total típico: 48.5 MB por Worker por ciclo.
+Total típico: ~50 MB por Worker por ciclo.
 
 **[Paso 6] PS Recibe UPDATES y Aplica Async-FedAvg**
 
@@ -323,24 +323,24 @@ Para ilustrar mejor por qué esto es asincrónico:
 ```
 Tiempo    Worker_0                Worker_1            Parameter_Server
 ────────────────────────────────────────────────────────────────────────
-t=0       READY ─────────────────────>                 acepta conexión 0
-t=0.01    <──────────── WORKER_ID (id=0, CONFIG, CNN_WEIGHTS
-t=0.05                                 READY ──────────>  acepta conexión
-t=0.06                                 <────── WORKER_ID, CONFIG, CNN_WEIGHTS
-t=0.15    CNN_ACK ────────────────────>                confirma
-t=0.16    <──────────── START
-t=0.16                                 CNN_ACK ───────-> confirma
-t=0.16                                 <──────── START
+t=0       READY ─────────────────────────────────────> acepta conexión 0
+t=0.01          <───────────────────────────────────── WORKER_ID (id=0, CONFIG, CNN_WEIGHTS
+t=0.05                            READY ─────────────> acepta conexión 1
+t=0.06                                 <───────────── WORKER_ID, CONFIG, CNN_WEIGHTS
+t=0.15    CNN_ACK ───────────────────────────────────> confirma
+t=0.16            <─────────────────────────────────── START
+t=0.16                            CNN_ACK ───────────> confirma
+t=0.16            <─────────────────────────────────── START
 
-t=0.3     REQUEST_PARAMS ────────────>
-t=0.3                                 REQUEST_PARAMS ──> ambos piden simultáneamente
-t=0.7     <──── PARAMS (48.5 MB)     <──── PARAMS      ambos reciben
+t=0.3     REQUEST_PARAMS ─────────────────────────────>
+t=0.3                            REQUEST_PARAMS ──────> ambos piden simultáneamente
+t=0.7     <──── PARAMS (~50 MB) ─── PARAMS (~50 MB) ── ambos reciben
 t=0.7     [entrenar 5 batches]        [entrenar 5 batches]
 
-t=1.0     [sigue entrenando]         [termina antes, version=0]
-t=1.2     UPDATES ────────────────────>                 aplica cambios
+t=1.0     [sigue entrenando]   [termina, version=0]
+t=1.2     UPDATES ────────────────────────────────────> aplica cambios
 t=1.2                                                   version ← 1
-t=1.2                                 UPDATES ────────> aplica con staleness=0
+t=1.2                             UPDATES ────────────> aplica con staleness=0
 t=1.2     [vuelve a REQUEST_PARAMS]                     [PS actualiza ambas CNN+MLP]
 t=1.3                                                   version ← 2
 
@@ -373,8 +373,8 @@ El protocolo define exactamente 10 tipos de mensaje (enum MsgType). Cada mensaje
 | 5 | CNN_ACK | W→PS | CNN cargada | {"architecture": "resnet18", ...} | <1 KB |
 | 6 | START | PS→W | Iniciar entrenamiento | {} (vacío) | <1 KB |
 | 7 | REQUEST_PARAMS | W→PS | Solicitar parámetros | {} (vacío) | <1 KB |
-| 8 | PARAMS | PS→W | Enviar parámetros | {"mlp_state": {...}, "cnn_state": {...}, "version": 42, "lr": 0.001} | 48.5 MB (ResNet+MLP) |
-| 9 | UPDATES | W→PS | Enviar cambios | {"mlp_weights": {...}, "cnn_weights": {...}, "loss": 4.23, "accuracy": 0.02, "version_read": 42} | 48.5 MB (ResNet+MLP) |
+| 8 | PARAMS | PS→W | Enviar parámetros | {"mlp_state": {...}, "cnn_state": {...}, "version": 42, "lr": 0.001} | ~50 MB (ResNet+MLP) |
+| 9 | UPDATES | W→PS | Enviar cambios | {"mlp_weights": {...}, "cnn_weights": {...}, "loss": 4.23, "accuracy": 0.02, "version_read": 42} | ~50 MB (ResNet+MLP) |
 | 10 | STOP | PS→W | Apagar Worker | {} (vacío) | <1 KB |
 
 ### 4.2 Serialización y Protocolo de Bajo Nivel
@@ -402,7 +402,7 @@ Los dos mensajes más grandes, PARAMS y UPDATES, son donde ocurre la transferenc
 - mlp_state: diccionario con 6 claves (fc1.weight, fc1.bias, fc2.weight, fc2.bias, fc3.weight, fc3.bias), cada una un numpy array
   - fc1.weight: (1024, 512) = 512K elementos × 4 bytes = 2 MB
   - fc1.bias: (1024,) = 1K elementos × 4 bytes = 4 KB
-  - [etc, total MLP ~4.5 MB]
+  - [etc, total MLP ~6 MB]
 - cnn_state: diccionario con ~48 claves (parámetros nombrados de ResNet-18), incluyendo BatchNorm running_mean, running_var, num_batches_tracked
   - weights de conv: típicamente (cout, cin, h, w) donde cao×cin puede ser 100 millones
   - biases
@@ -412,7 +412,7 @@ Los dos mensajes más grandes, PARAMS y UPDATES, son donde ocurre la transferenc
 - version: entero, <1 KB
 - lr: float, <1 KB
 
-Total: ~48.5 MB para ResNet-18. Tiempo TCP (1 Gbps): ~400 ms. Tiempo TCP (100 Mbps): ~4 segundos.
+Total: ~50 MB para ResNet-18. Tiempo TCP (1 Gbps): ~400 ms. Tiempo TCP (100 Mbps): ~4 segundos.
 
 **UPDATES (Worker → PS):**
 - Estructura idéntica a PARAMS

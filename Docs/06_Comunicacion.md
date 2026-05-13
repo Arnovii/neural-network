@@ -88,18 +88,22 @@ send_message(sock, MsgType.WORKER_ID, {
 send_message(sock, MsgType.CONFIG, {
     "batch_size": 64,
     "image_size": 224,
+    "dataset_name": "ILSVRC/imagenet-1k",
     "rank": 0,
     "num_workers": 3,
-    "seed": None
+    "seed": None,
+    "hf_token": "hf_..."  # Opcional, solo si dataset requiere autenticación
 })
 ```
 
 **Payload**:
 - `batch_size` (int): Tamaño del batch para streaming de imágenes
 - `image_size` (int): Tamaño de imagen (224 típicamente)
+- `dataset_name` (str): Nombre del dataset HuggingFace (ej: "ILSVRC/imagenet-1k")
 - `rank` (int): Índice único asignado dinámicamente por PS (0-based)
 - `num_workers` (int): Total de workers conectados (se actualiza en cada nueva conexión)
 - `seed` (int | None): Semilla global para reproducibilidad
+- `hf_token` (str | None): Token HuggingFace para acceso al dataset (opcional)
 
 **Rango**:
 - batch_size: 1-1024 típicamente
@@ -209,7 +213,7 @@ send_message(sock, MsgType.PARAMS, {
 - `version` (int): Versión de parámetros (contador monotónico)
 - `lr` (float): Learning rate actual (0 < lr ≤ 0.1 típicamente)
 
-**Tamaño total**: ~50 MB (4.5 MB MLP + 44 MB CNN) → ~500ms/10Gbps
+**Tamaño total**: ~50 MB (6 MB MLP + 44 MB CNN) → ~500ms/10Gbps
 
 ---
 

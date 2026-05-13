@@ -139,15 +139,6 @@ mlp = MLPPyTorch(
 ps.set_mlp(mlp.state_dict_numpy())
 ```
 
-**Tamaño de MLP state_dict** (feature_dim=512, h1=1024, h2=512):
-- fc1.weight: (1024, 512) = 524KB
-- fc1.bias: (1024,) = 4KB
-- fc2.weight: (512, 1024) = 2MB
-- fc2.bias: (512,) = 2KB
-- fc3.weight: (1000, 512) = 2MB
-- fc3.bias: (1000,) = 4KB
-- **Total**: ~4.5 MB (2.05M parámetros)
-
 **Inicialización: Kaiming Uniform (He)**
 ```python
 # En MLPPyTorch._init_weights()
@@ -466,8 +457,8 @@ def stop(self):
 
 Con N Workers:
 - Si cada Worker envía UPDATE cada 100ms
-- Y cada UPDATE es 4.5 MB + overhead
-- Throughput necesario = N × 4.5 MB / 0.1s = N × 45 MB/s
+- Y cada UPDATE es ~50 MB + overhead (44 MB CNN + 6 MB MLP)
+- Throughput necesario = N × 50 MB / 0.1s = N × 500 MB/s
 
 Con 10 Gbps Ethernet: Máximo ~10 Workers sin saturación
 

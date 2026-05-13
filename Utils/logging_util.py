@@ -2,6 +2,8 @@
 
 from typing import Callable, List
 
+from Utils.constants import LOG_COLORS, LOG_PHASES, LOG_RESET
+
 
 class FormattedLogger:
     """
@@ -11,32 +13,17 @@ class FormattedLogger:
     y códigos de color ANSI opcionales. Soporta registro de múltiples handlers
     para capturar logs (ej: para exportar a archivo).
 
-    Atributos:
-        PHASES: Mapeo de identificadores de fase a etiquetas de texto.
-        COLORS: Mapeo de fases a códigos de color ANSI.
-        RESET: Código ANSI para resetear color.
+    Las constantes de fases, colores y reset están definidas en ``Utils.constants``:
+    ``LOG_PHASES``, ``LOG_COLORS`` y ``LOG_RESET``.
 
-    Ejemplo:
+    .. rubric:: Ejemplo
+
+    .. code-block:: python
+
         logger = get_logger(use_colors=True)
         logger.ps("Servidor iniciado", metric="port=9999")
         logger.worker_msg(worker_id=0, msg="Worker conectado")
     """
-
-    PHASES = {
-        "ps": "PARAM SRV",
-        "worker": "WORKER",
-        "train": "TRAIN MLP",
-        "warn": "WARN",
-        "error": "ERROR",
-    }
-    COLORS = {
-        "ps": "\033[94m",
-        "worker": "\033[92m",
-        "train": "\033[93m",
-        "warn": "\033[33m",
-        "error": "\033[91m",
-    }
-    RESET = "\033[0m"
 
     def __init__(self, use_colors: bool = True) -> None:
         """
@@ -90,10 +77,10 @@ class FormattedLogger:
         :returns: String de fase formateado, con o sin códigos de color.
         :rtype: str
         """
-        label = self.PHASES.get(phase, phase.upper())
+        label = LOG_PHASES.get(phase, phase.upper())
         if self.use_colors:
-            c = self.COLORS.get(phase, "")
-            return f"{c}[{label}]{self.RESET}"
+            c = LOG_COLORS.get(phase, "")
+            return f"{c}[{label}]{LOG_RESET}"
         return f"[{label}]"
 
     def log(
